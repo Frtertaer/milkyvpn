@@ -98,7 +98,7 @@ void main() {
   test('all attempts fail -> bounded, error surfaced, not connected', () async {
     final b = FakeBridge()..failIds = {'a', 'b', 'c', 'd', 'e', 'f'};
     final c = VpnController(bridge: b, attemptTimeout: const Duration(seconds: 1), maxAttempts: 3);
-    expect(await c.connect(List.generate(6, (i) => p('${'abcdef'[i]}')), LocationChoice.auto), isFalse);
+    expect(await c.connect(List.generate(6, (i) => p('abcdef'[i])), LocationChoice.auto), isFalse);
     expect(b.connectCalls.length, 3);
     expect(c.lastErrorClass, 'tls_handshake');
     expect(c.state, VpnState.disconnected);
