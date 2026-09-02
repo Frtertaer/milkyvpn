@@ -1,0 +1,26 @@
+{
+	"version": 1,
+	"ports": {
+		"preview": 3000,
+		"additional": {}
+	},
+	"scripts": {
+		"setup": {
+			"enabled": true,
+			"command": "if ! command -v flutter >/dev/null 2>&1 && [ ! -x \"$HOME/flutter/bin/flutter\" ]; then curl -fsSL -o /tmp/flutter.tar.xz https://storage.googleapis.com/flutter_infra_release/releases/stable/linux/flutter_linux_3.35.4-stable.tar.xz && tar -C \"$HOME\" -xzf /tmp/flutter.tar.xz && rm -f /tmp/flutter.tar.xz && ln -sf \"$HOME/flutter/bin/flutter\" /usr/local/bin/flutter && ln -sf \"$HOME/flutter/bin/dart\" /usr/local/bin/dart; fi"
+		},
+		"run": {
+			"enabled": true,
+			"command": null
+		},
+		"archive": {
+			"enabled": true,
+			"command": null
+		},
+		"check": {
+			"enabled": true,
+			"command": null
+		}
+	},
+	"mcpServers": []
+}
