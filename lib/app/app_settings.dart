@@ -59,12 +59,16 @@ class S {
   String get noSubscriptionYet => t('У меня пока нет подписки', "I don't have a subscription yet");
   String get pasteFromClipboard => t('Вставить из буфера обмена', 'Paste from clipboard');
   String get subscriptionUrlHint => t('Ссылка на подписку', 'Subscription link');
+  String get showLink => t('Показать ссылку', 'Show link');
+  String get hideLink => t('Скрыть ссылку', 'Hide link');
   String get import => t('Импортировать', 'Import');
   String get importOk => t('Подписка добавлена', 'Subscription added');
   String get urlNotAllowed => t('Допустимы только ссылки вида https://sub.milky.homes/s/…', 'Only https://sub.milky.homes/s/… links are accepted');
   String get notConnected => t('Не подключено', 'Not connected');
   String get connecting => t('Подключение…', 'Connecting…');
+  String get disconnecting => t('Отключение…', 'Disconnecting…');
   String get connected => t('Подключено', 'Connected');
+  String get server => t('Сервер', 'Server');
   String get connect => t('Подключить', 'Connect');
   String get disconnect => t('Отключить', 'Disconnect');
   String get auto => t('Авто', 'Auto');
@@ -78,6 +82,7 @@ class S {
   String get expires => t('Дата окончания', 'Expires');
   String get serversCount => t('Количество доступных серверов', 'Available servers');
   String get refreshSubscription => t('Обновить подписку', 'Refresh subscription');
+  String get updated => t('Подписка обновлена', 'Subscription updated');
   String get removeSubscription => t('Удалить подписку', 'Remove subscription');
   String get removeConfirm => t('Удалить подписку с этого устройства? Вы сможете добавить её снова.', 'Remove the subscription from this device? You can add it again later.');
   String get cancel => t('Отмена', 'Cancel');

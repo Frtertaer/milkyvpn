@@ -244,7 +244,10 @@ class _HomeScreenState extends State<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    _tick = Timer.periodic(const Duration(seconds: 1), (_) => setState(() {}));
+    // Only the session duration needs a periodic rebuild.
+    _tick = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && context.read<VpnController>().isConnected) setState(() {});
+    });
   }
 
   @override
@@ -269,8 +272,11 @@ class _HomeScreenState extends State<HomeScreen> {
         stateColor = const Color(0xFF2E9E5B);
         break;
       case VpnState.connecting:
-      case VpnState.disconnecting:
         stateText = t.connecting;
+        stateColor = c.primary;
+        break;
+      case VpnState.disconnecting:
+        stateText = t.disconnecting;
         stateColor = c.primary;
         break;
       default:
@@ -307,6 +313,11 @@ class _HomeScreenState extends State<HomeScreen> {
               Text(stateText, key: const Key('state_text'), style: Theme.of(context).textTheme.displaySmall?.copyWith(fontWeight: FontWeight.w700, color: stateColor), textAlign: TextAlign.center),
               const SizedBox(height: 8),
               if (dur != null) Text(_fmt(dur), style: Theme.of(context).textTheme.titleMedium?.copyWith(color: c.onSurfaceVariant)),
+              if (vpn.isConnected && vpn.activeRemark != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 12),
+                  child: Text('${t.server}: ${vpn.activeRemark}', style: Theme.of(context).textTheme.titleSmall?.copyWith(color: c.onSurfaceVariant), textAlign: TextAlign.center),
+                ),
               if (vpn.isBusy) const Padding(padding: EdgeInsets.only(top: 12), child: SizedBox(width: 28, height: 28, child: CircularProgressIndicator(strokeWidth: 3))),
               if (err != null && err != 'cancelled')
                 Padding(padding: const EdgeInsets.only(top: 12), child: Text(t.errorText(err), style: TextStyle(color: c.error), textAlign: TextAlign.center)),
@@ -359,6 +370,7 @@ class ImportScreen extends StatefulWidget {
 class _ImportScreenState extends State<ImportScreen> {
   final _ctrl = TextEditingController();
   bool _busy = false;
+  bool _obscure = true;
   String? _err;
 
   Future<void> _paste() async {
@@ -400,10 +412,20 @@ class _ImportScreenState extends State<ImportScreen> {
             children: [
               TextField(
                 controller: _ctrl,
-                obscureText: true,
+                obscureText: _obscure,
                 enableSuggestions: false,
                 autocorrect: false,
-                decoration: InputDecoration(labelText: t.subscriptionUrlHint, hintText: 'https://sub.milky.homes/s/…', border: const OutlineInputBorder(), errorText: _err),
+                decoration: InputDecoration(
+                  labelText: t.subscriptionUrlHint,
+                  hintText: 'https://sub.milky.homes/s/…',
+                  border: const OutlineInputBorder(),
+                  errorText: _err,
+                  suffixIcon: IconButton(
+                    tooltip: _obscure ? t.showLink : t.hideLink,
+                    onPressed: () => setState(() => _obscure = !_obscure),
+                    icon: Icon(_obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined),
+                  ),
+                ),
               ),
               const SizedBox(height: 12),
               OutlinedButton.icon(onPressed: _paste, icon: const Icon(Icons.paste), label: Text(t.pasteFromClipboard)),
@@ -483,7 +505,7 @@ class SubscriptionScreen extends StatelessWidget {
                 final msg = ScaffoldMessenger.of(context);
                 try {
                   await repo.refresh();
-                  msg.showSnackBar(SnackBar(content: Text(t.importOk)));
+                  msg.showSnackBar(SnackBar(content: Text(t.updated)));
                 } on SubscriptionFetchException catch (e) {
                   msg.showSnackBar(SnackBar(content: Text(t.errorText(e.errorClass))));
                 }
@@ -555,7 +577,7 @@ class SettingsScreen extends StatelessWidget {
               final msg = ScaffoldMessenger.of(context);
               try {
                 final r = await context.read<SubscriptionRepository>().refresh();
-                msg.showSnackBar(SnackBar(content: Text(r == null ? t.noSubscription : t.importOk)));
+                msg.showSnackBar(SnackBar(content: Text(r == null ? t.noSubscription : t.updated)));
               } on SubscriptionFetchException catch (e) {
                 msg.showSnackBar(SnackBar(content: Text(t.errorText(e.errorClass))));
               }
