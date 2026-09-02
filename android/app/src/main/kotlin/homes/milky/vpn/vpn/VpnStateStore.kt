@@ -16,8 +16,12 @@ object VpnStateStore {
         val profileId: String?,
         val profileRemark: String?,
         val connectedSinceEpochMs: Long?,
-        /** Sanitized machine-readable error class (never contains credentials). */
+        /** Sanitized machine-readable error class from a closed vocabulary (never contains credentials). */
         val errorCode: String?,
+        /** Redacted technical detail for the diagnostics screen only. */
+        val errorDetail: String? = null,
+        /** Which connect stage failed: config | resolve | tun | core_start | verify | null. */
+        val errorStage: String? = null,
     )
 
     interface Listener {
@@ -45,8 +49,10 @@ object VpnStateStore {
         profileRemark: String? = current.profileRemark,
         connectedSinceEpochMs: Long? = current.connectedSinceEpochMs,
         errorCode: String? = null,
+        errorDetail: String? = null,
+        errorStage: String? = null,
     ) {
-        val snap = Snapshot(state, profileId, profileRemark, connectedSinceEpochMs, errorCode)
+        val snap = Snapshot(state, profileId, profileRemark, connectedSinceEpochMs, errorCode, errorDetail, errorStage)
         current = snap
         listeners.forEach { it.onStateChanged(snap) }
     }
@@ -57,5 +63,7 @@ object VpnStateStore {
         "profileRemark" to s.profileRemark,
         "connectedSince" to s.connectedSinceEpochMs,
         "errorCode" to s.errorCode,
+        "errorDetail" to s.errorDetail,
+        "errorStage" to s.errorStage,
     )
 }

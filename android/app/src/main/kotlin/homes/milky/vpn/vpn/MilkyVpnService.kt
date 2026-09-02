@@ -110,8 +110,14 @@ class MilkyVpnService : VpnService() {
             ACTION_CONNECT, null, SERVICE_INTERFACE -> {
                 // null / SERVICE_INTERFACE == started by the system (Always-on VPN).
                 startAsForeground(getString(R.string.vpn_notif_connecting))
-                connectJob?.cancel()
-                connectJob = scope.launch { connect() }
+                // Never cancel an in-flight attempt from here: doing so surfaced a bare
+                // JobCancellationException (R8-minified to e.g. "S") as the user-facing error.
+                // Serialise instead: wait for the previous attempt to finish, then start the new one.
+                val previous = connectJob
+                connectJob = scope.launch {
+                    previous?.join()
+                    connect()
+                }
                 return START_STICKY
             }
 
