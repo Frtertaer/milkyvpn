@@ -10,6 +10,7 @@ class SubscriptionParseResult {
     required this.profiles,
     required this.totalLines,
     required this.malformedLines,
+    this.duplicateEntries = 0,
     this.expiresAt,
     this.headersUsed = false,
   });
@@ -17,6 +18,11 @@ class SubscriptionParseResult {
   final List<VpnProfile> profiles;
   final int totalLines;
   final int malformedLines;
+
+  /// Lines that parsed fine but collided with an already seen endpoint identity.
+  /// Counted explicitly — a subscription can legitimately list the same server twice and
+  /// the app must be able to explain why the visible number is smaller than the line count.
+  final int duplicateEntries;
 
   /// Optional expiry parsed from `subscription-userinfo` (expire=unix) if the server sends it.
   final DateTime? expiresAt;
@@ -45,6 +51,7 @@ class SubscriptionParser {
 
     final profiles = <VpnProfile>[];
     var malformed = 0;
+    var duplicates = 0;
     final seen = <String>{};
     for (final line in lines) {
       final p = parseLine(line);
@@ -52,7 +59,11 @@ class SubscriptionParser {
         malformed++;
         continue;
       }
-      if (seen.add(p.id)) profiles.add(p);
+      if (seen.add(p.id)) {
+        profiles.add(p);
+      } else {
+        duplicates++;
+      }
     }
 
     DateTime? expires;
@@ -78,6 +89,7 @@ class SubscriptionParser {
       profiles: profiles,
       totalLines: lines.length,
       malformedLines: malformed,
+      duplicateEntries: duplicates,
       expiresAt: expires,
       headersUsed: headersUsed,
     );
@@ -216,8 +228,34 @@ class SubscriptionParser {
         .hasMatch(h);
   }
 
-  static String _id(String proto, String host, int port, String net, String sec, String? path) =>
-      fnv1a64Hex('$proto|$host|$port|$net|$sec|${path ?? ''}');
+  /// Identity of a connection: endpoint + transport + TLS + credentials.
+  ///
+  /// Two entries are duplicates ONLY when every field that changes what the tunnel IS
+  /// matches — including UUID/password, SNI, flow, Reality public key and short id.
+  /// The old identity (proto|host|port|net|sec|path) silently collapsed distinct
+  /// credentials that shared an endpoint: the "16 became 10" bug class.
+  static String _identity({
+    required String proto,
+    required String host,
+    required int port,
+    required String net,
+    required String sec,
+    String? path,
+    String? secret,
+    String? sni,
+    String? flow,
+    String? publicKey,
+    String? shortId,
+    String? fingerprint,
+    String? httpHost,
+    String? xhttpMode,
+    String? alpn,
+    String? obfs,
+  }) =>
+      fnv1a64Hex([
+        proto, host, '$port', net, sec,
+        path, secret, sni, flow, publicKey, shortId, fingerprint, httpHost, xhttpMode, alpn, obfs,
+      ].map((e) => e ?? '').join('|'));
 
   VpnProfile? _parseVless(String line) {
     final p = _split(line);
@@ -233,7 +271,12 @@ class SubscriptionParser {
     final flow = q['flow'];
     final remark = p.remark.isEmpty ? '${p.host}:${p.port}' : p.remark;
     return VpnProfile(
-      id: _id('vless', p.host, p.port, network, security, q['path']),
+      id: _identity(
+        proto: 'vless', host: p.host, port: p.port, net: network, sec: security,
+        path: q['path'], secret: uuid, sni: _nz(q['sni']) ?? _nz(q['servername']), flow: _nz(flow),
+        publicKey: _nz(q['pbk']), shortId: q['sid'], fingerprint: _nz(q['fp']),
+        httpHost: _nz(q['host']), xhttpMode: _nz(q['mode']), alpn: _nz(q['alpn']),
+      ),
       protocol: 'vless',
       address: p.host,
       port: p.port,
@@ -263,7 +306,11 @@ class SubscriptionParser {
     final q = p.params;
     final remark = p.remark.isEmpty ? '${p.host}:${p.port}' : p.remark;
     return VpnProfile(
-      id: _id('hysteria2', p.host, p.port, 'hysteria', 'tls', null),
+      id: _identity(
+        proto: 'hysteria2', host: p.host, port: p.port, net: 'hysteria', sec: 'tls',
+        secret: password, sni: _nz(q['sni']), alpn: _nz(q['alpn']),
+        obfs: (q['obfs'] ?? '').toLowerCase() == 'salamander' ? _nz(q['obfs-password']) : null,
+      ),
       protocol: 'hysteria2',
       address: p.host,
       port: p.port,
@@ -282,7 +329,7 @@ class SubscriptionParser {
     final p = _split(line);
     if (p == null) return null;
     return VpnProfile(
-      id: _id(scheme, p.host, p.port, 'other', 'other', null),
+      id: _identity(proto: scheme, host: p.host, port: p.port, net: 'other', sec: 'other', secret: p.userInfo),
       protocol: 'other',
       address: p.host,
       port: p.port,

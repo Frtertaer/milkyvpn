@@ -127,6 +127,27 @@ class VpnProfile {
   /// Safe for the diagnostics screen: no host, no credentials.
   String toDiagnosticString() => '$redactedRemark [${kind.name}, ${location.name}]';
 
+  /// Whether this app can execute the profile, decided locally.
+  ///
+  /// This mirrors `XrayConfigBuilder.validate` on the Kotlin side so the UI can state a
+  /// truthful "N compatible with the app" number *before* any connection attempt. The
+  /// authoritative check before connecting is still `VpnBridge.isProfileSupported`.
+  bool get isStaticCompatible {
+    switch (kind) {
+      case ProfileKind.vlessRealityTcp:
+      case ProfileKind.vlessXhttp:
+        // Reality needs a public key; without it Xray refuses to build the outbound.
+        if (security == 'reality' && (publicKey == null || publicKey!.isEmpty)) return false;
+        return true;
+      case ProfileKind.vlessWsTls:
+        return true;
+      case ProfileKind.hysteria2:
+        return secret.isNotEmpty;
+      case ProfileKind.other:
+        return false;
+    }
+  }
+
   static String _normNet(String n) {
     switch (n.toLowerCase()) {
       case 'raw':
