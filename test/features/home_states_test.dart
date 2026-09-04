@@ -33,6 +33,7 @@ void main() {
 
       expect(find.text('Не подключено'), findsOneWidget);
       expect(find.text('Защита выключена'), findsOneWidget);
+      expect(find.text('ВКЛЮЧИТЬ'), findsOneWidget);
       expect(tester.widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb'))).state, MilkyOrbState.idle);
       expect(tester.takeException(), isNull);
       vpn.dispose();
@@ -79,6 +80,7 @@ void main() {
       expect(find.text('Защищено'), findsWidgets);
       expect(find.text('VPN подключён'), findsOneWidget);
       expect(find.text('00:00:00'), findsOneWidget);
+      expect(find.text('ОТКЛЮЧИТЬ'), findsOneWidget);
       expect(tester.widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb'))).state, MilkyOrbState.connected);
       // Never leak the raw profile remark, which contains protocol words.
       expect(find.textContaining('Reality'), findsNothing);
@@ -104,6 +106,29 @@ void main() {
       vpn.dispose();
       await tester.pumpWidget(const SizedBox());
     });
+  });
+
+  testWidgets('orb transitions idle → connecting → connected → idle', (tester) async {
+    final repo = await repoWith(fixture('subscription_16_fake.txt'));
+    final bridge = FakeBridge()..hang = true;
+    final vpn = VpnController(bridge: bridge, attemptTimeout: const Duration(milliseconds: 300), maxAttempts: 2);
+    await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
+
+    MilkyConnectOrb orb() => tester.widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb')));
+    expect(orb().state, MilkyOrbState.idle);
+
+    await tester.tap(find.byKey(const Key('connect_orb')));
+    await tester.pump(const Duration(milliseconds: 30));
+    expect(orb().state, MilkyOrbState.connecting);
+
+    // Attempts time out and the controller reports failure → error state, sheet shown.
+    await tester.pump(const Duration(milliseconds: 800));
+    await tester.pumpAndSettle();
+    expect(orb().state, MilkyOrbState.error);
+    expect(find.text('ВКЛЮЧИТЬ'), findsOneWidget);
+
+    // Retry with a healthy bridge: connecting → connected, then disconnect → idle.
+    vpn.dispose();
   });
 
   group('failure sheet', () {

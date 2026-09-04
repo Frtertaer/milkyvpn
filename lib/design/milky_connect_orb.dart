@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'milky_brand.dart';
 import 'milky_colors.dart';
 import 'milky_motion.dart';
+import 'milky_theme.dart';
 import 'milky_tokens.dart';
 
 enum MilkyOrbState { idle, connecting, connected, error, disabled }
@@ -23,6 +24,7 @@ class MilkyConnectOrb extends StatefulWidget {
     this.size,
     this.progress,
     this.enabled = true,
+    this.caption,
     this.semanticLabel = '',
     this.semanticValue = '',
   });
@@ -37,6 +39,9 @@ class MilkyConnectOrb extends StatefulWidget {
   final double? progress;
 
   final bool enabled;
+
+  /// Small caps action word rendered directly under the sphere: ВКЛЮЧИТЬ / ОТКЛЮЧИТЬ.
+  final String? caption;
   final String semanticLabel;
   final String semanticValue;
 
@@ -132,33 +137,57 @@ class _MilkyConnectOrbState extends State<MilkyConnectOrb> with TickerProviderSt
     final diameter = widget.size ?? MilkyOrbMetrics.diameterFor(available);
     final active = widget.enabled && widget.onTap != null;
 
+    final captionColor = switch (widget.state) {
+      MilkyOrbState.connected => c.positive,
+      MilkyOrbState.error => c.danger,
+      MilkyOrbState.disabled => c.textFaint,
+      _ => c.textMuted,
+    };
+
     return Semantics(
       button: true,
       enabled: active,
-      label: widget.semanticLabel,
+      label: widget.caption == null ? widget.semanticLabel : '${widget.semanticLabel}. ${widget.caption}',
       value: widget.semanticValue,
       child: MilkyPressable(
         onTap: active ? widget.onTap : null,
         scale: 0.97,
         dim: 1,
-        child: SizedBox(
-          width: diameter,
-          height: diameter,
-          child: RepaintBoundary(
-            child: AnimatedBuilder(
-              animation: Listenable.merge(<Listenable>[_loop, _energy, _check]),
-              builder: (context, _) => CustomPaint(
-                painter: _OrbPainter(
-                  t: _loop.value,
-                  energy: _energy.value,
-                  check: _check.value,
-                  progress: widget.progress,
-                  state: widget.state,
-                  colors: c,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: diameter,
+              height: diameter,
+              child: RepaintBoundary(
+                child: AnimatedBuilder(
+                  animation: Listenable.merge(<Listenable>[_loop, _energy, _check]),
+                  builder: (context, _) => CustomPaint(
+                    painter: _OrbPainter(
+                      t: _loop.value,
+                      energy: _energy.value,
+                      check: _check.value,
+                      progress: widget.progress,
+                      state: widget.state,
+                      colors: c,
+                    ),
+                  ),
                 ),
               ),
             ),
-          ),
+            if (widget.caption != null) ...[
+              const SizedBox(height: MilkySpace.md),
+              Text(
+                widget.caption!,
+                textAlign: TextAlign.center,
+                style: MilkyType.bodySmall.copyWith(
+                  color: captionColor,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 2.4,
+                ),
+              ),
+            ],
+          ],
         ),
       ),
     );

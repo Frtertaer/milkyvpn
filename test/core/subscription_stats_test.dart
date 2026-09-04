@@ -11,22 +11,29 @@ import 'subscription_test.dart' show FakeFetcher;
 
 String fixture(String n) => File('test/fixtures/$n').readAsStringSync();
 
-/// Builds a 16-line subscription where 6 lines repeat an endpoint that already appeared.
-/// Same host/port/transport/security/path, different UUID and name: the parser dedupes by
-/// endpoint identity, so the profile count drops to 10 while the file still has 16 lines.
+/// 16 lines where the last 6 are byte-identical repeats of the first 6: true duplicates.
 String duplicateHeavySubscription() {
   final lines = fixture('subscription_16_fake.txt').split('\n').where((l) => l.isNotEmpty).toList();
+  return [...lines.take(10), ...lines.take(6)].join('\n');
+}
+
+/// The old bug class: 6 extra lines that SHARE endpoint/transport/security/path with the
+/// first 6 but carry DIFFERENT credentials (UUID) and names. The pre-V2 parser collapsed
+/// them to 10 profiles; the credential-aware identity must keep all 16.
+String sameEndpointDifferentCredentials() {
+  final lines = fixture('subscription_16_fake.txt').split('\n').where((l) => l.isNotEmpty).toList();
   final base = lines.take(10).toList();
-  final repeats = <String>[];
+  final twins = <String>[];
   for (var i = 0; i < 6; i++) {
     final line = lines[i];
-    // Swap the credential and the remark, keep the endpoint → identical profile id.
     final renamed = line
         .replaceAll(RegExp('#.*\$'), '#Mirror-${i + 1}')
-        .replaceAll(RegExp(r'^vless://[0-9a-fA-F-]+@'), 'vless://000000ff-0000-4000-8000-00000000000$i@');
-    repeats.add(renamed);
+        .replaceAll(RegExp(r'^vless://[0-9a-fA-F-]+@'), 'vless://000000ff-0000-4000-8000-00000000000$i@')
+        .replaceAll(RegExp(r'^hysteria2://[^@]+@'), 'hysteria2://mirrorpass$i@')
+        .replaceAll(RegExp(r'^hy2://[^@]+@'), 'hy2://mirrorpass$i@');
+    twins.add(renamed);
   }
-  return [...base, ...repeats].join('\n');
+  return [...base, ...twins].join('\n');
 }
 
 void main() {
@@ -52,14 +59,30 @@ void main() {
       expect(stats.incompatible, 0);
     });
 
-    test('duplicates are counted, not silently dropped: 16 lines -> 10 profiles', () {
+    test('true duplicates are counted, not silently dropped: 16 lines -> 10 profiles', () {
       final result = parser.parse(duplicateHeavySubscription());
       expect(result.totalLines, 16);
       expect(result.profiles.length, 10);
       expect(result.malformedLines, 0);
       expect(result.duplicateEntries, 6);
-      // The identity that made the old UI show "10 servers" for a 16-profile subscription.
       expect(result.totalLines, result.profiles.length + result.malformedLines + result.duplicateEntries);
+    });
+
+    test('REGRESSION: same endpoint + different UUID = distinct profiles (16 stays 16)', () {
+      // Mutation/control for the pre-V2 dedupe bug: the old endpoint-only identity
+      // returned 10 profiles here. The credential-aware identity must return 16.
+      final result = parser.parse(sameEndpointDifferentCredentials());
+      expect(result.totalLines, 16);
+      expect(result.profiles.length, 16, reason: 'different credentials are different profiles');
+      expect(result.duplicateEntries, 0);
+      expect(result.malformedLines, 0);
+    });
+
+    test('REGRESSION: same endpoint + different SNI/public key = distinct profiles', () {
+      const a = 'vless://00000001-0000-4000-8000-000000000001@fi1.example.invalid:443?type=tcp&security=reality&sni=www.example.com&pbk=KEY_A&flow=xtls-rprx-vision#One';
+      const b = 'vless://00000001-0000-4000-8000-000000000001@fi1.example.invalid:443?type=tcp&security=reality&sni=www.example.org&pbk=KEY_B&flow=xtls-rprx-vision#Two';
+      final result = parser.parse('$a\n$b');
+      expect(result.profiles.length, 2, reason: 'SNI/public key are part of the tunnel identity');
     });
 
     test('unsupported protocols are parsed but not executable (16 parsed, fewer compatible)', () {

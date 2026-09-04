@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_localizations/flutter_localizations.dart';
 import 'package:provider/provider.dart';
 
@@ -11,6 +12,7 @@ import 'core/storage/secure_store.dart';
 import 'core/subscription/subscription_repository.dart';
 import 'core/vpn/vpn_bridge.dart';
 import 'core/vpn/vpn_controller.dart';
+import 'design/milky_error_sheet.dart';
 import 'design/milky_theme.dart';
 import 'features/import/import_screen.dart';
 import 'features/onboarding/onboarding_screen.dart';
@@ -22,6 +24,12 @@ export 'app/app_info.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Real system bars, edge-to-edge: the app paints its own backdrop under them.
+  SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+  SystemChrome.setSystemUIOverlayStyle(const SystemUiOverlayStyle(
+    statusBarColor: Colors.transparent,
+    systemNavigationBarColor: Colors.transparent,
+  ));
   final settings = await AppSettings.load();
   final bridge = MethodChannelVpnBridge();
   final repo = SubscriptionRepository(store: KeystoreSecureStore(), fetcher: HttpsSubscriptionFetcher());
@@ -113,11 +121,30 @@ class _RootScreenState extends State<RootScreen> {
   void _handleLink(String link) {
     final url = const SubscriptionUrlPolicy().fromDeepLink(link);
     if (!mounted) return;
+    final t = S.of(context);
     if (url == null) {
-      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(S.of(context).urlNotAllowed)));
+      ScaffoldMessenger.maybeOf(context)?.showSnackBar(SnackBar(content: Text(t.urlNotAllowed)));
       return;
     }
-    Navigator.of(context).push(MaterialPageRoute<bool>(builder: (_) => DeepLinkConfirmScreen(url: url)));
+    final repo = context.read<SubscriptionRepository>();
+    // Bottom sheet, not a full-screen dialog: the link only needs one calm decision.
+    showMilkyConfirmSheet(
+      context,
+      title: t.addSubscriptionQuestion,
+      body: t.deepLinkBody,
+      confirmLabel: t.add,
+      cancelLabel: t.cancel,
+      danger: false,
+    ).then((ok) async {
+      if (ok != true || !mounted) return;
+      try {
+        await repo.importFromUrl(url.toString());
+        MilkyHaptics.success();
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t.importOk)));
+      } catch (_) {
+        if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t.error)));
+      }
+    });
   }
 
   @override

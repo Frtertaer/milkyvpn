@@ -61,9 +61,9 @@ void main() {
 
     expect(find.text('Не подключено'), findsOneWidget);
     expect(find.text('Нажмите, чтобы подключиться'), findsOneWidget);
-    // 16 parsed profiles, all 16 executable by this engine.
-    expect(find.textContaining('16 профилей'), findsWidgets);
-    expect(find.textContaining('16 совместимых'), findsWidgets);
+    // Home keeps a small truthful status line; the counts live in the Subscription tab.
+    expect(find.text('Подписка активна · бессрочно'), findsOneWidget);
+    expect(find.text('ВКЛЮЧИТЬ'), findsOneWidget);
     final orb = tester.widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb')));
     expect(orb.enabled, isTrue);
     expect(orb.state, MilkyOrbState.idle);

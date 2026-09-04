@@ -67,6 +67,7 @@ class _HomeScreenState extends State<HomeScreen> {
                 state: orbState,
                 enabled: !_working,
                 progress: vpn.isBusy ? _progress(vpn) : null,
+                caption: _orbCaption(t, orbState),
                 semanticLabel: vpn.isConnected ? t.tapToDisconnect : t.tapToConnect,
                 semanticValue: _statusText(t, vpn, repo),
                 onTap: _toggle,
@@ -85,7 +86,7 @@ class _HomeScreenState extends State<HomeScreen> {
               },
             ),
             const SizedBox(height: MilkySpace.lg),
-            MilkySubscriptionCard(
+            MilkySubscriptionStatus(
               snapshot: repo.snapshot,
               onTap: () => repo.hasSubscription ? widget.onOpenTab(1) : _openImport(),
             ),
@@ -107,6 +108,19 @@ class _HomeScreenState extends State<HomeScreen> {
     final total = vpn.attemptTotal <= 0 ? 1 : vpn.attemptTotal;
     final done = vpn.attemptsMade <= 0 ? 0.35 : vpn.attemptsMade - 0.65;
     return (done / total).clamp(0.08, 0.96);
+  }
+
+  static String? _orbCaption(S t, MilkyOrbState state) {
+    switch (state) {
+      case MilkyOrbState.connected:
+        return t.orbDisconnect;
+      case MilkyOrbState.connecting:
+      case MilkyOrbState.disabled:
+        return null;
+      case MilkyOrbState.idle:
+      case MilkyOrbState.error:
+        return t.orbConnect;
+    }
   }
 
   static MilkyOrbState _orbState(VpnController vpn, SubscriptionRepository repo) {

@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../core/subscription/subscription_repository.dart';
 import '../../core/subscription/subscription_stats.dart';
+import '../../design/milky_buttons.dart';
 import '../../design/milky_colors.dart';
 import '../../design/milky_glass.dart';
 import '../../design/milky_theme.dart';
@@ -158,6 +159,79 @@ class _StatRow extends StatelessWidget {
             Text(value, textAlign: TextAlign.right, style: MilkyType.chip.copyWith(color: muted ? c.textMuted : c.text)),
           ],
         ],
+      ),
+    );
+  }
+}
+
+
+/// One-line subscription status for the home screen: "● Подписка активна · до 1 января 2100".
+///
+/// The full dashboard lives in the Subscription tab; home stays focused on the orb.
+class MilkySubscriptionStatus extends StatelessWidget {
+  const MilkySubscriptionStatus({super.key, required this.snapshot, this.onTap});
+
+  final SubscriptionSnapshot? snapshot;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.milky;
+    final t = S.of(context);
+    final has = snapshot != null;
+    final active = snapshot?.isActive ?? false;
+
+    final String label;
+    final Color dot;
+    if (!has) {
+      label = t.noSubscription;
+      dot = c.textFaint;
+    } else if (active) {
+      label = snapshot!.expiresAt == null ? t.subActiveForever : t.subActiveUntil(t.dateLong(snapshot!.expiresAt!));
+      dot = c.positive;
+    } else {
+      label = '${t.subscription} · ${t.expired}';
+      dot = c.danger;
+    }
+
+    return Semantics(
+      button: true,
+      label: label,
+      child: MilkyPressable(
+        onTap: onTap,
+        scale: 0.98,
+        child: Container(
+          height: 46,
+          padding: const EdgeInsets.symmetric(horizontal: MilkySpace.lg),
+          decoration: BoxDecoration(
+            color: c.isDark ? c.glassTint : Colors.white.withValues(alpha: 0.6),
+            borderRadius: BorderRadius.circular(MilkyRadius.control),
+            border: Border.all(color: c.stroke),
+          ),
+          child: Row(
+            children: [
+              Container(
+                width: 8,
+                height: 8,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: dot,
+                  boxShadow: [BoxShadow(color: dot.withValues(alpha: 0.55), blurRadius: 6)],
+                ),
+              ),
+              const SizedBox(width: MilkySpace.sm),
+              Expanded(
+                child: Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: MilkyType.bodySmall.copyWith(color: c.textMuted, fontWeight: FontWeight.w600),
+                ),
+              ),
+              Icon(Icons.chevron_right_rounded, size: 18, color: c.textFaint),
+            ],
+          ),
+        ),
       ),
     );
   }

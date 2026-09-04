@@ -12,7 +12,13 @@ void main() {
       for (final code in ['proxyerror', 'S', 'ProxyError', 'a', 'zz', 'SomeWeirdClass']) {
         final e = MilkyError.fromCode(code);
         expect(e.kind, MilkyErrorKind.tunnelFailed, reason: code);
-        expect(e.diagnosticsCode, 'VPN_CORE_START_FAILED', reason: code);
+        // The explicit Go wrapper maps to the core token; anything unrecognised becomes
+        // the normalized UNKNOWN bucket. Neither ever shows the raw class name.
+        expect(
+          e.diagnosticsCode,
+          code == 'proxyerror' ? 'VPN_CORE_START_FAILED' : 'UNKNOWN_CONNECTION_ERROR',
+          reason: code,
+        );
         for (final s in [ru, en]) {
           final title = s.errorTitle(e.kind);
           final body = s.errorBody(e.kind);
@@ -29,8 +35,11 @@ void main() {
     });
 
     test('known codes map onto stable diagnostics tokens', () {
-      expect(MilkyError.fromCode('vpn_permission_denied').diagnosticsCode, 'VPN_PERMISSION_DENIED');
-      expect(MilkyError.fromCode('tun_establish_failed').diagnosticsCode, 'TUN_ESTABLISH_FAILED');
+      expect(MilkyError.fromCode('vpn_permission_denied').diagnosticsCode, 'PERMISSION_DENIED');
+      expect(MilkyError.fromCode('tun_establish_failed').diagnosticsCode, 'TUN_FAILED');
+      expect(MilkyError.fromCode('core_start_failed').diagnosticsCode, 'VPN_CORE_START_FAILED');
+      expect(MilkyError.fromCode('network_unreachable').diagnosticsCode, 'NETWORK_UNAVAILABLE');
+      expect(MilkyError.fromCode('all_attempts_failed').diagnosticsCode, 'SERVER_UNREACHABLE');
       expect(MilkyError.fromCode('timeout').kind, MilkyErrorKind.serverUnreachable);
       expect(MilkyError.fromCode('network_unreachable').kind, MilkyErrorKind.noInternet);
       expect(MilkyError.fromCode('no_compatible_profiles').kind, MilkyErrorKind.noServers);

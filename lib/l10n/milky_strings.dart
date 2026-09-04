@@ -79,6 +79,8 @@ class S {
   String get autoHint => t('Лучший сервер', 'Best server');
   String get tapToConnect => t('Нажмите, чтобы подключиться', 'Tap to connect');
   String get tapToDisconnect => t('Нажмите, чтобы отключить', 'Tap to disconnect');
+  String get orbConnect => t('ВКЛЮЧИТЬ', 'CONNECT');
+  String get orbDisconnect => t('ОТКЛЮЧИТЬ', 'DISCONNECT');
   String get needSubscription => t('Сначала добавьте подписку', 'Add a subscription first');
   String locationLabel(String name) => name;
 
@@ -140,6 +142,10 @@ class S {
   String get remove => t('Удалить', 'Remove');
   String get cancel => t('Отмена', 'Cancel');
   String get noSubscription => t('Подписка не добавлена', 'No subscription');
+  String get addSubscriptionQuestion => t('Добавить подписку MilkyVPN?', 'Add MilkyVPN subscription?');
+  String get error => t('Ошибка', 'Error');
+  String subActiveUntil(String date) => t('Подписка активна · до $date', 'Subscription active · until $date');
+  String get subActiveForever => t('Подписка активна · бессрочно', 'Subscription active · no expiry');
   String get subscriptionHint => t('Подписка хранится только на этом устройстве.', 'The subscription is stored on this device only.');
   String get advanced => t('Дополнительно', 'Advanced');
   String get copyLink => t('Скопировать ссылку', 'Copy link');

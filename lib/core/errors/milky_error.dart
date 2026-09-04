@@ -150,7 +150,7 @@ class MilkyError {
     // name, a platform exception code. Never surface it — bucket it as a core failure.
     return MilkyError(
       kind: MilkyErrorKind.tunnelFailed,
-      diagnosticsCode: 'VPN_CORE_START_FAILED',
+      diagnosticsCode: 'UNKNOWN_CONNECTION_ERROR',
       category: MilkyFailureCategory.coreFailure,
       rawCode: raw,
     );
@@ -161,18 +161,18 @@ class MilkyError {
 
   static const Map<String, (MilkyErrorKind, String, MilkyFailureCategory)> _table = {
     // --- permission -------------------------------------------------------
-    'vpn_permission_denied': (MilkyErrorKind.permissionDenied, 'VPN_PERMISSION_DENIED', MilkyFailureCategory.permissionFailure),
-    'vpn_permission_missing': (MilkyErrorKind.permissionDenied, 'VPN_PERMISSION_MISSING', MilkyFailureCategory.permissionFailure),
+    'vpn_permission_denied': (MilkyErrorKind.permissionDenied, 'PERMISSION_DENIED', MilkyFailureCategory.permissionFailure),
+    'vpn_permission_missing': (MilkyErrorKind.permissionDenied, 'PERMISSION_DENIED', MilkyFailureCategory.permissionFailure),
     'permission_denied': (MilkyErrorKind.permissionDenied, 'PERMISSION_DENIED', MilkyFailureCategory.permissionFailure),
-    'permission': (MilkyErrorKind.permissionDenied, 'VPN_PERMISSION_DENIED', MilkyFailureCategory.permissionFailure),
-    'revoked_by_system': (MilkyErrorKind.permissionDenied, 'VPN_REVOKED_BY_SYSTEM', MilkyFailureCategory.permissionFailure),
+    'permission': (MilkyErrorKind.permissionDenied, 'PERMISSION_DENIED', MilkyFailureCategory.permissionFailure),
+    'revoked_by_system': (MilkyErrorKind.permissionDenied, 'PERMISSION_DENIED', MilkyFailureCategory.permissionFailure),
 
     // --- no usable server -------------------------------------------------
-    'no_compatible_profiles': (MilkyErrorKind.noServers, 'NO_COMPATIBLE_PROFILES', MilkyFailureCategory.configFailure),
-    'no_profile': (MilkyErrorKind.noServers, 'NO_ACTIVE_PROFILE', MilkyFailureCategory.configFailure),
-    'unsupported_profile': (MilkyErrorKind.noServers, 'PROFILE_UNSUPPORTED', MilkyFailureCategory.configFailure),
-    'unsupported': (MilkyErrorKind.noServers, 'PROFILE_UNSUPPORTED', MilkyFailureCategory.configFailure),
-    'unsupported_platform': (MilkyErrorKind.noServers, 'PLATFORM_UNSUPPORTED', MilkyFailureCategory.configFailure),
+    'no_compatible_profiles': (MilkyErrorKind.noServers, 'CONFIG_INVALID', MilkyFailureCategory.configFailure),
+    'no_profile': (MilkyErrorKind.noServers, 'CONFIG_INVALID', MilkyFailureCategory.configFailure),
+    'unsupported_profile': (MilkyErrorKind.noServers, 'CONFIG_INVALID', MilkyFailureCategory.configFailure),
+    'unsupported': (MilkyErrorKind.noServers, 'CONFIG_INVALID', MilkyFailureCategory.configFailure),
+    'unsupported_platform': (MilkyErrorKind.noServers, 'CONFIG_INVALID', MilkyFailureCategory.configFailure),
 
     // --- subscription -----------------------------------------------------
     'no_profiles': (MilkyErrorKind.subscriptionProblem, 'SUBSCRIPTION_EMPTY', MilkyFailureCategory.subscriptionFailure),
@@ -183,27 +183,27 @@ class MilkyError {
     'no_subscription': (MilkyErrorKind.subscriptionProblem, 'SUBSCRIPTION_MISSING', MilkyFailureCategory.subscriptionFailure),
 
     // --- network ----------------------------------------------------------
-    'timeout': (MilkyErrorKind.serverUnreachable, 'SERVER_TIMEOUT', MilkyFailureCategory.networkFailure),
-    'connection_refused': (MilkyErrorKind.serverUnreachable, 'SERVER_REFUSED', MilkyFailureCategory.networkFailure),
+    'timeout': (MilkyErrorKind.serverUnreachable, 'SERVER_UNREACHABLE', MilkyFailureCategory.networkFailure),
+    'connection_refused': (MilkyErrorKind.serverUnreachable, 'SERVER_UNREACHABLE', MilkyFailureCategory.networkFailure),
     'network_unreachable': (MilkyErrorKind.noInternet, 'NETWORK_UNAVAILABLE', MilkyFailureCategory.networkFailure),
-    'network_error': (MilkyErrorKind.noInternet, 'NETWORK_ERROR', MilkyFailureCategory.networkFailure),
-    'dns_failure': (MilkyErrorKind.noInternet, 'DNS_FAILURE', MilkyFailureCategory.networkFailure),
-    'offline': (MilkyErrorKind.noInternet, 'OFFLINE', MilkyFailureCategory.networkFailure),
+    'network_error': (MilkyErrorKind.noInternet, 'NETWORK_UNAVAILABLE', MilkyFailureCategory.networkFailure),
+    'dns_failure': (MilkyErrorKind.noInternet, 'NETWORK_UNAVAILABLE', MilkyFailureCategory.networkFailure),
+    'offline': (MilkyErrorKind.noInternet, 'NETWORK_UNAVAILABLE', MilkyFailureCategory.networkFailure),
 
     // --- tunnel / core ----------------------------------------------------
-    'tls_handshake': (MilkyErrorKind.serverUnreachable, 'TLS_HANDSHAKE_FAILED', MilkyFailureCategory.coreFailure),
-    'reality_handshake': (MilkyErrorKind.serverUnreachable, 'TLS_HANDSHAKE_FAILED', MilkyFailureCategory.coreFailure),
-    'tun_establish_failed': (MilkyErrorKind.tunnelFailed, 'TUN_ESTABLISH_FAILED', MilkyFailureCategory.realDeviceFailure),
-    'tunnel_unverified': (MilkyErrorKind.tunnelFailed, 'TUNNEL_NOT_VERIFIED', MilkyFailureCategory.realDeviceFailure),
+    'tls_handshake': (MilkyErrorKind.serverUnreachable, 'SERVER_UNREACHABLE', MilkyFailureCategory.coreFailure),
+    'reality_handshake': (MilkyErrorKind.serverUnreachable, 'SERVER_UNREACHABLE', MilkyFailureCategory.coreFailure),
+    'tun_establish_failed': (MilkyErrorKind.tunnelFailed, 'TUN_FAILED', MilkyFailureCategory.realDeviceFailure),
+    'tunnel_unverified': (MilkyErrorKind.tunnelFailed, 'TUN_FAILED', MilkyFailureCategory.realDeviceFailure),
     'core_start_failed': (MilkyErrorKind.tunnelFailed, 'VPN_CORE_START_FAILED', MilkyFailureCategory.coreFailure),
     'core_failure': (MilkyErrorKind.tunnelFailed, 'VPN_CORE_START_FAILED', MilkyFailureCategory.coreFailure),
-    'config_invalid': (MilkyErrorKind.tunnelFailed, 'VPN_CONFIG_INVALID', MilkyFailureCategory.configFailure),
+    'config_invalid': (MilkyErrorKind.tunnelFailed, 'CONFIG_INVALID', MilkyFailureCategory.configFailure),
     'proxyerror': (MilkyErrorKind.tunnelFailed, 'VPN_CORE_START_FAILED', MilkyFailureCategory.coreFailure),
-    'bridge_error': (MilkyErrorKind.tunnelFailed, 'BRIDGE_ERROR', MilkyFailureCategory.coreFailure),
-    'bridge_failure': (MilkyErrorKind.tunnelFailed, 'BRIDGE_ERROR', MilkyFailureCategory.coreFailure),
-    'connect_failed': (MilkyErrorKind.serverUnreachable, 'SERVER_CONNECT_FAILED', MilkyFailureCategory.coreFailure),
-    'all_attempts_failed': (MilkyErrorKind.serverUnreachable, 'ALL_SERVERS_FAILED', MilkyFailureCategory.coreFailure),
-    'busy': (MilkyErrorKind.unknown, 'BUSY', MilkyFailureCategory.none),
+    'bridge_error': (MilkyErrorKind.tunnelFailed, 'VPN_CORE_START_FAILED', MilkyFailureCategory.coreFailure),
+    'bridge_failure': (MilkyErrorKind.tunnelFailed, 'VPN_CORE_START_FAILED', MilkyFailureCategory.coreFailure),
+    'connect_failed': (MilkyErrorKind.serverUnreachable, 'SERVER_UNREACHABLE', MilkyFailureCategory.coreFailure),
+    'all_attempts_failed': (MilkyErrorKind.serverUnreachable, 'SERVER_UNREACHABLE', MilkyFailureCategory.coreFailure),
+    'busy': (MilkyErrorKind.unknown, 'UNKNOWN_CONNECTION_ERROR', MilkyFailureCategory.none),
 
     // --- user ------------------------------------------------------------
     'cancelled': (MilkyErrorKind.cancelled, 'CANCELLED_BY_USER', MilkyFailureCategory.none),

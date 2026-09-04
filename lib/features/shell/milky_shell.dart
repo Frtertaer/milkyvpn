@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/vpn/vpn_controller.dart';
@@ -30,11 +31,20 @@ class _MilkyShellState extends State<MilkyShell> {
     final t = S.of(context);
     final vpn = context.watch<VpnController>();
 
-    return Scaffold(
+    final dark = Theme.of(context).brightness == Brightness.dark;
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+        statusBarBrightness: dark ? Brightness.dark : Brightness.light,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+      ),
+      child: Scaffold(
       backgroundColor: Colors.transparent,
       extendBody: true,
       body: MilkyBackdrop(
-        intensity: vpn.isConnected ? 0.95 : 0.6,
+        intensity: vpn.isBusy ? 0.8 : (vpn.isConnected ? 0.95 : 0.6),
         glowAnchor: const Alignment(0, -0.28),
         child: SafeArea(
           bottom: false,
@@ -53,6 +63,7 @@ class _MilkyShellState extends State<MilkyShell> {
         onChanged: _go,
         labels: [t.home, t.subscription, t.settings],
         icons: const [Icons.space_dashboard_rounded, Icons.card_membership_rounded, Icons.tune_rounded],
+      ),
       ),
     );
   }
