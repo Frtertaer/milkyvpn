@@ -2,6 +2,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../errors/milky_error.dart';
 import '../subscription/vpn_profile.dart';
 import 'vpn_bridge.dart';
 
@@ -69,6 +70,7 @@ class VpnController extends ChangeNotifier {
   bool _autoConnecting = false;
   bool _cancelRequested = false;
   String? _lastErrorClass;
+  VpnProfile? _activeProfile;
   int _attemptsMade = 0;
   int _compatibleCount = 0;
   Completer<VpnSnapshot>? _waiter;
@@ -78,9 +80,27 @@ class VpnController extends ChangeNotifier {
   bool get isBusy => state == VpnState.connecting || state == VpnState.disconnecting;
   bool get isConnected => _native.state == VpnState.connected;
   String? get lastErrorClass => _lastErrorClass ?? _native.errorCode;
+
+  /// The last failure as a user-safe, mapped error (never a raw class name).
+  MilkyError? get lastError {
+    final code = lastErrorClass;
+    if (code == null) return null;
+    return MilkyError.fromCode(code);
+  }
+
   int get attemptsMade => _attemptsMade;
+
+  /// Total number of profiles one connect run is allowed to try.
+  int get attemptTotal => maxAttempts;
   int get compatibleCount => _compatibleCount;
   String? get activeRemark => _native.profileRemark;
+
+  /// The profile that produced the verified tunnel. Used to show a country name instead of
+  /// a raw remark (which can contain protocol words we never surface).
+  VpnProfile? get activeProfile => _activeProfile;
+
+  /// Public, user-visible location of the connected server.
+  ServerLocation? get activeLocation => _activeProfile?.location;
   DateTime? get connectedSince => _native.connectedSince;
 
   Future<void> init() async {
@@ -92,6 +112,7 @@ class VpnController extends ChangeNotifier {
 
   void _onNative(VpnSnapshot s) {
     _native = s;
+    if (s.state != VpnState.connected && s.state != VpnState.connecting) _activeProfile = null;
     final w = _waiter;
     if (w != null && !w.isCompleted && (s.state == VpnState.connected || s.state == VpnState.error || s.state == VpnState.disconnected)) {
       w.complete(s);
@@ -161,7 +182,10 @@ class VpnController extends ChangeNotifier {
     try {
       await _bridge.connect(p);
       final res = await waiter.future.timeout(attemptTimeout, onTimeout: () => const VpnSnapshot(state: VpnState.error, errorCode: 'timeout'));
-      if (res.state == VpnState.connected) return true;
+      if (res.state == VpnState.connected) {
+        _activeProfile = p;
+        return true;
+      }
       _lastErrorClass = res.errorCode ?? 'connect_failed';
       await _bridge.disconnect();
       return false;
@@ -178,6 +202,7 @@ class VpnController extends ChangeNotifier {
 
   Future<void> disconnect() async {
     _cancelRequested = true;
+    _activeProfile = null;
     try {
       await _bridge.disconnect();
     } catch (e) {

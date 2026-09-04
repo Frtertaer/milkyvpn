@@ -78,13 +78,24 @@ class SubscriptionSnapshot {
     required this.updatedAt,
     required this.totalEntries,
     required this.malformedEntries,
+    this.duplicateEntries = 0,
     this.expiresAt,
   });
 
   final List<VpnProfile> profiles;
   final DateTime updatedAt;
+
+  /// Non-empty, non-comment lines in the payload.
   final int totalEntries;
+
+  /// Lines that could not be parsed at all.
   final int malformedEntries;
+
+  /// Lines that parsed but repeated an endpoint already present in the list.
+  ///
+  /// `totalEntries = profiles.length + malformedEntries + duplicateEntries`, which is what
+  /// makes the parsed count explainable instead of mysteriously smaller than the file.
+  final int duplicateEntries;
   final DateTime? expiresAt;
 
   bool get isActive => profiles.isNotEmpty && (expiresAt == null || expiresAt!.isAfter(DateTime.now().toUtc()));
@@ -122,6 +133,10 @@ class SubscriptionRepository extends ChangeNotifier {
 
   /// Redacted for UI. Never exposes the token.
   String? get redactedUrl => _url == null ? null : SubscriptionUrlPolicy.redact(_url!);
+
+  /// Full subscription URL, exposed ONLY for the explicit "copy link" advanced action.
+  /// Never render this on normal screens.
+  String? get urlForCopy => _url?.toString();
 
   Future<void> load() async {
     try {
@@ -189,6 +204,7 @@ class SubscriptionRepository extends ChangeNotifier {
       updatedAt: DateTime.now().toUtc(),
       totalEntries: result.totalLines,
       malformedEntries: result.malformedLines,
+      duplicateEntries: result.duplicateEntries,
       expiresAt: result.expiresAt,
     );
   }
@@ -199,6 +215,7 @@ class SubscriptionRepository extends ChangeNotifier {
         'updatedAt': s.updatedAt.toIso8601String(),
         'total': s.totalEntries,
         'malformed': s.malformedEntries,
+        'duplicates': s.duplicateEntries,
         'expiresAt': s.expiresAt?.toIso8601String(),
         'profiles': s.profiles.map(_profileToJson).toList(),
       });
@@ -209,6 +226,7 @@ class SubscriptionRepository extends ChangeNotifier {
       updatedAt: DateTime.tryParse(m['updatedAt'] as String? ?? '') ?? DateTime.now().toUtc(),
       totalEntries: (m['total'] as num?)?.toInt() ?? 0,
       malformedEntries: (m['malformed'] as num?)?.toInt() ?? 0,
+      duplicateEntries: (m['duplicates'] as num?)?.toInt() ?? 0,
       expiresAt: m['expiresAt'] == null ? null : DateTime.tryParse(m['expiresAt'] as String),
       profiles: (m['profiles'] as List<dynamic>? ?? const [])
           .whereType<Map<String, dynamic>>()

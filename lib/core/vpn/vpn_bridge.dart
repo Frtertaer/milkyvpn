@@ -92,9 +92,27 @@ class MethodChannelVpnBridge implements VpnBridge {
       final r = await _m.invokeMethod<T>(method, args);
       return r as T;
     } on PlatformException catch (e) {
-      throw VpnBridgeException(e.code, e.message);
+      throw VpnBridgeException(normalizePlatformCode(e.code, e.message), e.message);
     } on MissingPluginException {
       throw VpnBridgeException('unsupported_platform');
+    }
+  }
+
+  /// The native side reports the generic channel code `error` with the real reason in
+  /// `message` (see `MainActivity`). Flatten that so the UI always gets a stable code.
+  static String normalizePlatformCode(String code, String? message) {
+    switch (code) {
+      case 'permission':
+        return 'vpn_permission_denied';
+      case 'unsupported':
+        return 'unsupported_profile';
+      case 'busy':
+        return 'busy';
+      case 'error':
+        final m = message?.trim() ?? '';
+        return m.isEmpty ? 'bridge_error' : m;
+      default:
+        return code;
     }
   }
 

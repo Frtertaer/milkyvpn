@@ -10,6 +10,7 @@ class SubscriptionParseResult {
     required this.profiles,
     required this.totalLines,
     required this.malformedLines,
+    this.duplicateEntries = 0,
     this.expiresAt,
     this.headersUsed = false,
   });
@@ -17,6 +18,11 @@ class SubscriptionParseResult {
   final List<VpnProfile> profiles;
   final int totalLines;
   final int malformedLines;
+
+  /// Lines that parsed fine but collided with an already seen endpoint identity.
+  /// Counted explicitly — a subscription can legitimately list the same server twice and
+  /// the app must be able to explain why the visible number is smaller than the line count.
+  final int duplicateEntries;
 
   /// Optional expiry parsed from `subscription-userinfo` (expire=unix) if the server sends it.
   final DateTime? expiresAt;
@@ -45,6 +51,7 @@ class SubscriptionParser {
 
     final profiles = <VpnProfile>[];
     var malformed = 0;
+    var duplicates = 0;
     final seen = <String>{};
     for (final line in lines) {
       final p = parseLine(line);
@@ -52,7 +59,11 @@ class SubscriptionParser {
         malformed++;
         continue;
       }
-      if (seen.add(p.id)) profiles.add(p);
+      if (seen.add(p.id)) {
+        profiles.add(p);
+      } else {
+        duplicates++;
+      }
     }
 
     DateTime? expires;
@@ -78,6 +89,7 @@ class SubscriptionParser {
       profiles: profiles,
       totalLines: lines.length,
       malformedLines: malformed,
+      duplicateEntries: duplicates,
       expiresAt: expires,
       headersUsed: headersUsed,
     );
