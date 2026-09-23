@@ -51,6 +51,12 @@ New in v2:
   session is bound to the exact outer TLS session.
 - **Multiplexing**: record header gains a 32-bit stream id; OPEN/DATA/CLOSE/RST
   carry many TCP streams over one session. Needed for a real client core.
+  Scheduling: a two-lane emitter sends control records (OPEN/ACK/CLOSE/RST/
+  PING/PONG) ahead of queued DATA so stream control never starves behind bulk
+  transfer; DATA writers block on a bounded lane for backpressure. On receive,
+  each stream owns a bounded queue drained by its own pump — a consumer that
+  stalls fills its queue and is reset (peer gets RST) instead of wedging the
+  session demux.
 - **Variable first-flight padding**: client flight length is randomized so no
   fixed-size signature exists.
 - **Record types**: OPEN, DATA, CLOSE, RST, PING, PONG, MIGRATE(reserved),

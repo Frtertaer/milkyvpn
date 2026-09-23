@@ -27,13 +27,20 @@ type Session struct {
 	sendAEAD cipher.AEAD
 	recvAEAD cipher.AEAD
 
-	mu      sync.Mutex // serializes record writes
 	sendSeq uint64
 	recvSeq uint64
 
 	rw io.ReadWriteCloser
 
-	streams   map[uint32]*stream
+	// Outbound scheduler: control records (OPEN/ACK/CLOSE/RST/PING/PONG)
+	// go out ahead of queued DATA so stream control never starves behind
+	// bulk transfer. DATA senders block when dataCh is full — that is the
+	// per-stream write backpressure.
+	ctrlCh chan outRec
+	dataCh chan outRec
+
+	smu     sync.RWMutex // guards streams
+	streams map[uint32]*stream
 	acceptCh  chan *stream
 	nextID    uint32
 	writeErr  error
@@ -41,6 +48,12 @@ type Session struct {
 	closeOnce sync.Once
 	readDone  chan struct{}
 	pongReg   chan []byte
+}
+
+type outRec struct {
+	t  byte
+	id uint32
+	p  []byte
 }
 
 // Transcript returns the handshake transcript (for PSK proofs).
@@ -52,6 +65,8 @@ func (s *Session) Attach(rw io.ReadWriteCloser) {
 	s.acceptCh = make(chan *stream, 64)
 	s.closed = make(chan struct{})
 	s.readDone = make(chan struct{})
+	s.ctrlCh = make(chan outRec, 512)
+	s.dataCh = make(chan outRec, 1024)
 	if s.isClient {
 		s.nextID = 1 // clients use odd stream ids
 	} else {
@@ -59,6 +74,7 @@ func (s *Session) Attach(rw io.ReadWriteCloser) {
 	}
 	s.initAEAD()
 	go s.readLoop()
+	go s.writeLoop()
 }
 
 func (s *Session) initAEAD() {
@@ -99,30 +115,82 @@ func (s *Session) nonce(seq uint64) []byte {
 	return n
 }
 
-// sendRecord encrypts and writes one record. Serialized across streams.
+// sendRecord queues one record for emission. Control records go to the
+// priority lane; DATA senders block on the bounded data lane (write
+// backpressure). Actual write failures surface via s.fail.
 func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if s.writeErr != nil {
-		return s.writeErr
-	}
 	if len(payload) > MaxPayload {
 		return ErrFraming
 	}
-	padded, err := Pad(payload)
+	s.smu.RLock()
+	err := s.writeErr
+	s.smu.RUnlock()
 	if err != nil {
 		return err
 	}
+	rec := outRec{t: t, id: streamID, p: payload}
+	if t == MsgData {
+		select {
+		case s.dataCh <- rec:
+			return nil
+		case <-s.closed:
+			return ErrClosed
+		}
+	}
+	select {
+	case s.ctrlCh <- rec:
+		return nil
+	case <-s.closed:
+		return ErrClosed
+	}
+}
+
+// writeLoop is the single serialized emitter: drains the control lane first,
+// then DATA, so opens/acks/rsts/pongs never queue behind bulk transfer.
+func (s *Session) writeLoop() {
+	for {
+		select {
+		case r := <-s.ctrlCh:
+			if !s.emit(r) {
+				return
+			}
+			continue
+		default:
+		}
+		select {
+		case r := <-s.ctrlCh:
+			if !s.emit(r) {
+				return
+			}
+		case r := <-s.dataCh:
+			if !s.emit(r) {
+				return
+			}
+		case <-s.closed:
+			return
+		}
+	}
+}
+
+// emit encrypts and writes one record. Runs only on the writer goroutine.
+func (s *Session) emit(r outRec) bool {
+	padded, err := Pad(r.p)
+	if err != nil {
+		return true // undeliverable payload: drop, keep session
+	}
 	seq := s.sendSeq
-	header := encodeHeader(t, seq, streamID, len(padded)+aeadTagSize)
+	header := encodeHeader(r.t, seq, r.id, len(padded)+aeadTagSize)
 	ct := s.sendAEAD.Seal(nil, s.nonce(seq), padded, header)
 	frame := append(header, ct...)
 	if _, err := s.rw.Write(frame); err != nil {
+		s.smu.Lock()
 		s.writeErr = err
-		return err
+		s.smu.Unlock()
+		s.fail(err)
+		return false
 	}
 	s.sendSeq++
-	return nil
+	return true
 }
 
 // readRecord reads and authenticates the next record.
@@ -173,32 +241,43 @@ func (s *Session) readLoop() {
 	}
 }
 
+func (s *Session) getStream(id uint32) (*stream, bool) {
+	s.smu.RLock()
+	st, ok := s.streams[id]
+	s.smu.RUnlock()
+	return st, ok
+}
+
 func (s *Session) dispatch(rec *Record) {
 	switch rec.Type {
 	case MsgOpen:
 		st := newStream(s, rec.StreamID)
 		st.openPayload = rec.Payload
+		s.smu.Lock()
 		s.streams[rec.StreamID] = st
+		s.smu.Unlock()
 		select {
 		case s.acceptCh <- st:
 		default:
 			_ = s.sendRecord(MsgRst, rec.StreamID, []byte("backpressure"))
+			s.smu.Lock()
 			delete(s.streams, rec.StreamID)
+			s.smu.Unlock()
 		}
 	case MsgOpenAck:
-		if st, ok := s.streams[rec.StreamID]; ok {
+		if st, ok := s.getStream(rec.StreamID); ok {
 			st.setDialResult(rec.Payload)
 		}
 	case MsgData:
-		if st, ok := s.streams[rec.StreamID]; ok {
+		if st, ok := s.getStream(rec.StreamID); ok {
 			st.feed(rec.Payload)
 		}
 	case MsgClose:
-		if st, ok := s.streams[rec.StreamID]; ok {
+		if st, ok := s.getStream(rec.StreamID); ok {
 			st.remoteClose()
 		}
 	case MsgRst:
-		if st, ok := s.streams[rec.StreamID]; ok {
+		if st, ok := s.getStream(rec.StreamID); ok {
 			st.reset()
 		}
 	case MsgPing:
@@ -215,11 +294,13 @@ func (s *Session) dispatch(rec *Record) {
 }
 
 func (s *Session) fail(err error) {
+	s.smu.Lock()
 	s.writeErr = err
-	s.Close()
 	for _, st := range s.streams {
 		st.fail(err)
 	}
+	s.smu.Unlock()
+	s.Close()
 }
 
 // ---------------------------------------------------------------------------
@@ -286,15 +367,20 @@ func ParseOpenTarget(b []byte) (network, host string, port uint16, err error) {
 
 // Open opens a stream to target on the server and returns it after OPEN_ACK.
 func (s *Session) Open(host string, port uint16, timeout time.Duration) (*Stream, error) {
-	s.mu.Lock()
+	s.smu.Lock()
 	id := s.nextID
 	s.nextID += 2
-	s.mu.Unlock()
+	s.smu.Unlock()
 
 	st := newStream(s, id)
+	s.smu.Lock()
 	s.streams[id] = st
+	s.smu.Unlock()
 	if err := s.sendRecord(MsgOpen, id, OpenTarget("tcp", host, port)); err != nil {
+		s.smu.Lock()
 		delete(s.streams, id)
+		s.smu.Unlock()
+		st.remoteClose()
 		return nil, err
 	}
 	if !st.waitDial(timeout) {
@@ -327,9 +413,17 @@ var errStreamClosed = fmt.Errorf("kal2: stream closed")
 
 // --- stream internals --------------------------------------------------------
 
+// streamQueueMax bounds records buffered while the consumer stalls; beyond
+// it the stream is reset (its peer gets RST) instead of stalling the demux.
+const streamQueueMax = 512
+
 type stream struct {
 	s  *Session
 	id uint32
+
+	mu   sync.Mutex // guards rawQ
+	rawQ [][]byte   // records waiting for the pump; feed() never blocks
+	kick chan struct{}
 
 	recvCh      chan []byte
 	dialCh      chan []byte
@@ -341,19 +435,59 @@ type stream struct {
 }
 
 func newStream(s *Session, id uint32) *stream {
-	return &stream{
+	st := &stream{
 		s:        s,
 		id:       id,
+		kick:     make(chan struct{}, 1),
 		recvCh:   make(chan []byte, 256),
 		dialCh:   make(chan []byte, 1),
 		closedCh: make(chan struct{}),
 	}
+	go st.pump()
+	return st
 }
 
+// feed appends to the stream's raw queue. Called on the demux goroutine, so
+// it must never block: a full queue resets this stream, not the session.
 func (st *stream) feed(b []byte) {
+	st.mu.Lock()
+	if len(st.rawQ) >= streamQueueMax {
+		st.mu.Unlock()
+		st.remoteClose()
+		_ = st.s.sendRecord(MsgRst, st.id, []byte("buffer full"))
+		return
+	}
+	st.rawQ = append(st.rawQ, b)
+	st.mu.Unlock()
 	select {
-	case st.recvCh <- b:
-	case <-st.closedCh:
+	case st.kick <- struct{}{}:
+	default:
+	}
+}
+
+// pump moves rawQ into recvCh in order. It may block on recvCh — that only
+// backpressures this stream, not the demux.
+func (st *stream) pump() {
+	for {
+		st.mu.Lock()
+		if len(st.rawQ) > 0 {
+			b := st.rawQ[0]
+			st.rawQ[0] = nil
+			st.rawQ = st.rawQ[1:]
+			st.mu.Unlock()
+			select {
+			case st.recvCh <- b:
+				continue
+			case <-st.closedCh:
+				return
+			}
+		}
+		st.mu.Unlock()
+		select {
+		case <-st.kick:
+		case <-st.closedCh:
+			return
+		}
 	}
 }
 
@@ -444,7 +578,9 @@ func (st *Stream) Write(b []byte) (int, error) {
 
 // Close half-closes the stream.
 func (st *Stream) Close() error {
+	st.s.smu.Lock()
 	delete(st.s.streams, st.id)
+	st.s.smu.Unlock()
 	return st.close()
 }
 
