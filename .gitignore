@@ -22,3 +22,6 @@ key.properties
 
 # Logs
 *.log
+
+# Go build artifacts
+milky-core/dist/

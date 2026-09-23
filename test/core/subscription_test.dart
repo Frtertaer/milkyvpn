@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -98,8 +99,120 @@ void main() {
     });
 
     test('unsupported schemes counted but marked other', () {
-      final p = parser.parseLine('vmess://abc@h.example:443#x');
-      expect(p?.kind, ProfileKind.other);
+      for (final line in [
+        'ssr://abc@h.example:443#x',
+        'tuic://abc@h.example:443#x',
+        'wireguard://abc@h.example:443#x',
+        'socks://abc@h.example:443#x',
+      ]) {
+        final p = parser.parseLine(line);
+        expect(p?.kind, ProfileKind.other, reason: line);
+      }
+    });
+
+    test('vmess b64-json share link parses fields', () {
+      final payload = base64.encode(utf8.encode(jsonEncode({
+        'v': '2',
+        'ps': 'US Vmess',
+        'add': 'vm1.example.invalid',
+        'port': '443',
+        'id': '00000001-0000-4000-8000-000000000001',
+        'aid': '0',
+        'scy': 'auto',
+        'net': 'ws',
+        'type': 'none',
+        'host': 'cdn.example.invalid',
+        'path': '/vm',
+        'tls': 'tls',
+        'sni': 'cdn.example.invalid',
+      })));
+      final p = parser.parseLine('vmess://$payload')!;
+      expect(p.protocol, 'vmess');
+      expect(p.kind, ProfileKind.vmess);
+      expect(p.address, 'vm1.example.invalid');
+      expect(p.port, 443);
+      expect(p.secret, '00000001-0000-4000-8000-000000000001');
+      expect(p.network, 'ws');
+      expect(p.security, 'tls');
+      expect(p.sni, 'cdn.example.invalid');
+      expect(p.host, 'cdn.example.invalid');
+      expect(p.path, '/vm');
+      expect(p.remark, 'US Vmess');
+      expect(p.isStaticCompatible, isTrue);
+    });
+
+    test('trojan share link parses incl. grpc serviceName', () {
+      final p = parser.parseLine(
+        'trojan://pw%20abc@us1.example.invalid:443?sni=tr.example.invalid&type=grpc&serviceName=trojan-grpc#US%20Trojan',
+      )!;
+      expect(p.protocol, 'trojan');
+      expect(p.kind, ProfileKind.trojan);
+      expect(p.secret, 'pw abc');
+      expect(p.network, 'grpc');
+      expect(p.path, 'trojan-grpc');
+      expect(p.sni, 'tr.example.invalid');
+      expect(p.isStaticCompatible, isTrue);
+    });
+
+    test('shadowsocks SIP002 + legacy forms parse', () {
+      // SIP002: base64 userinfo
+      final b64user = base64.encode(utf8.encode('aes-256-gcm:pw-abc'));
+      final p1 = parser.parseLine('ss://$b64user@us2.example.invalid:8388#US%20SS')!;
+      expect(p1.protocol, 'ss');
+      expect(p1.kind, ProfileKind.shadowsocks);
+      expect(p1.cipher, 'aes-256-gcm');
+      expect(p1.secret, 'pw-abc');
+      expect(p1.address, 'us2.example.invalid');
+      expect(p1.port, 8388);
+      expect(p1.isStaticCompatible, isTrue);
+      // legacy: whole payload base64
+      final whole = base64.encode(
+        utf8.encode('chacha20-ietf-poly1305:pw2@us3.example.invalid:8389'),
+      );
+      final p2 = parser.parseLine('ss://$whole#x')!;
+      expect(p2.cipher, 'chacha20-ietf-poly1305');
+      expect(p2.address, 'us3.example.invalid');
+      expect(p2.port, 8389);
+      // plaintext userinfo
+      final p3 = parser.parseLine(
+        'ss://aes-128-gcm:pw3@us4.example.invalid:8390#x',
+      )!;
+      expect(p3.cipher, 'aes-128-gcm');
+      // plugin-bearing link parses but is not executable
+      final p4 = parser.parseLine(
+        'ss://$b64user@us5.example.invalid:8388?plugin=v2ray-plugin#x',
+      )!;
+      expect(p4.plugin, 'v2ray-plugin');
+      expect(p4.isStaticCompatible, isFalse);
+      // unknown cipher -> not compatible
+      final p5 = parser.parseLine(
+        'ss://aes-256-cfb:pw@us6.example.invalid:8388#x',
+      )!;
+      expect(p5.isStaticCompatible, isFalse);
+    });
+
+    test('kal2 share link parses carrier and credentials', () {
+      final p = parser.parseLine(
+        'kal2://4cce3cb266dce5f9330e906698fc503ea55f891e5ca84279086e4ae664430a79@23.133.88.167:443'
+        '?sni=kal.mergescribe.dev&pub=9f0dfb763d6fbdb2fa0f0b1f2fb6fd2f3d8e9ca681c523241c63434d41c76c8f'
+        '&carrier=drift&path=/api/v2/stream#US%20KAL2',
+      )!;
+      expect(p.protocol, 'kal2');
+      expect(p.kind, ProfileKind.kal2);
+      expect(p.network, 'drift');
+      expect(p.sni, 'kal.mergescribe.dev');
+      expect(
+        p.publicKey,
+        '9f0dfb763d6fbdb2fa0f0b1f2fb6fd2f3d8e9ca681c523241c63434d41c76c8f',
+      );
+      expect(p.path, '/api/v2/stream');
+      // Native kal2 engine is not wired yet: parsed but not executable.
+      expect(p.isStaticCompatible, isFalse);
+      // bad carrier rejected
+      expect(
+        parser.parseLine('kal2://psk@h.example:443?carrier=bogus'),
+        isNull,
+      );
     });
 
     test('expiry from subscription-userinfo header', () {
@@ -115,30 +228,45 @@ void main() {
   });
 
   group('url allowlist', () {
-    test('accepts canonical url only', () {
-      expect(policy.isAllowed('https://sub.milky.homes/s/AbCdEf123456'), isTrue);
-      expect(policy.validate('https://sub.milky.homes/s/AbCdEf123456')!.toString(), 'https://sub.milky.homes/s/AbCdEf123456');
-      expect(policy.isAllowed('  https://sub.milky.homes/s/AbCdEf123456  '), isTrue);
-    });
-    test('rejects http, other hosts, localhost, private ip, file, javascript, tricks', () {
-      for (final bad in [
-        'http://sub.milky.homes/s/AbCdEf123456',
+    test('accepts any http(s) public subscription url', () {
+      for (final good in [
+        'https://sub.milky.homes/s/AbCdEf123456',
+        '  https://sub.milky.homes/s/AbCdEf123456  ',
         'https://evil.example/s/AbCdEf123456',
         'https://sub.milky.homes.evil.example/s/AbCdEf123456',
+        'http://plain.example/sub/x',
+        'https://sub.example.com/any/path?x=1&y=2',
+        'https://sub.milky.homes:8443/s/AbCdEf123456',
+        'https://1.2.3.4/feed',
+        'https://[2001:db8::1]:8443/feed',
+      ]) {
+        expect(policy.isAllowed(good), isTrue, reason: good);
+      }
+      expect(
+        policy.validate('https://sub.milky.homes/s/AbCdEf123456')!.toString(),
+        'https://sub.milky.homes/s/AbCdEf123456',
+      );
+    });
+    test('rejects localhost, private ip, non-http schemes, userinfo, tricks', () {
+      for (final bad in [
         'https://localhost/s/AbCdEf123456',
         'https://127.0.0.1/s/AbCdEf123456',
         'https://192.168.1.1/s/AbCdEf123456',
         'https://10.0.0.1/s/AbCdEf123456',
+        'https://172.16.0.1/s/x',
+        'https://169.254.1.1/s/x',
+        'https://100.64.0.1/s/x',
+        'https://0.0.0.0/s/x',
+        'https://224.0.0.1/s/x',
+        'https://[::1]/s/x',
+        'https://[fe80::1]/s/x',
+        'https://[fd00::1]/s/x',
         'file:///etc/passwd',
         'javascript:alert(1)',
-        'https://sub.milky.homes/other/AbCdEf123456',
-        'https://sub.milky.homes/s/../../x',
-        'https://sub.milky.homes/s/AbCdEf123456?x=1',
-        'https://sub.milky.homes/s/AbCdEf123456#f',
+        'ftp://host.example/feed',
         'https://user@sub.milky.homes/s/AbCdEf123456',
-        'https://sub.milky.homes:8443/s/AbCdEf123456',
-        'https://sub.milky.homes/s/short',
-        'https://sub.milky.homes/s/a b c d e f g h',
+        'https://sub.milky.homes/s/AbCdEf123456#f',
+        'https://sub.milky.homes/s/a b c',
         '',
       ]) {
         expect(policy.isAllowed(bad), isFalse, reason: bad);
@@ -146,7 +274,7 @@ void main() {
     });
     test('deep link extraction + sanitization', () {
       expect(policy.fromDeepLink('milkyvpn://import?url=https%3A%2F%2Fsub.milky.homes%2Fs%2FAbCdEf123456')!.path, '/s/AbCdEf123456');
-      expect(policy.fromDeepLink('milkyvpn://import?url=http://sub.milky.homes/s/AbCdEf123456'), isNull);
+      expect(policy.fromDeepLink('milkyvpn://import?url=http://sub.milky.homes/s/AbCdEf123456'), isNotNull);
       expect(policy.fromDeepLink('milkyvpn://other?url=https://sub.milky.homes/s/AbCdEf123456'), isNull);
       expect(policy.fromDeepLink('https://import?url=https://sub.milky.homes/s/AbCdEf123456'), isNull);
       expect(SubscriptionUrlPolicy.redact(Uri.parse('https://sub.milky.homes/s/AbCdEf123456')), isNot(contains('AbCdEf')));
@@ -185,7 +313,17 @@ void main() {
     test('rejects disallowed url without fetching', () async {
       final f = FakeFetcher('x');
       final repo = SubscriptionRepository(store: MemorySecureStore(), fetcher: f);
-      await expectLater(repo.importFromUrl('http://sub.milky.homes/s/AbCdEf123456'), throwsA(isA<SubscriptionFetchException>()));
+      for (final bad in [
+        'ftp://sub.milky.homes/s/AbCdEf123456',
+        'https://192.168.1.1/s/AbCdEf123456',
+        'https://user@sub.milky.homes/s/AbCdEf123456',
+      ]) {
+        await expectLater(
+          repo.importFromUrl(bad),
+          throwsA(isA<SubscriptionFetchException>()),
+          reason: bad,
+        );
+      }
       expect(f.calls, 0);
     });
     test('empty subscription rejected', () async {

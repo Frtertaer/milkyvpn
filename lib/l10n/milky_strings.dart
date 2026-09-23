@@ -254,8 +254,8 @@ class S {
   String get subscriptionEmptyTitle =>
       t('Подписки пока нет', 'No subscription yet');
   String get subscriptionEmptyBody => t(
-    'Добавьте ссылку MilkyVPN, чтобы подключить защиту.',
-    'Add your MilkyVPN link to enable protection.',
+    'Добавьте ссылку на подписку, чтобы подключить защиту.',
+    'Add a subscription link to enable protection.',
   );
 
   // ---------------------------------------------------------------- import
@@ -273,15 +273,15 @@ class S {
   String get importOk => t('Подписка добавлена', 'Subscription added');
   String get goToConnect => t('Перейти к подключению', 'Go to connect');
   String get deepLinkTitle =>
-      t('Добавить подписку MilkyVPN?', 'Add MilkyVPN subscription?');
+      t('Добавить подписку?', 'Add subscription?');
   String get deepLinkBody => t(
     'Ссылка получена из другого приложения. Подписка будет сохранена только на этом устройстве. Подключение не начнётся автоматически.',
     'The link came from another app. The subscription is stored on this device only. No connection starts automatically.',
   );
   String get add => t('Добавить', 'Add');
   String get urlNotAllowed => t(
-    'Допустимы только ссылки вида https://sub.milky.homes/s/…',
-    'Only https://sub.milky.homes/s/… links are accepted',
+    'Допустимы только http(s)-ссылки на публичные серверы',
+    'Only http(s) links to public servers are accepted',
   );
   String serversReady(int n) => counted(
     n,
@@ -322,8 +322,8 @@ class S {
       t('Скопировать диагностику', 'Copy diagnostics');
   String get copied => t('Скопировано', 'Copied');
   String get privacyBody => t(
-    'Приложение не собирает историю посещений, DNS-запросы и содержимое трафика, не содержит аналитики и рекламы. Ссылка на подписку хранится в защищённом хранилище Android Keystore и не покидает устройство, кроме запроса к sub.milky.homes для загрузки списка серверов. Диагностика копируется только по вашему действию и не содержит учётных данных.',
-    'The app does not collect browsing history, DNS queries or traffic contents and has no analytics or ads. The subscription link is stored in Android Keystore-backed secure storage and never leaves the device except for requests to sub.milky.homes to download the server list. Diagnostics are copied only by your action and contain no credentials.',
+    'Приложение не собирает историю посещений, DNS-запросы и содержимое трафика, не содержит аналитики и рекламы. Ссылка на подписку хранится в защищённом хранилище Android Keystore и не покидает устройство, кроме запроса к серверу подписки для загрузки списка серверов. Диагностика копируется только по вашему действию и не содержит учётных данных.',
+    'The app does not collect browsing history, DNS queries or traffic contents and has no analytics or ads. The subscription link is stored in Android Keystore-backed secure storage and never leaves the device except for requests to the subscription host to download the server list. Diagnostics are copied only by your action and contain no credentials.',
   );
   String get aboutBody => t(
     'MilkyVPN — клиент для подписки Milky. Трафик проходит через зашифрованный туннель к выбранному серверу, приложение не видит содержимое ваших запросов.',

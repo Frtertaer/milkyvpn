@@ -12,7 +12,8 @@ import org.json.JSONObject
  * Network topology:
  *   Android TUN (fd passed to core)  ->  "tun" inbound (gVisor stack inside Xray)
  *   -> routing: port 53 -> dns-out, everything else -> "proxy" outbound
- *   -> proxy outbound: vless(+reality|tls, tcp|ws|xhttp) or hysteria2
+ *   -> proxy outbound: vless|vmess|trojan|shadowsocks(+reality|tls,
+ *   tcp|ws|xhttp|grpc) or hysteria2
  *
  * Loop avoidance: the VpnService excludes its own package from the tunnel
  * (Builder.addDisallowedApplication), so the core's uplink sockets never enter the TUN.
@@ -25,9 +26,16 @@ object XrayConfigBuilder {
     const val TUN_DNS_2 = "8.8.8.8"
 
     /** Transports that are genuinely executable by this engine. */
-    val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2")
-    val SUPPORTED_VLESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp")
+    val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2", "vmess", "trojan", "ss", "shadowsocks")
+    val SUPPORTED_VLESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
     val SUPPORTED_VLESS_SECURITY = setOf("reality", "tls", "none")
+    val SUPPORTED_VMESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
+    val SUPPORTED_TROJAN_NETWORKS = setOf("tcp", "raw", "ws", "grpc")
+    val SUPPORTED_SS_CIPHERS = setOf(
+        "aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "chacha20-poly1305",
+        "xchacha20-ietf-poly1305", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
+        "2022-blake3-chacha20-poly1305", "none", "plain",
+    )
 
     /**
      * Inline equivalent of the upstream `geoip:private` entry.
@@ -80,6 +88,9 @@ object XrayConfigBuilder {
         val alpn: String? = null,
         val allowInsecure: Boolean = false,
         val obfsPassword: String? = null,
+        val alterId: Int = 0,
+        val cipher: String? = null,
+        val plugin: String? = null,
     ) {
         companion object {
             fun fromMap(m: Map<*, *>): ProfileSpec {
@@ -103,6 +114,9 @@ object XrayConfigBuilder {
                     alpn = s("alpn"),
                     allowInsecure = (m["allowInsecure"] as? Boolean) ?: false,
                     obfsPassword = s("obfsPassword"),
+                    alterId = (m["alterId"] as? Number)?.toInt() ?: 0,
+                    cipher = s("cipher"),
+                    plugin = s("plugin"),
                 )
             }
         }
@@ -121,13 +135,29 @@ object XrayConfigBuilder {
         if (p.address.isBlank()) throw UnsupportedProfileException("address")
         if (p.port !in 1..65535) throw UnsupportedProfileException("port")
         if (p.secret.isBlank()) throw UnsupportedProfileException("credential")
-        if (p.protocol == "vless") {
-            val net = normalizeNetwork(p.network)
-            if (net !in SUPPORTED_VLESS_NETWORKS) throw UnsupportedProfileException("network")
-            if (p.security !in SUPPORTED_VLESS_SECURITY) throw UnsupportedProfileException("security")
-            if (p.security == "reality") {
-                if (p.publicKey.isNullOrBlank()) throw UnsupportedProfileException("reality.publicKey")
-                if (net == "ws") throw UnsupportedProfileException("reality+ws")
+        when (p.protocol) {
+            "vless" -> {
+                val net = normalizeNetwork(p.network)
+                if (net !in SUPPORTED_VLESS_NETWORKS) throw UnsupportedProfileException("network")
+                if (p.security !in SUPPORTED_VLESS_SECURITY) throw UnsupportedProfileException("security")
+                if (p.security == "reality") {
+                    if (p.publicKey.isNullOrBlank()) throw UnsupportedProfileException("reality.publicKey")
+                    if (net == "ws") throw UnsupportedProfileException("reality+ws")
+                }
+            }
+            "vmess" -> {
+                if (normalizeNetwork(p.network) !in SUPPORTED_VMESS_NETWORKS)
+                    throw UnsupportedProfileException("network")
+            }
+            "trojan" -> {
+                if (normalizeNetwork(p.network) !in SUPPORTED_TROJAN_NETWORKS)
+                    throw UnsupportedProfileException("network")
+            }
+            "ss", "shadowsocks" -> {
+                if (p.cipher.isNullOrBlank()) throw UnsupportedProfileException("method")
+                if (p.cipher.lowercase() !in SUPPORTED_SS_CIPHERS)
+                    throw UnsupportedProfileException("method")
+                if (!p.plugin.isNullOrBlank()) throw UnsupportedProfileException("plugin")
             }
         }
     }
@@ -267,6 +297,47 @@ object XrayConfigBuilder {
                 ob.put("mux", JSONObject().put("enabled", false).put("concurrency", -1))
             }
 
+            "vmess" -> {
+                ob.put("protocol", "vmess")
+                val user = JSONObject()
+                    .put("id", p.secret)
+                    .put("alterId", p.alterId)
+                    .put("security", p.cipher ?: "auto")
+                    .put("level", 8)
+                ob.put(
+                    "settings", JSONObject().put(
+                        "vnext", JSONArray().put(
+                            JSONObject().put("address", p.address).put("port", p.port).put("users", JSONArray().put(user))
+                        )
+                    )
+                )
+                populateVlessStream(stream, p)
+            }
+
+            "trojan" -> {
+                ob.put("protocol", "trojan")
+                val server = JSONObject()
+                    .put("address", p.address)
+                    .put("port", p.port)
+                    .put("password", p.secret)
+                    .put("level", 8)
+                ob.put("settings", JSONObject().put("servers", JSONArray().put(server)))
+                populateVlessStream(stream, p)
+            }
+
+            "ss", "shadowsocks" -> {
+                ob.put("protocol", "shadowsocks")
+                val server = JSONObject()
+                    .put("address", p.address)
+                    .put("port", p.port)
+                    .put("method", p.cipher)
+                    .put("password", p.secret)
+                    .put("level", 8)
+                ob.put("settings", JSONObject().put("servers", JSONArray().put(server)))
+                stream.put("network", "tcp")
+                stream.put("security", "none")
+            }
+
             "hysteria2" -> {
                 ob.put("protocol", "hysteria")
                 ob.put("settings", JSONObject().put("version", 2).put("address", p.address).put("port", p.port))
@@ -322,6 +393,16 @@ object XrayConfigBuilder {
                 }
                 xh.put("mode", p.xhttpMode ?: "auto")
                 stream.put("xhttpSettings", xh)
+            }
+
+            "grpc" -> {
+                stream.put("network", "grpc")
+                val g = JSONObject().put("serviceName", p.path ?: "")
+                if (!p.host.isNullOrBlank()) {
+                    g.put("authority", p.host)
+                    sniHint = p.host
+                }
+                stream.put("grpcSettings", g)
             }
         }
         val sni = p.sni ?: sniHint ?: (if (!isIpLiteral(p.address)) p.address else null)

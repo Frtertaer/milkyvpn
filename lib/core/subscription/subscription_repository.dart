@@ -350,6 +350,9 @@ class SubscriptionRepository extends ChangeNotifier {
     'alpn': p.alpn,
     'allowInsecure': p.allowInsecure,
     'obfsPassword': p.obfsPassword,
+    'alterId': p.alterId,
+    'cipher': p.cipher,
+    'plugin': p.plugin,
   };
 
   static VpnProfile? _profileFromJson(Map<String, dynamic> m) {
@@ -376,6 +379,9 @@ class SubscriptionRepository extends ChangeNotifier {
         alpn: s('alpn'),
         allowInsecure: m['allowInsecure'] == true,
         obfsPassword: s('obfsPassword'),
+        alterId: (m['alterId'] as num?)?.toInt() ?? 0,
+        cipher: s('cipher'),
+        plugin: s('plugin'),
       );
     } catch (_) {
       return null;

@@ -1,0 +1,85 @@
+// kal2-server: production binary for the kal2 egress host.
+//
+//	kal2-server -listen :443 -domain kal.example.dev -cert fullchain.pem \
+//	  -key privkey.pem -user uid=pskb64 [-user ...] [-decoy /var/www] [-steal host:port]
+package main
+
+import (
+	"crypto/ed25519"
+	"encoding/hex"
+	"flag"
+	"fmt"
+	"log"
+	"os"
+	"strings"
+
+	"github.com/Frtertaer/milkyvpn/milky-core/pkg/kal2core"
+)
+
+type userFlags []kal2core.User
+
+func (u *userFlags) String() string { return fmt.Sprint(*u) }
+func (u *userFlags) Set(v string) error {
+	id, psk, ok := strings.Cut(v, "=")
+	if !ok {
+		return fmt.Errorf("user must be id=psk")
+	}
+	k, err := kal2core.DecodeKey(psk)
+	if err != nil {
+		return fmt.Errorf("user %s: %w", id, err)
+	}
+	*u = append(*u, kal2core.User{ID: id, PSK: k})
+	return nil
+}
+
+func main() {
+	listen := flag.String("listen", ":443", "listen addr")
+	domain := flag.String("domain", "", "our TLS domain")
+	cert := flag.String("cert", "", "fullchain PEM")
+	key := flag.String("key", "", "private key PEM")
+	autocertDir := flag.String("autocert", "", "ACME cache dir (Let's Encrypt HTTP-01 on :80)")
+	autocertHTTP := flag.String("autocert-addr", ":80", "ACME HTTP-01 listen addr")
+	identity := flag.String("identity", "", "server ed25519 private key (hex)")
+	steal := flag.String("steal", "", "foreign-SNI decoy upstream host:port")
+	decoy := flag.String("decoy", "", "decoy site directory")
+	driftPath := flag.String("drift", "", "drift carrier path")
+	var users userFlags
+	flag.Var(&users, "user", "id=psk (repeatable)")
+	keygen := flag.Bool("keygen", false, "print a fresh ed25519 keypair and exit")
+	flag.Parse()
+
+	if *keygen {
+		priv, pub, err := kal2core.GenerateKeypairHex()
+		if err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("priv:", priv)
+		fmt.Println("pub:", pub)
+		return
+	}
+	if *domain == "" || *identity == "" || len(users) == 0 || (*cert == "" && *autocertDir == "") {
+		log.Fatal("need -domain, -identity, at least one -user and (-cert/-key or -autocert)")
+	}
+	idKey, err := hex.DecodeString(*identity)
+	if err != nil || len(idKey) != ed25519.PrivateKeySize {
+		log.Fatalf("bad -identity: need %d hex chars", ed25519.PrivateKeySize*2)
+	}
+	err = kal2core.Serve(kal2core.ServerConfig{
+		Listen:           *listen,
+		Domain:           *domain,
+		CertFile:         *cert,
+		KeyFile:          *key,
+		Identity:         idKey,
+		AutocertDir:      *autocertDir,
+		AutocertHTTPAddr: *autocertHTTP,
+		StealAddr:        *steal,
+		DecoyDir:         *decoy,
+		DriftPath:        *driftPath,
+		Users:            users,
+		Logf:             func(f string, a ...any) { log.Printf(f, a...) },
+	})
+	if err != nil {
+		log.Fatal(err)
+	}
+	os.Exit(0)
+}

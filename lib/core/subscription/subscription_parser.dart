@@ -53,8 +53,10 @@ class SubscriptionParseResult {
 /// Guarantees:
 ///  * Never throws on malformed input; bad entries are counted and skipped.
 ///  * Accepts Base64 (standard/url-safe, padded/unpadded, with whitespace) or plain text.
-///  * Supports `vless://`, `hysteria2://`, and `hy2://`.
-///  * Recognized unsupported schemes remain countable but are never executed.
+///  * Fully parses `vless://`, `vmess://`, `trojan://`, `ss://`, `hysteria2://`,
+///    `hy2://` and `kal2://`.
+///  * Recognized unsupported schemes (ssr, tuic, wireguard, socks, http(s))
+///    remain countable but are never executed.
 class SubscriptionParser {
   const SubscriptionParser();
 
@@ -168,8 +170,13 @@ class SubscriptionParser {
         case 'hy2':
           return _parseHysteria2(line);
         case 'vmess':
+          return _parseVmess(line);
         case 'trojan':
+          return _parseTrojan(line);
         case 'ss':
+          return _parseShadowsocks(line);
+        case 'kal2':
+          return _parseKal2(line);
         case 'ssr':
         case 'tuic':
         case 'wireguard':
@@ -320,6 +327,9 @@ class SubscriptionParser {
       _canonicalAlpn(profile.alpn),
       profile.allowInsecure,
       profile.obfsPassword ?? '',
+      profile.alterId,
+      _nz(profile.cipher) ?? '',
+      _nz(profile.plugin) ?? '',
       remark,
       VpnProfile.locationFromRemark(remark).name,
     ]);
@@ -347,6 +357,9 @@ class SubscriptionParser {
     alpn: profile.alpn,
     allowInsecure: profile.allowInsecure,
     obfsPassword: profile.obfsPassword,
+    alterId: profile.alterId,
+    cipher: profile.cipher,
+    plugin: profile.plugin,
   );
 
   VpnProfile? _parseVless(String line) {
@@ -423,6 +436,255 @@ class SubscriptionParser {
         obfsPassword: obfsPassword,
       ),
     );
+  }
+
+  /// `vmess://` is a single Base64-encoded JSON document (v2rayN share format).
+  /// Some generators append `#name` after the payload.
+  VpnProfile? _parseVmess(String line) {
+    var payload = line.substring('vmess://'.length);
+    var fragmentRemark = '';
+    final hashIndex = payload.indexOf('#');
+    if (hashIndex >= 0) {
+      fragmentRemark = _dec(payload.substring(hashIndex + 1)).trim();
+      payload = payload.substring(0, hashIndex);
+    }
+    final decoded = _b64decode(payload);
+    if (decoded == null) return null;
+    final Map<String, dynamic> m;
+    try {
+      final j = jsonDecode(decoded);
+      if (j is! Map<String, dynamic>) return null;
+      m = j;
+    } catch (_) {
+      return null;
+    }
+    String? s(String k) {
+      final v = m[k];
+      if (v == null) return null;
+      return v.toString();
+    }
+
+    final host = s('add')?.trim();
+    final port = int.tryParse(s('port') ?? '');
+    final id = s('id')?.trim();
+    if (host == null || host.isEmpty || !_validHost(host)) return null;
+    if (port == null || port < 1 || port > 65535) return null;
+    if (id == null || id.isEmpty) return null;
+
+    final tls = (s('tls') ?? '').trim().toLowerCase();
+    final security = (tls == 'tls' || tls == 'reality') ? 'tls' : 'none';
+    var remark = (s('ps') ?? '').trim();
+    if (remark.isEmpty) remark = fragmentRemark;
+    return _identified(
+      VpnProfile(
+        id: '',
+        protocol: 'vmess',
+        address: host,
+        port: port,
+        secret: id,
+        remark: remark.isEmpty ? '$host:$port' : remark,
+        network: VpnProfile.normalizeNetwork((s('net') ?? 'tcp').trim()),
+        security: security,
+        sni: _trimmedNz(s('sni')),
+        fingerprint: _lowerNz(s('fp')),
+        host: _trimmedNz(s('host')),
+        path: _nz(s('path')),
+        alpn: _canonicalAlpnOrNull(s('alpn')),
+        allowInsecure:
+            _flag(s('allowInsecure')) || _flag(s('skip-cert-verify')),
+        alterId: int.tryParse(s('aid') ?? '') ?? 0,
+        cipher: _nz(s('scy')),
+      ),
+    );
+  }
+
+  /// `trojan://password@host:port?params#remark` — same URI shape as vless.
+  VpnProfile? _parseTrojan(String line) {
+    final parts = _split(line);
+    if (parts == null) return null;
+    final password = parts.userInfo;
+    if (password.isEmpty) return null;
+
+    final query = parts.params;
+    // Trojan is TLS-by-design; generators that omit the param still mean TLS.
+    var security = (query['security'] ?? 'tls').trim().toLowerCase();
+    if (security.isEmpty) security = 'tls';
+    var network = VpnProfile.normalizeNetwork(
+      (query['type'] ?? 'tcp').trim(),
+    );
+    var path = _nz(query['path']);
+    if (network == 'grpc') path ??= _nz(query['servicename']);
+    final remark = parts.remark.isEmpty
+        ? '${parts.host}:${parts.port}'
+        : parts.remark;
+
+    return _identified(
+      VpnProfile(
+        id: '',
+        protocol: 'trojan',
+        address: parts.host,
+        port: parts.port,
+        secret: password,
+        remark: remark,
+        network: network,
+        security: security,
+        sni: _trimmedNz(query['sni']) ?? _trimmedNz(query['peer']),
+        fingerprint: _lowerNz(query['fp']),
+        host: _trimmedNz(query['host']),
+        path: path,
+        alpn: _canonicalAlpnOrNull(query['alpn']),
+        allowInsecure:
+            _flag(query['allowinsecure']) || _flag(query['insecure']),
+      ),
+    );
+  }
+
+  /// Shadowsocks SIP002:
+  ///   `ss://base64(method:password)@host:port?plugin=...#remark`
+  ///   `ss://base64(method:password@host:port)#remark`        (legacy, no @)
+  ///   `ss://method:password@host:port#remark`               (legacy plaintext)
+  VpnProfile? _parseShadowsocks(String line) {
+    var rest = line.substring('ss://'.length);
+    var remark = '';
+    final hashIndex = rest.indexOf('#');
+    if (hashIndex >= 0) {
+      remark = _dec(rest.substring(hashIndex + 1)).trim();
+      rest = rest.substring(0, hashIndex);
+    }
+    var query = '';
+    final queryIndex = rest.indexOf('?');
+    if (queryIndex >= 0) {
+      query = rest.substring(queryIndex + 1);
+      rest = rest.substring(0, queryIndex);
+    }
+
+    String method;
+    String password;
+    String hostPort;
+    if (rest.contains('@')) {
+      final at = rest.lastIndexOf('@');
+      var userPart = rest.substring(0, at);
+      hostPort = rest.substring(at + 1);
+      // userinfo is either plaintext `method:pass` or base64 of it.
+      final decoded = _b64decode(userPart);
+      if (decoded != null && decoded.contains(':')) userPart = decoded;
+      userPart = _dec(userPart);
+      final colon = userPart.indexOf(':');
+      if (colon <= 0) return null;
+      method = userPart.substring(0, colon).trim();
+      password = userPart.substring(colon + 1);
+    } else {
+      // Whole payload is base64(method:pass@host:port)
+      final decoded = _b64decode(rest);
+      if (decoded == null) return null;
+      final at = decoded.lastIndexOf('@');
+      if (at < 0) return null;
+      final userPart = decoded.substring(0, at);
+      hostPort = decoded.substring(at + 1);
+      final colon = userPart.indexOf(':');
+      if (colon <= 0) return null;
+      method = userPart.substring(0, colon).trim();
+      password = userPart.substring(colon + 1);
+    }
+    if (method.isEmpty || password.isEmpty) return null;
+
+    // hostPort may carry a trailing path in sloppy generators.
+    final slashIndex = hostPort.indexOf('/');
+    if (slashIndex >= 0) hostPort = hostPort.substring(0, slashIndex);
+
+    String host;
+    int? port;
+    if (hostPort.startsWith('[')) {
+      final close = hostPort.indexOf(']');
+      if (close < 0) return null;
+      host = hostPort.substring(1, close);
+      final after = hostPort.substring(close + 1);
+      if (after.startsWith(':')) port = int.tryParse(after.substring(1));
+    } else {
+      final colon = hostPort.lastIndexOf(':');
+      if (colon < 0) return null;
+      host = hostPort.substring(0, colon);
+      port = int.tryParse(hostPort.substring(colon + 1));
+    }
+    if (host.isEmpty || port == null || port < 1 || port > 65535) return null;
+    if (!_validHost(host)) return null;
+
+    String? plugin;
+    if (query.isNotEmpty) {
+      for (final pair in query.split('&')) {
+        final equals = pair.indexOf('=');
+        final key = _dec(equals < 0 ? pair : pair.substring(0, equals))
+            .toLowerCase();
+        if (key == 'plugin') {
+          plugin = equals < 0 ? '' : _dec(pair.substring(equals + 1));
+        }
+      }
+    }
+
+    return _identified(
+      VpnProfile(
+        id: '',
+        protocol: 'ss',
+        address: host,
+        port: port,
+        secret: password,
+        remark: remark.isEmpty ? '$host:$port' : remark,
+        network: 'tcp',
+        security: 'none',
+        cipher: method.toLowerCase(),
+        plugin: _nz(plugin),
+      ),
+    );
+  }
+
+  /// `kal2://psk@host:port?sni=domain&pub=hex&carrier=veil|drift&path=/p#remark`
+  VpnProfile? _parseKal2(String line) {
+    final parts = _split(line);
+    if (parts == null) return null;
+    final psk = parts.userInfo;
+    if (psk.isEmpty) return null;
+
+    final query = parts.params;
+    final carrier = (query['carrier'] ?? 'veil').trim().toLowerCase();
+    if (carrier != 'veil' && carrier != 'drift' && carrier != 'relay') {
+      return null;
+    }
+    final remark = parts.remark.isEmpty
+        ? '${parts.host}:${parts.port}'
+        : parts.remark;
+
+    return _identified(
+      VpnProfile(
+        id: '',
+        protocol: 'kal2',
+        address: parts.host,
+        port: parts.port,
+        secret: psk,
+        remark: remark,
+        network: carrier,
+        security: 'tls',
+        sni: _trimmedNz(query['sni']),
+        publicKey: _nz(query['pub']),
+        path: _nz(query['path']),
+      ),
+    );
+  }
+
+  /// Tolerant Base64 decode: standard or URL-safe, padded or not. Returns null
+  /// when the input is not valid base64 at all.
+  static String? _b64decode(String input) {
+    var s = input.trim().replaceAll(RegExp(r'\s+'), '');
+    if (s.isEmpty) return null;
+    if (!RegExp(r'^[A-Za-z0-9+/_\-=]+$').hasMatch(s)) return null;
+    s = s.replaceAll('-', '+').replaceAll('_', '/').replaceAll('=', '');
+    final padding = (4 - s.length % 4) % 4;
+    if (padding == 3) return null;
+    s += '=' * padding;
+    try {
+      return utf8.decode(base64.decode(s), allowMalformed: true);
+    } on FormatException {
+      return null;
+    }
   }
 
   VpnProfile? _parseOther(String scheme, String line) {

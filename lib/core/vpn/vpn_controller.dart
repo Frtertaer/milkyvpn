@@ -22,6 +22,14 @@ class ProfileSelector {
         return 2;
       case ProfileKind.vlessRealityTcp:
         return 3;
+      case ProfileKind.kal2:
+        return 4;
+      case ProfileKind.vmess:
+        return 5;
+      case ProfileKind.trojan:
+        return 6;
+      case ProfileKind.shadowsocks:
+        return 7;
       case ProfileKind.other:
         return 9;
     }

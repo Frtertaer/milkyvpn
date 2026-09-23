@@ -117,9 +117,9 @@ class XrayConfigBuilderTest {
 
     @Test
     fun rejectsUnsupportedProtocolsAndMissingReality() {
-        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vmess", "a.b", 443, fakeUuid)))
-        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("trojan", "a.b", 443, "x")))
-        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "a.b", 443, fakeUuid, network = "grpc")))
+        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("wireguard", "a.b", 443, fakeUuid)))
+        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("tuic", "a.b", 443, "x")))
+        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "a.b", 443, fakeUuid, network = "mkcp")))
         assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "a.b", 443, fakeUuid, security = "reality"))) // no pbk
         assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "a.b", 0, fakeUuid)))
         assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "", 443, fakeUuid)))
@@ -132,6 +132,64 @@ class XrayConfigBuilderTest {
             assertEquals("protocol", e.message)
         }
     }
+
+    @Test
+    fun vmessBuildsVmessOutbound() {
+        val p = ProfileSpec(
+            protocol = "vmess", address = "us1.example.invalid", port = 443, secret = fakeUuid,
+            network = "ws", security = "tls", host = "cdn.example.invalid", path = "/vm",
+            alterId = 0, cipher = "auto",
+        )
+        val proxy = XrayConfigBuilder.build(p).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("vmess", proxy.getString("protocol"))
+        val user = proxy.getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
+            .getJSONArray("users").getJSONObject(0)
+        assertEquals(fakeUuid, user.getString("id"))
+        assertEquals("auto", user.getString("security"))
+        val stream = proxy.getJSONObject("streamSettings")
+        assertEquals("ws", stream.getString("network"))
+        assertEquals("tls", stream.getString("security"))
+        assertEquals("cdn.example.invalid", stream.getJSONObject("tlsSettings").getString("serverName"))
+    }
+
+    @Test
+    fun trojanBuildsTrojanOutboundWithGrpc() {
+        val p = ProfileSpec(
+            protocol = "trojan", address = "us1.example.invalid", port = 443, secret = "pw-abc",
+            network = "grpc", security = "tls", path = "trojan-grpc",
+        )
+        val proxy = XrayConfigBuilder.build(p).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("trojan", proxy.getString("protocol"))
+        val server = proxy.getJSONObject("settings").getJSONArray("servers").getJSONObject(0)
+        assertEquals("pw-abc", server.getString("password"))
+        val stream = proxy.getJSONObject("streamSettings")
+        assertEquals("grpc", stream.getString("network"))
+        assertEquals("trojan-grpc", stream.getJSONObject("grpcSettings").getString("serviceName"))
+        assertEquals("tls", stream.getString("security"))
+    }
+
+    @Test
+    fun shadowsocksBuildsSsOutboundAndValidatesCipher() {
+        val p = ProfileSpec(
+            protocol = "ss", address = "us1.example.invalid", port = 8388, secret = "pw-abc",
+            cipher = "aes-256-gcm",
+        )
+        val proxy = XrayConfigBuilder.build(p).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("shadowsocks", proxy.getString("protocol"))
+        val server = proxy.getJSONObject("settings").getJSONArray("servers").getJSONObject(0)
+        assertEquals("aes-256-gcm", server.getString("method"))
+        assertEquals("pw-abc", server.getString("password"))
+        assertFalse(XrayConfigBuilder.isSupported(p.copy(cipher = "aes-256-cfb")))
+        assertFalse(XrayConfigBuilder.isSupported(p.copy(plugin = "obfs-local")))
+    }
+
+    private fun ProfileSpec.copy(
+        cipher: String? = this.cipher,
+        plugin: String? = this.plugin,
+    ) = ProfileSpec(
+        protocol = protocol, address = address, port = port, secret = secret,
+        network = network, security = security, cipher = cipher, plugin = plugin,
+    )
 
     @Test
     fun fromMapHandlesMissingAndNumericValues() {

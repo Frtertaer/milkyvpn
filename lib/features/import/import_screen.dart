@@ -150,7 +150,7 @@ class _ImportScreenState extends State<ImportScreen> {
                   if (_error != null) setState(() => _error = null);
                 },
                 decoration: InputDecoration(
-                  hintText: 'https://sub.milky.homes/s/…',
+                  hintText: 'https://example.com/s/…',
                   errorText: _error,
                   errorMaxLines: 4,
                   suffixIcon: _ctrl.text.isEmpty
