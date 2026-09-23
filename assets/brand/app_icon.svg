@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#3E6BFF"/><stop offset="0.52" stop-color="#7E6BF6"/><stop offset="1" stop-color="#37CFE6"/>
+    </linearGradient>
+    <linearGradient id="milk" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFFFFF"/><stop offset="1" stop-color="#DDE6FF"/>
+    </linearGradient>
+    <linearGradient id="letter" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#4C6EF5"/><stop offset="1" stop-color="#2F4CB0"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" rx="115" fill="url(#bg)"/>
+  <path d="M256 94.28992000000001 C 293.84704 187.18720000000002, 380.5855744 212.99200000000002, 378.14272 295.56736 A 122.14272 122.14272 0 0 1 133.85728 295.56736 C 131.41442560000002 212.99200000000002, 218.15296 187.18720000000002, 256 94.28992000000001 Z" fill="url(#milk)"/>
+  <path d="M 180.30592000000001 347.4522112 L 216.63907840000002 257.99557120000003 L 256 309.88042240000004 L 295.3609216 257.99557120000003 L 331.69408 347.4522112" fill="none" stroke="url(#letter)" stroke-width="32.686080000000004" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

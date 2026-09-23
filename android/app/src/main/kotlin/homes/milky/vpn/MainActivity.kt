@@ -10,6 +10,7 @@ import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
 import homes.milky.vpn.core.XrayConfigBuilder
+import homes.milky.vpn.vpn.DeviceProfile
 import homes.milky.vpn.vpn.KeystoreSealedStore
 import homes.milky.vpn.vpn.MilkyVpnService
 import homes.milky.vpn.vpn.SafeLog
@@ -140,11 +141,16 @@ class MainActivity : FlutterActivity() {
                     "disconnect" -> {
                         val running = MilkyVpnService.instance
                         if (running != null) {
-                            running.requestDisconnect()
+                            running.requestDisconnect().invokeOnCompletion { failure ->
+                                main.post {
+                                    if (failure == null) result.success(true)
+                                    else result.error("error", "disconnect_failed", null)
+                                }
+                            }
                         } else {
                             VpnStateStore.update(VpnStateStore.State.DISCONNECTED, connectedSinceEpochMs = null)
+                            result.success(true)
                         }
-                        result.success(true)
                     }
 
                     "clearActiveProfile" -> {
@@ -176,6 +182,11 @@ class MainActivity : FlutterActivity() {
                             "sdkInt" to Build.VERSION.SDK_INT,
                             "release" to Build.VERSION.RELEASE,
                             "abi" to (Build.SUPPORTED_ABIS.firstOrNull() ?: ""),
+                            // Diagnostics only: distinguishes EMULATOR_FAILURE from
+                            // REAL_DEVICE_FAILURE without exposing it to the user.
+                            "model" to Build.MODEL,
+                            "manufacturer" to Build.MANUFACTURER,
+                            "isEmulator" to DeviceProfile.currentIsEmulator(),
                         )
                     )
 

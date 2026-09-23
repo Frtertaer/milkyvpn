@@ -10,5 +10,6 @@ String fnv1a64Hex(String input) {
     h2 = ((h2 ^ (unit >> 8)) * prime32) & 0xffffffff;
     h2 = ((h2 ^ (unit & 0xff)) * prime32) & 0xffffffff;
   }
-  return h1.toRadixString(16).padLeft(8, '0') + h2.toRadixString(16).padLeft(8, '0');
+  return h1.toRadixString(16).padLeft(8, '0') +
+      h2.toRadixString(16).padLeft(8, '0');
 }

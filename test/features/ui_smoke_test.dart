@@ -1,90 +1,118 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:milkyvpn/app/app_settings.dart';
-import 'package:milkyvpn/core/storage/secure_store.dart';
-import 'package:milkyvpn/core/subscription/subscription_repository.dart';
-import 'package:milkyvpn/core/vpn/vpn_bridge.dart';
 import 'package:milkyvpn/core/vpn/vpn_controller.dart';
-import 'package:milkyvpn/main.dart';
-import 'package:shared_preferences/shared_preferences.dart';
+import 'package:milkyvpn/design/milky_connect_orb.dart';
 
 import '../core/vpn_controller_test.dart' show FakeBridge;
-
-class _NoFetch implements SubscriptionFetcher {
-  @override
-  Future<FetchedSubscription> fetch(Uri url) async => throw SubscriptionFetchException('offline');
-}
+import '../support/harness.dart';
 
 void main() {
-  testWidgets('onboarding -> disclosure -> home shows Не подключено and Подключить', (tester) async {
-    SharedPreferences.setMockInitialValues({});
-    final settings = await AppSettings.load();
-    final repo = SubscriptionRepository(store: MemorySecureStore(), fetcher: _NoFetch());
-    await repo.load();
+  testWidgets(
+    'onboarding -> disclosure -> import -> home shows the disconnected state',
+    (tester) async {
+      final repo = await emptyRepo();
+      final bridge = FakeBridge();
+      final vpn = VpnController(bridge: bridge);
+      await pumpMilky(
+        tester,
+        repo: repo,
+        vpn: vpn,
+        bridge: bridge,
+        onboardingDone: false,
+      );
+
+      // Page 1 — the orb is the first thing a new user sees.
+      expect(find.text('VPN без сложных настроек'), findsOneWidget);
+      expect(find.byKey(const Key('connect_orb')), findsOneWidget);
+      await tester.tap(find.text('Продолжить'));
+      await tester.pumpAndSettle();
+
+      // Page 2 — truthful disclosure, no marketing wall of text.
+      expect(find.text('Защищённое VPN-соединение'), findsOneWidget);
+      expect(find.textContaining('С вашего разрешения Android'), findsOneWidget);
+      expect(find.textContaining('вне туннеля'), findsOneWidget);
+      expect(find.text('Телефон'), findsOneWidget);
+      expect(find.text('Интернет'), findsOneWidget);
+      await tester.tap(find.text('Понятно, продолжить'));
+      await tester.pumpAndSettle();
+
+      // Page 3 — add the subscription.
+      expect(find.text('Добавьте подписку'), findsWidgets);
+      expect(find.text('У меня пока нет подписки'), findsOneWidget);
+      await tester.tap(find.text('У меня пока нет подписки'));
+      await tester.pumpAndSettle();
+
+      // Home.
+      expect(find.byKey(const Key('state_text')), findsOneWidget);
+      expect(find.text('Не подключено'), findsOneWidget);
+      expect(find.text('Защита выключена'), findsOneWidget);
+      expect(find.text('Авто'), findsOneWidget);
+      expect(find.text('Финляндия'), findsOneWidget);
+      expect(find.text('США'), findsOneWidget);
+
+      // Without a subscription, the orb leads to import rather than starting the VPN.
+      final orb = tester.widget<MilkyConnectOrb>(
+        find.byKey(const Key('connect_orb')),
+      );
+      expect(orb.enabled, isTrue);
+      expect(orb.state, MilkyOrbState.disabled);
+
+      // No protocol jargon anywhere on the main screen.
+      for (final w in [
+        'VLESS',
+        'Reality',
+        'XHTTP',
+        'Hysteria',
+        'SNI',
+        'UUID',
+      ]) {
+        expect(find.textContaining(w), findsNothing);
+      }
+      vpn.dispose();
+    },
+  );
+
+  testWidgets(
+    'home with a subscription is ready to connect and reports real counts',
+    (tester) async {
+      final repo = await repoWith(fixture('subscription_16_fake.txt'));
+      final bridge = FakeBridge();
+      final vpn = VpnController(bridge: bridge);
+      await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
+
+      expect(find.text('Не подключено'), findsOneWidget);
+      expect(find.text('Нажмите, чтобы подключиться'), findsOneWidget);
+      // Home keeps a small truthful status line; the counts live in the Subscription tab.
+      expect(find.text('Подписка активна · бессрочно'), findsOneWidget);
+      expect(find.text('ВКЛЮЧИТЬ'), findsOneWidget);
+      final orb = tester.widget<MilkyConnectOrb>(
+        find.byKey(const Key('connect_orb')),
+      );
+      expect(orb.enabled, isTrue);
+      expect(orb.state, MilkyOrbState.idle);
+      vpn.dispose();
+    },
+  );
+
+  testWidgets('nav bar switches to the subscription and settings tabs', (
+    tester,
+  ) async {
+    final repo = await repoWith(fixture('subscription_16_fake.txt'));
     final bridge = FakeBridge();
     final vpn = VpnController(bridge: bridge);
-    await tester.pumpWidget(MilkyApp(settings: settings, repo: repo, vpn: vpn, bridge: bridge));
-    await tester.pumpAndSettle();
-    expect(find.text('Простой VPN без ручной настройки серверов.'), findsOneWidget);
-    await tester.tap(find.text('Продолжить'));
-    await tester.pumpAndSettle();
-    expect(find.textContaining('VpnService'), findsOneWidget);
-    expect(find.textContaining('100%'), findsNothing);
-    await tester.tap(find.text('Понятно, продолжить'));
-    await tester.pumpAndSettle();
-    expect(find.text('Добавить подписку'), findsWidgets);
-    await tester.tap(find.text('У меня пока нет подписки'));
-    await tester.pumpAndSettle();
-    expect(find.byKey(const Key('state_text')), findsOneWidget);
-    expect(find.text('Не подключено'), findsOneWidget);
-    expect(find.text('Подключить'), findsOneWidget);
-    expect(find.text('Авто'), findsOneWidget);
-    // No protocol jargon on the main screen.
-    for (final w in ['VLESS', 'Reality', 'XHTTP', 'Hysteria', 'SNI', 'UUID']) {
-      expect(find.textContaining(w), findsNothing);
-    }
-    // Connect button disabled without subscription.
-    expect(tester.widget<FilledButton>(find.byKey(const Key('connect_button'))).onPressed, isNull);
-    vpn.dispose();
-  });
+    await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
 
-  testWidgets('home shows the connected server and a distinct disconnecting label', (tester) async {
-    SharedPreferences.setMockInitialValues({'onboarding_done': true});
-    final settings = await AppSettings.load();
-    final repo = SubscriptionRepository(store: MemorySecureStore(), fetcher: _NoFetch());
-    await repo.load();
-    final bridge = FakeBridge();
-    final vpn = VpnController(bridge: bridge);
-    await tester.pumpWidget(MilkyApp(settings: settings, repo: repo, vpn: vpn, bridge: bridge));
+    await tester.tap(find.byKey(const ValueKey('milky_nav_2')));
+    await tester.pumpAndSettle();
+    expect(find.text('Подключение'), findsWidgets);
+    expect(find.text('Автоподключение'), findsOneWidget);
+    expect(find.text('Always-on VPN'), findsOneWidget);
+    expect(find.text('Автоподключение'), findsOneWidget);
+    expect(find.text('Диагностика'), findsWidgets);
+
+    await tester.tap(find.byKey(const ValueKey('milky_nav_0')));
     await tester.pumpAndSettle();
     expect(find.text('Не подключено'), findsOneWidget);
-
-    bridge.emit(VpnSnapshot(state: VpnState.connected, profileRemark: 'Finland', connectedSince: DateTime.now()));
-    await tester.pump();
-    await tester.pump();
-    expect(find.text('Подключено'), findsOneWidget);
-    expect(find.text('Сервер: Finland'), findsOneWidget);
-    expect(find.text('Отключение…'), findsNothing);
-
-    bridge.emit(const VpnSnapshot(state: VpnState.disconnecting));
-    await tester.pump();
-    await tester.pump();
-    expect(find.text('Отключение…'), findsOneWidget);
-    expect(find.text('Подключено'), findsNothing);
-    expect(find.text('Сервер: Finland'), findsNothing);
     vpn.dispose();
-  });
-
-  testWidgets('import screen can reveal the subscription link', (tester) async {
-    await tester.pumpWidget(const MaterialApp(home: ImportScreen()));
-    TextField field() => tester.widget<TextField>(find.byType(TextField));
-    expect(field().obscureText, isTrue);
-    expect(find.byIcon(Icons.visibility_outlined), findsOneWidget);
-    await tester.tap(find.byIcon(Icons.visibility_outlined));
-    await tester.pump();
-    expect(field().obscureText, isFalse);
-    await tester.tap(find.byIcon(Icons.visibility_off_outlined));
-    await tester.pump();
-    expect(field().obscureText, isTrue);
   });
 }

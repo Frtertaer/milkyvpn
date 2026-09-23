@@ -12,13 +12,13 @@ abstract class SecureStore {
 /// Keystore key). Backups are disabled by the manifest rules, so secrets never leave the device.
 class KeystoreSecureStore implements SecureStore {
   KeystoreSecureStore()
-      : _s = const FlutterSecureStorage(
-          aOptions: AndroidOptions(
-            resetOnError: true,
-            storageNamespace: 'milkyvpn_secure',
-            preferencesKeyPrefix: 'mv',
-          ),
-        );
+    : _s = const FlutterSecureStorage(
+        aOptions: AndroidOptions(
+          resetOnError: true,
+          storageNamespace: 'milkyvpn_secure',
+          preferencesKeyPrefix: 'mv',
+        ),
+      );
 
   final FlutterSecureStorage _s;
 
@@ -26,7 +26,8 @@ class KeystoreSecureStore implements SecureStore {
   Future<String?> read(String key) => _s.read(key: key);
 
   @override
-  Future<void> write(String key, String value) => _s.write(key: key, value: value);
+  Future<void> write(String key, String value) =>
+      _s.write(key: key, value: value);
 
   @override
   Future<void> delete(String key) => _s.delete(key: key);

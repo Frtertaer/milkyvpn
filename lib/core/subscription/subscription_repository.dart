@@ -29,7 +29,10 @@ class SubscriptionFetchException implements Exception {
 
 /// Dedicated HTTPS-only fetcher. Redirects are NOT followed (they could leave the allowlist).
 class HttpsSubscriptionFetcher implements SubscriptionFetcher {
-  HttpsSubscriptionFetcher({this.policy = const SubscriptionUrlPolicy(), this.timeout = const Duration(seconds: 20)});
+  HttpsSubscriptionFetcher({
+    this.policy = const SubscriptionUrlPolicy(),
+    this.timeout = const Duration(seconds: 20),
+  });
 
   final SubscriptionUrlPolicy policy;
   final Duration timeout;
@@ -49,16 +52,25 @@ class HttpsSubscriptionFetcher implements SubscriptionFetcher {
       req.headers.set(HttpHeaders.acceptHeader, 'text/plain, */*');
       final res = await req.close().timeout(timeout);
       if (res.statusCode != 200) {
-        throw SubscriptionFetchException(res.statusCode == 404 || res.statusCode == 403 ? 'subscription_not_found' : 'http_${res.statusCode}');
+        throw SubscriptionFetchException(
+          res.statusCode == 404 || res.statusCode == 403
+              ? 'subscription_not_found'
+              : 'http_${res.statusCode}',
+        );
       }
       final bytes = <int>[];
       await for (final chunk in res.timeout(timeout)) {
         bytes.addAll(chunk);
-        if (bytes.length > _maxBodyBytes) throw SubscriptionFetchException('body_too_large');
+        if (bytes.length > _maxBodyBytes) {
+          throw SubscriptionFetchException('body_too_large');
+        }
       }
       final headers = <String, String>{};
       res.headers.forEach((k, v) => headers[k.toLowerCase()] = v.join(', '));
-      return FetchedSubscription(body: utf8.decode(bytes, allowMalformed: true), headers: headers);
+      return FetchedSubscription(
+        body: utf8.decode(bytes, allowMalformed: true),
+        headers: headers,
+      );
     } on SubscriptionFetchException {
       rethrow;
     } catch (e) {
@@ -78,16 +90,57 @@ class SubscriptionSnapshot {
     required this.updatedAt,
     required this.totalEntries,
     required this.malformedEntries,
+    this.duplicateEntries = 0,
     this.expiresAt,
-  });
+    this.schemaVersion = currentSchemaVersion,
+    bool countsTrusted = true,
+  }) : _countsTrusted = countsTrusted;
+
+  /// First persisted schema that records every count boundary explicitly.
+  static const int currentSchemaVersion = 2;
 
   final List<VpnProfile> profiles;
   final DateTime updatedAt;
-  final int totalEntries;
-  final int malformedEntries;
-  final DateTime? expiresAt;
 
-  bool get isActive => profiles.isNotEmpty && (expiresAt == null || expiresAt!.isAfter(DateTime.now().toUtc()));
+  /// Non-empty, non-comment lines in the payload.
+  final int totalEntries;
+
+  /// Lines that could not be parsed at all.
+  final int malformedEntries;
+
+  /// Lines that parsed but repeated an endpoint already present in the list.
+  ///
+  /// `totalEntries = profiles.length + malformedEntries + duplicateEntries`, which is what
+  /// makes the parsed count explainable instead of mysteriously smaller than the file.
+  final int duplicateEntries;
+  final DateTime? expiresAt;
+  final int schemaVersion;
+  final bool _countsTrusted;
+
+  int get receivedEntryCount => totalEntries;
+  int get parsedProfileCount => profiles.length + duplicateEntries;
+  int get postDedupeProfileCount => profiles.length;
+  int get droppedDuplicateCount => duplicateEntries;
+  int get malformedEntryCount => malformedEntries;
+  int get compatibleProfileCount =>
+      profiles.where((profile) => profile.isStaticCompatible).length;
+
+  bool get isCountInvariantValid =>
+      receivedEntryCount >= 0 &&
+      malformedEntryCount >= 0 &&
+      droppedDuplicateCount >= 0 &&
+      receivedEntryCount == parsedProfileCount + malformedEntryCount;
+
+  /// True only for a current-schema snapshot whose persisted counters reconcile exactly.
+  bool get countsTrusted => _countsTrusted && isCountInvariantValid;
+
+  /// Legacy snapshots can still provide profiles for connection, but their counts must not
+  /// be presented as authoritative until an explicit refresh reparses the source payload.
+  bool get needsRefresh => !countsTrusted;
+
+  bool get isActive =>
+      profiles.isNotEmpty &&
+      (expiresAt == null || expiresAt!.isAfter(DateTime.now().toUtc()));
 }
 
 /// Owns the subscription credential (URL/token) and the parsed snapshot.
@@ -97,10 +150,10 @@ class SubscriptionRepository extends ChangeNotifier {
     required SubscriptionFetcher fetcher,
     SubscriptionParser parser = const SubscriptionParser(),
     SubscriptionUrlPolicy policy = const SubscriptionUrlPolicy(),
-  })  : _store = store,
-        _fetcher = fetcher,
-        _parser = parser,
-        _policy = policy;
+  }) : _store = store,
+       _fetcher = fetcher,
+       _parser = parser,
+       _policy = policy;
 
   static const _kUrl = 'subscription_url';
   static const _kSnapshot = 'subscription_snapshot';
@@ -120,18 +173,33 @@ class SubscriptionRepository extends ChangeNotifier {
   SubscriptionSnapshot? get snapshot => _snapshot;
   String? get lastErrorClass => _lastError;
 
+  /// Whether the currently loaded count snapshot passed schema and invariant checks.
+  bool get countsTrusted => _snapshot?.countsTrusted ?? false;
+
+  /// A refresh is useful only when a subscription credential exists and counts are absent
+  /// or untrusted. Loading never performs network I/O implicitly.
+  bool get needsRefresh => _url != null && !countsTrusted;
+
   /// Redacted for UI. Never exposes the token.
-  String? get redactedUrl => _url == null ? null : SubscriptionUrlPolicy.redact(_url!);
+  String? get redactedUrl =>
+      _url == null ? null : SubscriptionUrlPolicy.redact(_url!);
+
+  /// Full subscription URL, exposed ONLY for the explicit "copy link" advanced action.
+  /// Never render this on normal screens.
+  String? get urlForCopy => _url?.toString();
 
   Future<void> load() async {
     try {
       final u = await _store.read(_kUrl);
       if (u != null) _url = _policy.validate(u);
+    } catch (_) {
+      _url = null;
+    }
+    try {
       final s = await _store.read(_kSnapshot);
       if (s != null) _snapshot = _decodeSnapshot(s);
     } catch (_) {
-      // Corrupt secure storage: start clean rather than crash.
-      _url = null;
+      // A damaged cache must not discard the independently validated credential.
       _snapshot = null;
     }
     _loaded = true;
@@ -187,8 +255,9 @@ class SubscriptionRepository extends ChangeNotifier {
     return SubscriptionSnapshot(
       profiles: result.profiles,
       updatedAt: DateTime.now().toUtc(),
-      totalEntries: result.totalLines,
-      malformedEntries: result.malformedLines,
+      totalEntries: result.receivedEntryCount,
+      malformedEntries: result.malformedEntryCount,
+      duplicateEntries: result.droppedDuplicateCount,
       expiresAt: result.expiresAt,
     );
   }
@@ -196,50 +265,92 @@ class SubscriptionRepository extends ChangeNotifier {
   // ---------------------------------------------------------------- (de)serialisation
 
   static String _encodeSnapshot(SubscriptionSnapshot s) => jsonEncode({
-        'updatedAt': s.updatedAt.toIso8601String(),
-        'total': s.totalEntries,
-        'malformed': s.malformedEntries,
-        'expiresAt': s.expiresAt?.toIso8601String(),
-        'profiles': s.profiles.map(_profileToJson).toList(),
-      });
+    'schemaVersion': SubscriptionSnapshot.currentSchemaVersion,
+    'receivedEntryCount': s.receivedEntryCount,
+    'parsedProfileCount': s.parsedProfileCount,
+    'postDedupeProfileCount': s.postDedupeProfileCount,
+    'droppedDuplicateCount': s.droppedDuplicateCount,
+    'malformedEntryCount': s.malformedEntryCount,
+    'updatedAt': s.updatedAt.toIso8601String(),
+    // Legacy aliases are retained so an older app can still read a newly written snapshot.
+    'total': s.totalEntries,
+    'malformed': s.malformedEntries,
+    'duplicates': s.duplicateEntries,
+    'expiresAt': s.expiresAt?.toIso8601String(),
+    'profiles': s.profiles.map(_profileToJson).toList(),
+  });
 
   static SubscriptionSnapshot _decodeSnapshot(String raw) {
     final m = jsonDecode(raw) as Map<String, dynamic>;
+    final profiles = (m['profiles'] as List<dynamic>? ?? const [])
+        .whereType<Map<String, dynamic>>()
+        .map(_profileFromJson)
+        .whereType<VpnProfile>()
+        .toList();
+
+    final schemaVersion = _nonNegativeInt(m['schemaVersion']) ?? 0;
+    final received = _nonNegativeInt(m['receivedEntryCount']);
+    final parsed = _nonNegativeInt(m['parsedProfileCount']);
+    final postDedupe = _nonNegativeInt(m['postDedupeProfileCount']);
+    final dropped = _nonNegativeInt(m['droppedDuplicateCount']);
+    final malformed = _nonNegativeInt(m['malformedEntryCount']);
+
+    final countsTrusted =
+        schemaVersion == SubscriptionSnapshot.currentSchemaVersion &&
+        received != null &&
+        parsed != null &&
+        postDedupe != null &&
+        dropped != null &&
+        malformed != null &&
+        postDedupe == profiles.length &&
+        parsed == postDedupe + dropped &&
+        received == parsed + malformed;
+
     return SubscriptionSnapshot(
-      updatedAt: DateTime.tryParse(m['updatedAt'] as String? ?? '') ?? DateTime.now().toUtc(),
-      totalEntries: (m['total'] as num?)?.toInt() ?? 0,
-      malformedEntries: (m['malformed'] as num?)?.toInt() ?? 0,
-      expiresAt: m['expiresAt'] == null ? null : DateTime.tryParse(m['expiresAt'] as String),
-      profiles: (m['profiles'] as List<dynamic>? ?? const [])
-          .whereType<Map<String, dynamic>>()
-          .map(_profileFromJson)
-          .whereType<VpnProfile>()
-          .toList(),
+      updatedAt:
+          DateTime.tryParse(m['updatedAt'] as String? ?? '') ??
+          DateTime.now().toUtc(),
+      totalEntries: received ?? _nonNegativeInt(m['total']) ?? 0,
+      malformedEntries: malformed ?? _nonNegativeInt(m['malformed']) ?? 0,
+      duplicateEntries: dropped ?? _nonNegativeInt(m['duplicates']) ?? 0,
+      expiresAt: m['expiresAt'] == null
+          ? null
+          : DateTime.tryParse(m['expiresAt'] as String),
+      profiles: profiles,
+      schemaVersion: schemaVersion,
+      countsTrusted: countsTrusted,
     );
   }
 
+  static int? _nonNegativeInt(Object? value) {
+    if (value is! num || !value.isFinite) return null;
+    final integer = value.toInt();
+    if (integer < 0 || value != integer) return null;
+    return integer;
+  }
+
   static Map<String, Object?> _profileToJson(VpnProfile p) => {
-        'id': p.id,
-        'protocol': p.protocol,
-        'address': p.address,
-        'port': p.port,
-        'secret': p.secret,
-        'remark': p.remark,
-        'network': p.network,
-        'security': p.security,
-        'sni': p.sni,
-        'fingerprint': p.fingerprint,
-        'publicKey': p.publicKey,
-        'shortId': p.shortId,
-        'spiderX': p.spiderX,
-        'flow': p.flow,
-        'host': p.host,
-        'path': p.path,
-        'xhttpMode': p.xhttpMode,
-        'alpn': p.alpn,
-        'allowInsecure': p.allowInsecure,
-        'obfsPassword': p.obfsPassword,
-      };
+    'id': p.id,
+    'protocol': p.protocol,
+    'address': p.address,
+    'port': p.port,
+    'secret': p.secret,
+    'remark': p.remark,
+    'network': p.network,
+    'security': p.security,
+    'sni': p.sni,
+    'fingerprint': p.fingerprint,
+    'publicKey': p.publicKey,
+    'shortId': p.shortId,
+    'spiderX': p.spiderX,
+    'flow': p.flow,
+    'host': p.host,
+    'path': p.path,
+    'xhttpMode': p.xhttpMode,
+    'alpn': p.alpn,
+    'allowInsecure': p.allowInsecure,
+    'obfsPassword': p.obfsPassword,
+  };
 
   static VpnProfile? _profileFromJson(Map<String, dynamic> m) {
     try {

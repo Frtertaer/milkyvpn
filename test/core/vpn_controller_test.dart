@@ -29,17 +29,37 @@ class FakeBridge implements VpnBridge {
   @override
   Future<bool> prepare() async => permission;
   @override
-  Future<bool> isProfileSupported(VpnProfile p) async => !unsupportedIds.contains(p.id);
+  Future<bool> isProfileSupported(VpnProfile p) async =>
+      !unsupportedIds.contains(p.id);
   @override
   Future<void> connect(VpnProfile p) async {
     connectCalls.add(p.id);
-    emit(VpnSnapshot(state: VpnState.connecting, profileId: p.id, profileRemark: p.redactedRemark));
+    emit(
+      VpnSnapshot(
+        state: VpnState.connecting,
+        profileId: p.id,
+        profileRemark: p.redactedRemark,
+      ),
+    );
     if (hang) return;
     await Future<void>.delayed(const Duration(milliseconds: 5));
     if (failIds.contains(p.id)) {
-      emit(VpnSnapshot(state: VpnState.error, profileId: p.id, errorCode: 'tls_handshake'));
+      emit(
+        VpnSnapshot(
+          state: VpnState.error,
+          profileId: p.id,
+          errorCode: 'tls_handshake',
+        ),
+      );
     } else {
-      emit(VpnSnapshot(state: VpnState.connected, profileId: p.id, profileRemark: p.redactedRemark, connectedSince: DateTime.now()));
+      emit(
+        VpnSnapshot(
+          state: VpnState.connected,
+          profileId: p.id,
+          profileRemark: p.redactedRemark,
+          connectedSince: DateTime.now(),
+        ),
+      );
     }
   }
 
@@ -64,49 +84,74 @@ class FakeBridge implements VpnBridge {
 }
 
 VpnProfile p(String id, {String remark = 'Finland'}) => VpnProfile(
-      id: id,
-      protocol: 'vless',
-      address: '$id.example.invalid',
-      port: 443,
-      secret: '00000001-0000-4000-8000-000000000001',
-      remark: remark,
-      security: 'reality',
-      publicKey: 'FAKE',
-    );
+  id: id,
+  protocol: 'vless',
+  address: '$id.example.invalid',
+  port: 443,
+  secret: '00000001-0000-4000-8000-000000000001',
+  remark: remark,
+  security: 'reality',
+  publicKey: 'FAKE',
+);
 
 void main() {
   test('connects to first candidate and reports connected', () async {
     final b = FakeBridge();
-    final c = VpnController(bridge: b, attemptTimeout: const Duration(seconds: 1));
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(seconds: 1),
+    );
     final ok = await c.connect([p('a'), p('b')], LocationChoice.auto);
     expect(ok, isTrue);
     expect(c.isConnected, isTrue);
     expect(c.state, VpnState.connected);
     expect(b.connectCalls, ['a']);
     expect(c.attemptsMade, 1);
+    expect(c.attemptTotal, 2);
   });
 
-  test('falls back to next profile after failure, disconnects failed attempt', () async {
-    final b = FakeBridge()..failIds = {'a'};
-    final c = VpnController(bridge: b, attemptTimeout: const Duration(seconds: 1));
-    expect(await c.connect([p('a'), p('b')], LocationChoice.auto), isTrue);
-    expect(b.connectCalls, ['a', 'b']);
-    expect(b.disconnectCalls, 1);
-    expect(c.attemptsMade, 2);
-  });
+  test(
+    'falls back to next profile after failure, disconnects failed attempt',
+    () async {
+      final b = FakeBridge()..failIds = {'a'};
+      final c = VpnController(
+        bridge: b,
+        attemptTimeout: const Duration(seconds: 1),
+      );
+      expect(await c.connect([p('a'), p('b')], LocationChoice.auto), isTrue);
+      expect(b.connectCalls, ['a', 'b']);
+      expect(b.disconnectCalls, 1);
+      expect(c.attemptsMade, 2);
+    },
+  );
 
   test('all attempts fail -> bounded, error surfaced, not connected', () async {
     final b = FakeBridge()..failIds = {'a', 'b', 'c', 'd', 'e', 'f'};
-    final c = VpnController(bridge: b, attemptTimeout: const Duration(seconds: 1), maxAttempts: 3);
-    expect(await c.connect(List.generate(6, (i) => p('abcdef'[i])), LocationChoice.auto), isFalse);
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(seconds: 1),
+      maxAttempts: 3,
+    );
+    expect(
+      await c.connect(
+        List.generate(6, (i) => p('abcdef'[i])),
+        LocationChoice.auto,
+      ),
+      isFalse,
+    );
     expect(b.connectCalls.length, 3);
+    expect(c.attemptTotal, 3);
     expect(c.lastErrorClass, 'tls_handshake');
     expect(c.state, VpnState.disconnected);
   });
 
   test('timeout per attempt triggers fallback', () async {
     final b = FakeBridge()..hang = true;
-    final c = VpnController(bridge: b, attemptTimeout: const Duration(milliseconds: 50), maxAttempts: 2);
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(milliseconds: 50),
+      maxAttempts: 2,
+    );
     expect(await c.connect([p('a'), p('b')], LocationChoice.auto), isFalse);
     expect(b.connectCalls, ['a', 'b']);
     expect(c.lastErrorClass, 'timeout');
@@ -129,24 +174,41 @@ void main() {
   test('unsupported profiles are skipped; location filter applied', () async {
     final b = FakeBridge()..unsupportedIds = {'a'};
     final c = VpnController(bridge: b);
-    expect(await c.connect([p('a'), p('b', remark: 'USA-1')], LocationChoice.finland), isFalse);
+    expect(
+      await c.connect([
+        p('a'),
+        p('b', remark: 'USA-1'),
+      ], LocationChoice.finland),
+      isFalse,
+    );
     expect(c.lastErrorClass, 'no_compatible_profiles');
-    expect(await c.connect([p('a'), p('b', remark: 'USA-1')], LocationChoice.usa), isTrue);
+    expect(
+      await c.connect([p('a'), p('b', remark: 'USA-1')], LocationChoice.usa),
+      isTrue,
+    );
     expect(b.connectCalls, ['b']);
   });
 
-  test('disconnect transitions to disconnected; system revoke/network loss propagates', () async {
-    final b = FakeBridge();
-    final c = VpnController(bridge: b);
-    await c.connect([p('a')], LocationChoice.auto);
-    await c.disconnect();
-    await Future<void>.delayed(Duration.zero);
-    expect(c.state, VpnState.disconnected);
-    // network change / revoke reported by native
-    await c.connect([p('a')], LocationChoice.auto);
-    b.emit(const VpnSnapshot(state: VpnState.disconnected, errorCode: 'revoked_by_system'));
-    await Future<void>.delayed(Duration.zero);
-    expect(c.isConnected, isFalse);
-    expect(c.lastErrorClass, 'revoked_by_system');
-  });
+  test(
+    'disconnect transitions to disconnected; system revoke/network loss propagates',
+    () async {
+      final b = FakeBridge();
+      final c = VpnController(bridge: b);
+      await c.connect([p('a')], LocationChoice.auto);
+      await c.disconnect();
+      await Future<void>.delayed(Duration.zero);
+      expect(c.state, VpnState.disconnected);
+      // network change / revoke reported by native
+      await c.connect([p('a')], LocationChoice.auto);
+      b.emit(
+        const VpnSnapshot(
+          state: VpnState.disconnected,
+          errorCode: 'revoked_by_system',
+        ),
+      );
+      await Future<void>.delayed(Duration.zero);
+      expect(c.isConnected, isFalse);
+      expect(c.lastErrorClass, 'revoked_by_system');
+    },
+  );
 }
