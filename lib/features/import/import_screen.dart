@@ -32,6 +32,7 @@ class _ImportScreenState extends State<ImportScreen> {
     text: widget.initialValue,
   );
   bool _busy = false;
+  bool _obscure = true;
   String? _error;
   SubscriptionSnapshot? _result;
 
@@ -142,25 +143,49 @@ class _ImportScreenState extends State<ImportScreen> {
               const SizedBox(height: MilkySpace.md),
               TextField(
                 controller: _ctrl,
-                obscureText: true,
+                obscureText: _obscure,
                 enableSuggestions: false,
                 autocorrect: false,
                 keyboardType: TextInputType.url,
-                onChanged: (_) {
-                  if (_error != null) setState(() => _error = null);
-                },
+                onChanged: (_) => setState(() => _error = null),
                 decoration: InputDecoration(
                   hintText: 'https://sub.milky.homes/s/…',
                   errorText: _error,
                   errorMaxLines: 4,
                   suffixIcon: _ctrl.text.isEmpty
-                      ? null
-                      : IconButton(
-                          icon: const Icon(Icons.close_rounded, size: 18),
-                          onPressed: () => setState(() {
-                            _ctrl.clear();
-                            _error = null;
-                          }),
+                      ? IconButton(
+                          icon: Icon(
+                            _obscure
+                                ? Icons.visibility_outlined
+                                : Icons.visibility_off_outlined,
+                            size: 18,
+                          ),
+                          tooltip: _obscure ? t.showLink : t.hideLink,
+                          onPressed: () =>
+                              setState(() => _obscure = !_obscure),
+                        )
+                      : Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            IconButton(
+                              icon: Icon(
+                                _obscure
+                                    ? Icons.visibility_outlined
+                                    : Icons.visibility_off_outlined,
+                                size: 18,
+                              ),
+                              tooltip: _obscure ? t.showLink : t.hideLink,
+                              onPressed: () =>
+                                  setState(() => _obscure = !_obscure),
+                            ),
+                            IconButton(
+                              icon: const Icon(Icons.close_rounded, size: 18),
+                              onPressed: () => setState(() {
+                                _ctrl.clear();
+                                _error = null;
+                              }),
+                            ),
+                          ],
                         ),
                 ),
               ),

@@ -143,7 +143,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
         messenger.showSnackBar(SnackBar(content: Text(t.noSubscription)));
       } else {
         MilkyHaptics.success();
-        messenger.showSnackBar(SnackBar(content: Text(t.importOk)));
+        messenger.showSnackBar(SnackBar(content: Text(t.updated)));
       }
     } on SubscriptionFetchException catch (e) {
       if (!mounted) return;

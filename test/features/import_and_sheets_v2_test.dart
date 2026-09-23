@@ -7,6 +7,7 @@ import 'package:milkyvpn/core/subscription/subscription_repository.dart';
 import 'package:milkyvpn/core/vpn/vpn_controller.dart';
 import 'package:milkyvpn/design/milky_error_sheet.dart';
 import 'package:milkyvpn/design/milky_sheet.dart';
+import 'package:milkyvpn/features/import/import_screen.dart';
 import 'package:milkyvpn/features/home/home_screen.dart';
 
 import '../core/vpn_controller_test.dart' show FakeBridge;
@@ -86,5 +87,19 @@ void main() {
     expect(find.text('9:41'), findsNothing);
     await tester.pumpWidget(const SizedBox());
     vpn.dispose();
+  });
+
+  testWidgets('import field stays masked but can reveal the pasted link', (tester) async {
+    await tester.pumpWidget(const MaterialApp(home: ImportScreen()));
+    TextField field() => tester.widget<TextField>(find.byType(TextField));
+    expect(field().obscureText, isTrue);
+    expect(find.byIcon(Icons.visibility_outlined), findsOneWidget);
+    await tester.tap(find.byIcon(Icons.visibility_outlined));
+    await tester.pump();
+    expect(field().obscureText, isFalse);
+    await tester.tap(find.byIcon(Icons.visibility_off_outlined));
+    await tester.pump();
+    expect(field().obscureText, isTrue);
+    expect(tester.takeException(), isNull);
   });
 }

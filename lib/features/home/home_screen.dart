@@ -156,6 +156,7 @@ class _HomeScreenState extends State<HomeScreen> {
   }
 
   String _statusText(S t, VpnController vpn, SubscriptionRepository repo) {
+    if (vpn.state == VpnState.disconnecting) return t.disconnecting;
     if (vpn.isBusy) return t.connecting;
     if (vpn.isConnected) return t.protectionOn;
     if (!repo.hasSubscription) return t.needSubscription;
@@ -270,7 +271,10 @@ class _TopBar extends StatelessWidget {
 
     final String label;
     final Color color;
-    if (busy) {
+    if (state == VpnState.disconnecting) {
+      label = t.disconnecting;
+      color = c.accent;
+    } else if (busy) {
       label = t.protectionConnecting;
       color = c.accent;
     } else if (connected) {
@@ -333,7 +337,7 @@ class _StatusBlock extends StatelessWidget {
         key: const Key('state_text'),
         children: [
           Text(
-            t.connecting,
+            vpn.state == VpnState.disconnecting ? t.disconnecting : t.connecting,
             textAlign: TextAlign.center,
             style: MilkyType.headline.copyWith(color: c.accent),
           ),
