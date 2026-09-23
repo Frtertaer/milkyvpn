@@ -2,11 +2,13 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import '../../app/app_info.dart';
 import '../../app/app_settings.dart';
 import '../../core/errors/milky_error.dart';
 import '../../core/subscription/subscription_repository.dart';
 import '../../core/vpn/vpn_bridge.dart';
 import '../../design/milky_buttons.dart';
+import '../../design/milky_brand.dart';
 import '../../design/milky_colors.dart';
 import '../../design/milky_error_sheet.dart';
 import '../../design/milky_glass.dart';
@@ -39,7 +41,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
     final bridge = context.read<VpnBridge>();
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(MilkySpace.screen, MilkySpace.sm, MilkySpace.screen, MilkySpace.xxl),
+      padding: const EdgeInsets.fromLTRB(
+        MilkySpace.screen,
+        MilkySpace.sm,
+        MilkySpace.screen,
+        MilkySpace.xxl,
+      ),
       child: MilkyColumn(
         maxWidth: MilkyLayout.maxReadingWidth,
         child: Column(
@@ -50,6 +57,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
 
             MilkySectionHeader(t.groupConnection),
             MilkyGlassCard(
+              elevated: false,
               padding: const EdgeInsets.symmetric(vertical: MilkySpace.xs),
               child: Column(
                 children: [
@@ -75,11 +83,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: MilkySpace.sm),
             MilkySectionHeader(t.groupApp),
             MilkyGlassCard(
+              elevated: false,
               padding: const EdgeInsets.symmetric(vertical: MilkySpace.xs),
               child: Column(
                 children: [
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(MilkySpace.lg, MilkySpace.md, MilkySpace.lg, MilkySpace.lg),
+                    padding: const EdgeInsets.fromLTRB(
+                      MilkySpace.lg,
+                      MilkySpace.md,
+                      MilkySpace.lg,
+                      MilkySpace.lg,
+                    ),
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
@@ -88,8 +102,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
                             Container(
                               width: 34,
                               height: 34,
-                              decoration: BoxDecoration(color: c.accentSoft, borderRadius: BorderRadius.circular(11)),
-                              child: Icon(Icons.dark_mode_rounded, size: 18, color: c.accent),
+                              decoration: BoxDecoration(
+                                color: c.accentSoft,
+                                borderRadius: BorderRadius.circular(11),
+                              ),
+                              child: Icon(
+                                Icons.dark_mode_rounded,
+                                size: 18,
+                                color: c.accent,
+                              ),
                             ),
                             const SizedBox(width: MilkySpace.md),
                             Text(t.theme, style: MilkyType.subtitle),
@@ -97,7 +118,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                         ),
                         const SizedBox(height: MilkySpace.md),
                         MilkySegmented<ThemeMode>(
-                          values: const [ThemeMode.system, ThemeMode.light, ThemeMode.dark],
+                          values: const [
+                            ThemeMode.system,
+                            ThemeMode.light,
+                            ThemeMode.dark,
+                          ],
                           selected: s.themeMode,
                           onSelected: s.setThemeMode,
                           labelOf: (m) {
@@ -120,7 +145,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: t.checkSubscriptionUpdate,
                     subtitle: repo.hasSubscription ? null : t.noSubscription,
                     trailing: _refreshing
-                        ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(strokeWidth: 2),
+                          )
                         : null,
                     onTap: _refreshing ? null : _refresh,
                   ),
@@ -131,6 +160,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: MilkySpace.sm),
             MilkySectionHeader(t.groupHelp),
             MilkyGlassCard(
+              elevated: false,
               padding: const EdgeInsets.symmetric(vertical: MilkySpace.xs),
               child: Column(
                 children: [
@@ -139,7 +169,11 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: t.diagnostics,
                     subtitle: t.diagnosticsHint,
                     showChevron: true,
-                    onTap: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const DiagnosticsScreen())),
+                    onTap: () => Navigator.of(context).push(
+                      MaterialPageRoute<void>(
+                        builder: (_) => const DiagnosticsScreen(),
+                      ),
+                    ),
                   ),
                   const MilkyHairline(indent: MilkySpace.lg),
                   MilkySettingRow(
@@ -156,6 +190,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: MilkySpace.sm),
             MilkySectionHeader(t.groupAbout),
             MilkyGlassCard(
+              elevated: false,
               padding: const EdgeInsets.symmetric(vertical: MilkySpace.xs),
               child: Column(
                 children: [
@@ -171,21 +206,26 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     title: t.about,
                     subtitle: t.aboutBody,
                     showChevron: true,
-                    onTap: () => _showInfo(context, t.about, '${t.aboutBody}\n\n${t.version}: $kAppVersion'),
+                    onTap: () => _showInfo(
+                      context,
+                      t.about,
+                      '${t.aboutBody}\n\n${t.version}: $kAppVersion',
+                    ),
                   ),
                   const MilkyHairline(indent: MilkySpace.lg),
                   MilkySettingRow(
                     icon: Icons.tag_rounded,
                     title: t.version,
-                    trailing: Text(kAppVersion, style: MilkyType.chip.copyWith(color: c.textMuted)),
+                    trailing: Text(
+                      kAppVersion,
+                      style: MilkyType.chip.copyWith(color: c.textMuted),
+                    ),
                   ),
                 ],
               ),
             ),
             const SizedBox(height: MilkySpace.xl),
-            Center(
-              child: MilkyWordmark(size: 15),
-            ),
+            Center(child: MilkyWordmark(size: 15)),
           ],
         ),
       ),
@@ -201,7 +241,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
       final snap = await repo.refresh();
       if (!mounted) return;
       MilkyHaptics.success();
-      messenger.showSnackBar(SnackBar(content: Text(snap == null ? t.noSubscription : t.importOk)));
+      messenger.showSnackBar(
+        SnackBar(content: Text(snap == null ? t.noSubscription : t.importOk)),
+      );
     } on SubscriptionFetchException catch (e) {
       if (!mounted) return;
       MilkyHaptics.error();
@@ -209,7 +251,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         context,
         error: MilkyError.fromCode(e.errorClass),
         onRetry: _refresh,
-        onOpenDiagnostics: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const DiagnosticsScreen())),
+        onOpenDiagnostics: () => Navigator.of(context).push(
+          MaterialPageRoute<void>(builder: (_) => const DiagnosticsScreen()),
+        ),
       );
     } finally {
       if (mounted) setState(() => _refreshing = false);
@@ -221,7 +265,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
     if (await canLaunchUrl(uri)) {
       await launchUrl(uri, mode: LaunchMode.externalApplication);
     } else if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(S.of(context).supportHint)));
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(S.of(context).supportHint)));
     }
   }
 
@@ -237,7 +283,12 @@ class _SettingsScreenState extends State<SettingsScreen> {
         child: MilkyColumn(
           maxWidth: MilkyLayout.maxReadingWidth,
           child: Padding(
-            padding: const EdgeInsets.fromLTRB(MilkySpace.md, 0, MilkySpace.md, MilkySpace.md),
+            padding: const EdgeInsets.fromLTRB(
+              MilkySpace.md,
+              0,
+              MilkySpace.md,
+              MilkySpace.md,
+            ),
             child: MilkyGlassCard(
               radius: MilkyRadius.sheet,
               padding: const EdgeInsets.all(MilkySpace.xxl),
@@ -249,11 +300,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   const SizedBox(height: MilkySpace.md),
                   Flexible(
                     child: SingleChildScrollView(
-                      child: Text(body, style: MilkyType.body.copyWith(color: c.textMuted)),
+                      child: Text(
+                        body,
+                        style: MilkyType.body.copyWith(color: c.textMuted),
+                      ),
                     ),
                   ),
                   const SizedBox(height: MilkySpace.xl),
-                  MilkyGhostButton(label: S.of(ctx).cancel, onPressed: () => Navigator.of(ctx).pop()),
+                  MilkyGhostButton(
+                    label: S.of(ctx).cancel,
+                    onPressed: () => Navigator.of(ctx).pop(),
+                  ),
                 ],
               ),
             ),

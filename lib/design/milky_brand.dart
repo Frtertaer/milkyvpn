@@ -27,7 +27,12 @@ abstract final class MilkyMark {
       cx + bulbR,
       bulbCy,
     );
-    path.arcTo(Rect.fromCircle(center: Offset(cx, bulbCy), radius: bulbR), 0, math.pi, false);
+    path.arcTo(
+      Rect.fromCircle(center: Offset(cx, bulbCy), radius: bulbR),
+      0,
+      math.pi,
+      false,
+    );
     path.cubicTo(
       cx - bulbR * 1.02,
       r.top + h * 0.375,
@@ -75,11 +80,18 @@ abstract final class MilkyMark {
           ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 14),
       );
     }
-    canvas.drawPath(drop, Paint()..shader = LinearGradient(
-      begin: Alignment.topCenter,
-      end: Alignment.bottomCenter,
-      colors: [Color.alphaBlend(Colors.white.withValues(alpha: 0.22), fill), fill],
-    ).createShader(rect));
+    canvas.drawPath(
+      drop,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            Color.alphaBlend(Colors.white.withValues(alpha: 0.22), fill),
+            fill,
+          ],
+        ).createShader(rect),
+    );
     canvas.drawPath(
       letter(rect),
       Paint()
@@ -94,7 +106,14 @@ abstract final class MilkyMark {
 
 /// The mark as a widget, optionally on a glass tile.
 class MilkyLogoMark extends StatelessWidget {
-  const MilkyLogoMark({super.key, this.size = 40, this.fill, this.glyph, this.onTile = false, this.glow = false});
+  const MilkyLogoMark({
+    super.key,
+    this.size = 40,
+    this.fill,
+    this.glyph,
+    this.onTile = false,
+    this.glow = false,
+  });
 
   final double size;
   final Color? fill;
@@ -106,12 +125,17 @@ class MilkyLogoMark extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.milky;
     final markFill = fill ?? c.accent;
-    final markGlyph = glyph ?? (c.isDark ? const Color(0xFF0A1020) : Colors.white);
+    final markGlyph =
+        glyph ?? (c.isDark ? const Color(0xFF0A1020) : Colors.white);
     final Widget mark = SizedBox(
       width: size,
       height: size,
       child: CustomPaint(
-        painter: _MarkPainter(fill: markFill, glyph: markGlyph, glow: glow ? markFill.withValues(alpha: 0.45) : null),
+        painter: _MarkPainter(
+          fill: markFill,
+          glyph: markGlyph,
+          glow: glow ? markFill.withValues(alpha: 0.45) : null,
+        ),
       ),
     );
     if (!onTile) return mark;
@@ -136,11 +160,18 @@ class _MarkPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    MilkyMark.paint(canvas, Offset.zero & size, fill: fill, glyph: glyph, glow: glow);
+    MilkyMark.paint(
+      canvas,
+      Offset.zero & size,
+      fill: fill,
+      glyph: glyph,
+      glow: glow,
+    );
   }
 
   @override
-  bool shouldRepaint(_MarkPainter old) => old.fill != fill || old.glyph != glyph || old.glow != glow;
+  bool shouldRepaint(_MarkPainter old) =>
+      old.fill != fill || old.glyph != glyph || old.glow != glow;
 }
 
 /// Wordmark: the mark plus "MilkyVPN" with the VPN part visually lighter.
@@ -161,10 +192,25 @@ class MilkyWordmark extends StatelessWidget {
           SizedBox(width: size * 0.42),
         ],
         Text.rich(
+          textScaler: TextScaler.noScaling,
           TextSpan(
             children: [
-              TextSpan(text: 'Milky', style: MilkyType.title.copyWith(fontSize: size, color: c.text, fontWeight: FontWeight.w800)),
-              TextSpan(text: 'VPN', style: MilkyType.title.copyWith(fontSize: size, color: c.accent, fontWeight: FontWeight.w700)),
+              TextSpan(
+                text: 'Milky',
+                style: MilkyType.title.copyWith(
+                  fontSize: size,
+                  color: c.text,
+                  fontWeight: FontWeight.w800,
+                ),
+              ),
+              TextSpan(
+                text: 'VPN',
+                style: MilkyType.title.copyWith(
+                  fontSize: size,
+                  color: c.accent,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
             ],
           ),
         ),

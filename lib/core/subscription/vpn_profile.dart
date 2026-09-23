@@ -1,4 +1,5 @@
 import 'package:flutter/foundation.dart';
+import '../security/redactor.dart';
 
 /// Server location exposed to the user (never protocol details).
 enum ServerLocation { finland, usa, unknown }
@@ -11,8 +12,9 @@ enum ProfileKind { vlessRealityTcp, vlessWsTls, vlessXhttp, hysteria2, other }
 
 /// A parsed subscription entry.
 ///
-/// [secret] (UUID / hysteria password) and [publicKey] are credentials: they must never be
-/// displayed, logged or copied. Use [redactedRemark] / [toDiagnosticString] for UI/diagnostics.
+/// [secret] (UUID / hysteria password), [publicKey], [shortId], and [obfsPassword]
+/// are credential material: they must never be displayed, logged, or copied. Use
+/// [redactedRemark] / [toDiagnosticString] for UI and diagnostics.
 @immutable
 class VpnProfile {
   const VpnProfile({
@@ -38,9 +40,12 @@ class VpnProfile {
     this.obfsPassword,
   });
 
-  /// Stable id derived from the non-secret parts of the URI (address:port/network).
+  /// Opaque stable correlation id.
+  ///
+  /// The parser derives this from the complete canonical profile identity. Never render or
+  /// log it: profile ids are implementation details, not user-facing server names.
   final String id;
-  final String protocol; // vless | hysteria2 | other
+  final String protocol; // vless | hysteria2 | original unsupported scheme
   final String address;
   final int port;
   final String secret;
@@ -61,30 +66,42 @@ class VpnProfile {
   final String? obfsPassword;
 
   ProfileKind get kind {
-    if (protocol == 'hysteria2') return ProfileKind.hysteria2;
-    if (protocol == 'vless') {
-      final n = _normNet(network);
-      if (n == 'tcp' && security == 'reality') return ProfileKind.vlessRealityTcp;
-      if (n == 'ws' && security == 'tls') return ProfileKind.vlessWsTls;
+    final proto = protocol.toLowerCase();
+    final sec = security.toLowerCase();
+    if (proto == 'hysteria2' || proto == 'hy2') return ProfileKind.hysteria2;
+    if (proto == 'vless') {
+      final n = normalizeNetwork(network);
+      if (n == 'tcp' && sec == 'reality') return ProfileKind.vlessRealityTcp;
+      if (n == 'ws' && sec == 'tls') return ProfileKind.vlessWsTls;
       if (n == 'xhttp') return ProfileKind.vlessXhttp;
     }
     return ProfileKind.other;
   }
 
-  ServerLocation get location {
-    final r = remark.toLowerCase();
+  ServerLocation get location => locationFromRemark(remark);
+
+  /// Derives the public country selector value from a user-visible profile remark.
+  ///
+  /// Unicode escapes keep this source encoding-independent. This also recognizes Russian
+  /// country/city names so selection does not depend on English-only profile remarks.
+  static ServerLocation locationFromRemark(String remark) {
+    final r = remark.toLowerCase().replaceAll('\u0451', '\u0435');
     if (r.contains('finland') ||
-        r.contains('финлянд') ||
+        r.contains('\u0444\u0438\u043d\u043b\u044f\u043d\u0434') ||
         r.contains('helsinki') ||
-        r.contains('🇫🇮') ||
+        r.contains('\u0445\u0435\u043b\u044c\u0441\u0438\u043d\u043a') ||
+        r.contains('\u{1f1eb}\u{1f1ee}') ||
         RegExp(r'(^|[^a-z])fi([^a-z]|$)').hasMatch(r)) {
       return ServerLocation.finland;
     }
     if (r.contains('usa') ||
-        r.contains('сша') ||
+        r.contains('\u0441\u0448\u0430') ||
         r.contains('united states') ||
         r.contains('america') ||
-        r.contains('🇺🇸') ||
+        r.contains(
+          '\u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u043d\u044b\u0435 \u0448\u0442\u0430\u0442\u044b',
+        ) ||
+        r.contains('\u{1f1fa}\u{1f1f8}') ||
         RegExp(r'(^|[^a-z])us([^a-z]|$)').hasMatch(r)) {
       return ServerLocation.usa;
     }
@@ -93,63 +110,78 @@ class VpnProfile {
 
   /// Payload sent to the native bridge. Contains credentials by design (in-process only).
   Map<String, Object?> toBridgeMap() => {
-        'id': id,
-        'remark': redactedRemark,
-        'protocol': protocol,
-        'address': address,
-        'port': port,
-        'secret': secret,
-        'network': _normNet(network),
-        'security': security,
-        'sni': sni,
-        'fingerprint': fingerprint,
-        'publicKey': publicKey,
-        'shortId': shortId,
-        'spiderX': spiderX,
-        'flow': flow,
-        'host': host,
-        'path': path,
-        'xhttpMode': xhttpMode,
-        'alpn': alpn,
-        'allowInsecure': allowInsecure,
-        'obfsPassword': obfsPassword,
-      };
+    'id': id,
+    'remark': redactedRemark,
+    'protocol': protocol,
+    'address': address,
+    'port': port,
+    'secret': secret,
+    'network': normalizeNetwork(network),
+    'security': security,
+    'sni': sni,
+    'fingerprint': fingerprint,
+    'publicKey': publicKey,
+    'shortId': shortId,
+    'spiderX': spiderX,
+    'flow': flow,
+    'host': host,
+    'path': path,
+    'xhttpMode': xhttpMode,
+    'alpn': alpn,
+    'allowInsecure': allowInsecure,
+    'obfsPassword': obfsPassword,
+  };
 
-  /// Remark with anything that looks like a credential removed.
+  /// Remark with anything that looks like credential material removed.
   String get redactedRemark {
     var r = remark;
-    r = r.replaceAll(RegExp(r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}'), '');
-    if (secret.isNotEmpty) r = r.replaceAll(secret, '');
-    if (publicKey != null && publicKey!.isNotEmpty) r = r.replaceAll(publicKey!, '');
+    r = r.replaceAll(
+      RegExp(
+        r'[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}',
+      ),
+      '',
+    );
+    for (final value in [secret, publicKey, shortId, obfsPassword]) {
+      if (value != null && value.isNotEmpty) r = r.replaceAll(value, '');
+    }
+    r = const Redactor().redact(r);
+    // Remarks are untrusted labels. URLs have no place in notifications or diagnostics.
+    r = r.replaceAll(RegExp(r'https?://\S+', caseSensitive: false), '<link>');
     return r.trim().isEmpty ? 'Server' : r.trim();
   }
 
   /// Safe for the diagnostics screen: no host, no credentials.
-  String toDiagnosticString() => '$redactedRemark [${kind.name}, ${location.name}]';
+  String toDiagnosticString() =>
+      '$redactedRemark [${kind.name}, ${location.name}]';
 
-  /// Whether this app can execute the profile, decided locally.
+  /// Whether the current Dart selection pipeline can execute this profile.
   ///
-  /// This mirrors `XrayConfigBuilder.validate` on the Kotlin side so the UI can state a
-  /// truthful "N compatible with the app" number *before* any connection attempt. The
-  /// authoritative check before connecting is still `VpnBridge.isProfileSupported`.
+  /// The authoritative check before connecting remains `VpnBridge.isProfileSupported`.
   bool get isStaticCompatible {
+    if (address.trim().isEmpty || port < 1 || port > 65535 || secret.isEmpty) {
+      return false;
+    }
+    final sec = security.toLowerCase();
     switch (kind) {
       case ProfileKind.vlessRealityTcp:
       case ProfileKind.vlessXhttp:
-        // Reality needs a public key; without it Xray refuses to build the outbound.
-        if (security == 'reality' && (publicKey == null || publicKey!.isEmpty)) return false;
+        if (sec != 'reality' && sec != 'tls' && sec != 'none') return false;
+        if (sec == 'reality' && (publicKey == null || publicKey!.isEmpty)) {
+          return false;
+        }
         return true;
       case ProfileKind.vlessWsTls:
         return true;
       case ProfileKind.hysteria2:
-        return secret.isNotEmpty;
+        return true;
       case ProfileKind.other:
         return false;
     }
   }
 
-  static String _normNet(String n) {
-    switch (n.toLowerCase()) {
+  /// Canonical network name shared by parser identity, bridge payload, and compatibility.
+  static String normalizeNetwork(String network) {
+    switch (network.toLowerCase()) {
       case 'raw':
       case 'tcp':
         return 'tcp';
@@ -157,7 +189,7 @@ class VpnProfile {
       case 'xhttp':
         return 'xhttp';
       default:
-        return n.toLowerCase();
+        return network.toLowerCase();
     }
   }
 

@@ -12,6 +12,7 @@ import '../../design/milky_colors.dart';
 import '../../design/milky_glass.dart';
 import '../../design/milky_motion.dart';
 import '../../design/milky_screen.dart';
+import '../../design/milky_sheet.dart';
 import '../../design/milky_theme.dart';
 import '../../design/milky_tokens.dart';
 import '../../l10n/milky_strings.dart';
@@ -27,7 +28,9 @@ class ImportScreen extends StatefulWidget {
 }
 
 class _ImportScreenState extends State<ImportScreen> {
-  late final TextEditingController _ctrl = TextEditingController(text: widget.initialValue);
+  late final TextEditingController _ctrl = TextEditingController(
+    text: widget.initialValue,
+  );
   bool _busy = false;
   String? _error;
   SubscriptionSnapshot? _result;
@@ -53,7 +56,9 @@ class _ImportScreenState extends State<ImportScreen> {
       _result = null;
     });
     MilkyHaptics.tap();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t.pasted)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(t.pasted)));
   }
 
   Future<void> _import() async {
@@ -68,7 +73,14 @@ class _ImportScreenState extends State<ImportScreen> {
       final snap = await repo.importFromUrl(_ctrl.text);
       if (!mounted) return;
       MilkyHaptics.success();
+      _ctrl.clear();
       setState(() => _result = snap);
+      final go = await MilkySuccessSheet.show(
+        context,
+        parsedCount: snap.parsedProfileCount,
+        compatibleCount: SubscriptionStats.from(snap).compatibleProfileCount,
+      );
+      if (go && mounted) Navigator.of(context).pop(true);
     } on SubscriptionFetchException catch (e) {
       if (!mounted) return;
       setState(() => _error = t.errorText(e.errorClass));
@@ -97,9 +109,16 @@ class _ImportScreenState extends State<ImportScreen> {
       ),
       child: SafeArea(
         child: SingleChildScrollView(
-          padding: const EdgeInsets.fromLTRB(MilkySpace.screen, MilkySpace.sm, MilkySpace.screen, MilkySpace.xxl),
+          padding: const EdgeInsets.fromLTRB(
+            MilkySpace.screen,
+            MilkySpace.sm,
+            MilkySpace.screen,
+            MilkySpace.xxl,
+          ),
           child: MilkyColumn(
-            child: _result != null ? _success(context, t, c) : _form(context, t, c),
+            child: _result != null
+                ? _success(context, t, c)
+                : _form(context, t, c),
           ),
         ),
       ),
@@ -116,7 +135,10 @@ class _ImportScreenState extends State<ImportScreen> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(t.subscriptionUrlHint, style: MilkyType.label.copyWith(color: c.textFaint)),
+              Text(
+                t.subscriptionUrlHint,
+                style: MilkyType.label.copyWith(color: c.textFaint),
+              ),
               const SizedBox(height: MilkySpace.md),
               TextField(
                 controller: _ctrl,
@@ -130,6 +152,7 @@ class _ImportScreenState extends State<ImportScreen> {
                 decoration: InputDecoration(
                   hintText: 'https://sub.milky.homes/s/…',
                   errorText: _error,
+                  errorMaxLines: 4,
                   suffixIcon: _ctrl.text.isEmpty
                       ? null
                       : IconButton(
@@ -142,9 +165,17 @@ class _ImportScreenState extends State<ImportScreen> {
                 ),
               ),
               const SizedBox(height: MilkySpace.md),
-              MilkyGhostButton(label: t.pasteFromClipboard, icon: Icons.content_paste_rounded, height: 48, onPressed: _busy ? null : _paste),
+              MilkyGhostButton(
+                label: t.pasteFromClipboard,
+                icon: Icons.content_paste_rounded,
+                height: 48,
+                onPressed: _busy ? null : _paste,
+              ),
               const SizedBox(height: MilkySpace.md),
-              Text(t.subscriptionHint, style: MilkyType.bodySmall.copyWith(color: c.textFaint)),
+              Text(
+                t.subscriptionHint,
+                style: MilkyType.bodySmall.copyWith(color: c.textFaint),
+              ),
             ],
           ),
         ),
@@ -169,25 +200,39 @@ class _ImportScreenState extends State<ImportScreen> {
             tween: Tween<double>(begin: 0.6, end: 1),
             duration: MilkyMotion.slow,
             curve: MilkyMotion.pop,
-            builder: (context, v, child) => Transform.scale(scale: v, child: child),
+            builder: (context, v, child) =>
+                Transform.scale(scale: v, child: child),
             child: Container(
               width: 108,
               height: 108,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: c.positiveSoft,
-                border: Border.all(color: c.positive.withValues(alpha: 0.4), width: 1.4),
-                boxShadow: [BoxShadow(color: c.positive.withValues(alpha: 0.25), blurRadius: 40, spreadRadius: -6)],
+                border: Border.all(
+                  color: c.positive.withValues(alpha: 0.4),
+                  width: 1.4,
+                ),
+                boxShadow: [
+                  BoxShadow(
+                    color: c.positive.withValues(alpha: 0.25),
+                    blurRadius: 40,
+                    spreadRadius: -6,
+                  ),
+                ],
               ),
               child: Icon(Icons.check_rounded, size: 52, color: c.positive),
             ),
           ),
         ),
         const SizedBox(height: MilkySpace.xxl),
-        Text(t.importOk, textAlign: TextAlign.center, style: MilkyType.display.copyWith(fontSize: 28)),
+        Text(
+          t.importOk,
+          textAlign: TextAlign.center,
+          style: MilkyType.display.copyWith(fontSize: 28),
+        ),
         const SizedBox(height: MilkySpace.sm),
         Text(
-          '${t.profilesFound(stats.profiles)}\n${t.profilesCompatible(stats.compatible)}',
+          '${t.profilesFound(stats.parsedProfileCount)}\n${t.profilesCompatible(stats.compatibleProfileCount)}',
           textAlign: TextAlign.center,
           style: MilkyType.body.copyWith(color: c.textMuted),
         ),
@@ -198,9 +243,11 @@ class _ImportScreenState extends State<ImportScreen> {
             padding: const EdgeInsets.all(MilkySpace.lg),
             child: Text(
               [
-                t.linesParsed(stats.totalLines),
-                if (stats.duplicates > 0) t.duplicatesSkipped(stats.duplicates),
-                if (stats.malformed > 0) t.malformedSkipped(stats.malformed),
+                t.linesParsed(stats.receivedEntryCount),
+                if (stats.droppedDuplicateCount > 0)
+                  t.duplicatesSkipped(stats.droppedDuplicateCount),
+                if (stats.malformedEntryCount > 0)
+                  t.malformedSkipped(stats.malformedEntryCount),
               ].join(' · '),
               textAlign: TextAlign.center,
               style: MilkyType.bodySmall.copyWith(color: c.textFaint),
@@ -242,9 +289,17 @@ class DeepLinkConfirmScreen extends StatelessWidget {
                 children: [
                   const Center(child: MilkyLogoMark(size: 56)),
                   const SizedBox(height: MilkySpace.lg),
-                  Text(t.deepLinkTitle, textAlign: TextAlign.center, style: MilkyType.headline),
+                  Text(
+                    t.deepLinkTitle,
+                    textAlign: TextAlign.center,
+                    style: MilkyType.headline,
+                  ),
                   const SizedBox(height: MilkySpace.md),
-                  Text(t.deepLinkBody, textAlign: TextAlign.center, style: MilkyType.body.copyWith(color: c.textMuted)),
+                  Text(
+                    t.deepLinkBody,
+                    textAlign: TextAlign.center,
+                    style: MilkyType.body.copyWith(color: c.textMuted),
+                  ),
                   const SizedBox(height: MilkySpace.xxl),
                   MilkyPrimaryButton(
                     label: t.add,
@@ -254,15 +309,22 @@ class DeepLinkConfirmScreen extends StatelessWidget {
                       final messenger = ScaffoldMessenger.of(context);
                       try {
                         await repo.importFromUrl(url.toString());
-                        messenger.showSnackBar(SnackBar(content: Text(t.importOk)));
+                        messenger.showSnackBar(
+                          SnackBar(content: Text(t.importOk)),
+                        );
                         if (nav.canPop()) nav.pop(true);
                       } on SubscriptionFetchException catch (e) {
-                        messenger.showSnackBar(SnackBar(content: Text(t.errorText(e.errorClass))));
+                        messenger.showSnackBar(
+                          SnackBar(content: Text(t.errorText(e.errorClass))),
+                        );
                       }
                     },
                   ),
                   const SizedBox(height: MilkySpace.md),
-                  MilkyGhostButton(label: t.cancel, onPressed: () => Navigator.of(context).pop()),
+                  MilkyGhostButton(
+                    label: t.cancel,
+                    onPressed: () => Navigator.of(context).pop(),
+                  ),
                   const SizedBox(height: MilkySpace.lg),
                   Center(
                     child: Text(

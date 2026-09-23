@@ -29,6 +29,7 @@ class SubscriptionScreen extends StatefulWidget {
 
 class _SubscriptionScreenState extends State<SubscriptionScreen> {
   bool _busy = false;
+  bool _advanced = false;
 
   @override
   Widget build(BuildContext context) {
@@ -38,29 +39,53 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     final snap = repo.snapshot;
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(MilkySpace.screen, MilkySpace.sm, MilkySpace.screen, MilkySpace.xxl),
+      padding: const EdgeInsets.fromLTRB(
+        MilkySpace.screen,
+        MilkySpace.sm,
+        MilkySpace.screen,
+        MilkySpace.xxl,
+      ),
       child: MilkyColumn(
         maxWidth: MilkyLayout.maxReadingWidth,
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Text(t.subscription, style: MilkyType.display.copyWith(fontSize: 30)),
+            Text(
+              t.subscription,
+              style: MilkyType.display.copyWith(fontSize: 30),
+            ),
             const SizedBox(height: MilkySpace.xl),
             if (snap == null)
               MilkyGlassCard(
                 padding: const EdgeInsets.all(MilkySpace.xxl),
                 child: Column(
                   children: [
-                    Icon(Icons.card_membership_rounded, size: 40, color: c.textFaint),
+                    Icon(
+                      Icons.card_membership_rounded,
+                      size: 40,
+                      color: c.textFaint,
+                    ),
                     const SizedBox(height: MilkySpace.md),
-                    Text(t.subscriptionEmptyTitle, textAlign: TextAlign.center, style: MilkyType.title),
+                    Text(
+                      t.subscriptionEmptyTitle,
+                      textAlign: TextAlign.center,
+                      style: MilkyType.title,
+                    ),
                     const SizedBox(height: MilkySpace.sm),
-                    Text(t.subscriptionEmptyBody, textAlign: TextAlign.center, style: MilkyType.bodySmall.copyWith(color: c.textMuted)),
+                    Text(
+                      t.subscriptionEmptyBody,
+                      textAlign: TextAlign.center,
+                      style: MilkyType.bodySmall.copyWith(color: c.textMuted),
+                    ),
                     const SizedBox(height: MilkySpace.xl),
                     MilkyPrimaryButton(
                       label: t.addSubscription,
                       icon: Icons.add_rounded,
-                      onPressed: () => Navigator.of(context).push(MaterialPageRoute<bool>(builder: (_) => const ImportScreen())),
+                      onPressed: () => Navigator.of(context).push(
+                        MaterialPageRoute<bool>(
+                          builder: (_) => const ImportScreen(),
+                        ),
+                      ),
                     ),
                   ],
                 ),
@@ -82,16 +107,23 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
                 onPressed: _busy ? null : _remove,
               ),
               const SizedBox(height: MilkySpace.xxl),
-              MilkySectionHeader(t.advanced),
-              MilkyGlassCard(
-                padding: EdgeInsets.zero,
-                child: _AdvancedRow(
-                  icon: Icons.content_copy_rounded,
-                  title: t.copyLink,
-                  subtitle: t.subscriptionHint,
-                  onTap: _copyLink,
-                ),
+              MilkyLinkButton(
+                label: t.advanced,
+                icon: _advanced
+                    ? Icons.expand_less_rounded
+                    : Icons.expand_more_rounded,
+                onPressed: () => setState(() => _advanced = !_advanced),
               ),
+              if (_advanced)
+                MilkyGlassCard(
+                  padding: EdgeInsets.zero,
+                  child: _AdvancedRow(
+                    icon: Icons.content_copy_rounded,
+                    title: t.copyLink,
+                    subtitle: t.subscriptionHint,
+                    onTap: _copyLink,
+                  ),
+                ),
             ],
           ],
         ),
@@ -149,7 +181,9 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     await repo.remove();
     if (!mounted) return;
     MilkyHaptics.disconnect();
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(t.removeSubscription)));
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(t.removeSubscription)));
   }
 
   Future<void> _copyLink() async {
@@ -162,12 +196,19 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
   }
 
   void _openDiagnostics() {
-    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const DiagnosticsScreen()));
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const DiagnosticsScreen()));
   }
 }
 
 class _AdvancedRow extends StatelessWidget {
-  const _AdvancedRow({required this.icon, required this.title, required this.subtitle, required this.onTap});
+  const _AdvancedRow({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.onTap,
+  });
 
   final IconData icon;
   final String title;
@@ -187,7 +228,10 @@ class _AdvancedRow extends StatelessWidget {
             Container(
               width: 34,
               height: 34,
-              decoration: BoxDecoration(color: c.accentSoft, borderRadius: BorderRadius.circular(11)),
+              decoration: BoxDecoration(
+                color: c.accentSoft,
+                borderRadius: BorderRadius.circular(11),
+              ),
               child: Icon(icon, size: 18, color: c.accent),
             ),
             const SizedBox(width: MilkySpace.md),
@@ -197,7 +241,10 @@ class _AdvancedRow extends StatelessWidget {
                 children: [
                   Text(title, style: MilkyType.subtitle),
                   const SizedBox(height: 2),
-                  Text(subtitle, style: MilkyType.bodySmall.copyWith(color: c.textMuted)),
+                  Text(
+                    subtitle,
+                    style: MilkyType.bodySmall.copyWith(color: c.textMuted),
+                  ),
                 ],
               ),
             ),
@@ -210,5 +257,6 @@ class _AdvancedRow extends StatelessWidget {
 
 /// Clipboard write. Isolated so tests can stub the platform channel.
 abstract final class MilkyClipboard {
-  static Future<void> copy(String text) => Clipboard.setData(ClipboardData(text: text));
+  static Future<void> copy(String text) =>
+      Clipboard.setData(ClipboardData(text: text));
 }

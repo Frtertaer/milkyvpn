@@ -2,16 +2,21 @@ import 'package:flutter/material.dart';
 
 import '../../core/subscription/subscription_repository.dart';
 import '../../core/subscription/subscription_stats.dart';
-import '../../design/milky_buttons.dart';
 import '../../design/milky_colors.dart';
 import '../../design/milky_glass.dart';
+import '../../design/milky_motion.dart';
 import '../../design/milky_theme.dart';
 import '../../design/milky_tokens.dart';
 import '../../l10n/milky_strings.dart';
 
 /// Subscription presentation. Compact on the home screen, full on the subscription tab.
 class MilkySubscriptionCard extends StatelessWidget {
-  const MilkySubscriptionCard({super.key, required this.snapshot, this.onTap, this.compact = true});
+  const MilkySubscriptionCard({
+    super.key,
+    required this.snapshot,
+    this.onTap,
+    this.compact = true,
+  });
 
   final SubscriptionSnapshot? snapshot;
   final VoidCallback? onTap;
@@ -31,17 +36,24 @@ class MilkySubscriptionCard extends StatelessWidget {
     final String subtitle;
     if (snapshot == null) {
       subtitle = t.subscriptionEmptyBody;
+    } else if (!stats.countsTrusted) {
+      subtitle = t.countsNotVerified;
     } else {
       final parts = <String>[
-        snapshot!.expiresAt == null ? t.noExpiry : '${t.expires}: ${t.dateLong(snapshot!.expiresAt!)}',
-        '${t.profilesShort(stats.profiles)} • ${t.compatibleShort(stats.compatible)}',
+        snapshot!.expiresAt == null
+            ? t.noExpiry
+            : '${t.expires}: ${t.dateLong(snapshot!.expiresAt!)}',
+        '${t.profilesShort(stats.parsedProfileCount)} • ${t.compatibleShort(stats.compatibleProfileCount)}',
       ];
       subtitle = parts.join('  ·  ');
     }
 
     return MilkyGlassCard(
       onTap: onTap,
-      padding: const EdgeInsets.symmetric(horizontal: MilkySpace.lg, vertical: MilkySpace.md),
+      padding: const EdgeInsets.symmetric(
+        horizontal: MilkySpace.lg,
+        vertical: MilkySpace.md,
+      ),
       child: Row(
         children: [
           Container(
@@ -52,7 +64,9 @@ class MilkySubscriptionCard extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
             ),
             child: Icon(
-              snapshot == null ? Icons.add_rounded : Icons.card_membership_rounded,
+              snapshot == null
+                  ? Icons.add_rounded
+                  : Icons.card_membership_rounded,
               size: 19,
               color: active ? c.positive : c.accent,
             ),
@@ -64,12 +78,19 @@ class MilkySubscriptionCard extends StatelessWidget {
               children: [
                 Row(
                   children: [
-                    Text(t.subscription, style: MilkyType.subtitle.copyWith(color: c.text)),
+                    Text(
+                      t.subscription,
+                      style: MilkyType.subtitle.copyWith(color: c.text),
+                    ),
                     const SizedBox(width: MilkySpace.sm),
                     Flexible(
                       child: MilkyStatusPill(
-                        label: snapshot == null ? t.noSubscription : (active ? t.active : t.expired),
-                        color: snapshot == null ? c.textFaint : (active ? c.positive : c.danger),
+                        label: snapshot == null
+                            ? t.noSubscription
+                            : (active ? t.active : t.expired),
+                        color: snapshot == null
+                            ? c.textFaint
+                            : (active ? c.positive : c.danger),
                         compact: true,
                       ),
                     ),
@@ -80,7 +101,10 @@ class MilkySubscriptionCard extends StatelessWidget {
                   subtitle,
                   maxLines: 2,
                   overflow: TextOverflow.ellipsis,
-                  style: MilkyType.bodySmall.copyWith(color: c.textMuted, height: 1.35),
+                  style: MilkyType.bodySmall.copyWith(
+                    color: c.textMuted,
+                    height: 1.35,
+                  ),
                 ),
               ],
             ),
@@ -100,23 +124,36 @@ class MilkySubscriptionCard extends StatelessWidget {
 
     return MilkyGlassCard(
       padding: const EdgeInsets.all(MilkySpace.xxl),
-      tone: snapshot == null ? MilkyGlassTone.neutral : (active ? MilkyGlassTone.positive : MilkyGlassTone.danger),
+      tone: snapshot == null
+          ? MilkyGlassTone.neutral
+          : (active ? MilkyGlassTone.positive : MilkyGlassTone.danger),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Row(
             children: [
-              Expanded(child: MilkySectionHeader(t.subscription, padding: EdgeInsets.zero)),
+              Expanded(
+                child: MilkySectionHeader(
+                  t.subscription,
+                  padding: EdgeInsets.zero,
+                ),
+              ),
               MilkyStatusPill(
-                label: snapshot == null ? t.noSubscription : (active ? t.active : t.expired),
-                color: snapshot == null ? c.textFaint : (active ? c.positive : c.danger),
+                label: snapshot == null
+                    ? t.noSubscription
+                    : (active ? t.active : t.expired),
+                color: snapshot == null
+                    ? c.textFaint
+                    : (active ? c.positive : c.danger),
                 compact: true,
               ),
             ],
           ),
           const SizedBox(height: MilkySpace.md),
           Text(
-            snapshot?.expiresAt == null ? t.noExpiry : t.dateLong(snapshot!.expiresAt!),
+            snapshot?.expiresAt == null
+                ? t.noExpiry
+                : t.dateLong(snapshot!.expiresAt!),
             style: MilkyType.display.copyWith(fontSize: 28, color: c.text),
           ),
           const SizedBox(height: MilkySpace.xxs),
@@ -127,11 +164,37 @@ class MilkySubscriptionCard extends StatelessWidget {
           const SizedBox(height: MilkySpace.xl),
           const MilkyHairline(),
           const SizedBox(height: MilkySpace.sm),
-          _StatRow(label: t.profiles, value: t.profilesFound(stats.profiles)),
-          _StatRow(label: t.compatibility, value: t.profilesCompatible(stats.compatible), muted: stats.incompatible == 0),
-          if (stats.duplicates > 0) _StatRow(label: t.duplicatesSkipped(stats.duplicates), value: '', muted: true),
-          if (stats.malformed > 0) _StatRow(label: t.malformedSkipped(stats.malformed), value: '', muted: true),
-          if (snapshot != null) _StatRow(label: t.lastUpdated, value: t.dateTimeShort(snapshot!.updatedAt), muted: true),
+          _StatRow(
+            label: t.profilesReceived,
+            value: stats.countsTrusted ? '${stats.parsedProfileCount}' : '—',
+          ),
+          _StatRow(
+            label: t.compatibleCountLabel,
+            value: stats.countsTrusted
+                ? '${stats.compatibleProfileCount}'
+                : '—',
+            muted: stats.countsTrusted && stats.incompatible == 0,
+          ),
+          if (!stats.countsTrusted)
+            _StatRow(label: t.countsNeedRefresh, value: '', muted: true),
+          if (stats.countsTrusted && stats.droppedDuplicateCount > 0)
+            _StatRow(
+              label: t.duplicatesSkipped(stats.droppedDuplicateCount),
+              value: '',
+              muted: true,
+            ),
+          if (stats.countsTrusted && stats.malformedEntryCount > 0)
+            _StatRow(
+              label: t.malformedSkipped(stats.malformedEntryCount),
+              value: '',
+              muted: true,
+            ),
+          if (snapshot != null)
+            _StatRow(
+              label: t.lastUpdated,
+              value: t.dateTimeShort(snapshot!.updatedAt),
+              muted: true,
+            ),
         ],
       ),
     );
@@ -139,7 +202,11 @@ class MilkySubscriptionCard extends StatelessWidget {
 }
 
 class _StatRow extends StatelessWidget {
-  const _StatRow({required this.label, required this.value, this.muted = false});
+  const _StatRow({
+    required this.label,
+    required this.value,
+    this.muted = false,
+  });
 
   final String label;
   final String value;
@@ -153,10 +220,28 @@ class _StatRow extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(child: Text(label, style: MilkyType.bodySmall.copyWith(color: muted ? c.textFaint : c.textMuted))),
+          Expanded(
+            flex: 3,
+            child: Text(
+              label,
+              style: MilkyType.bodySmall.copyWith(
+                color: muted ? c.textFaint : c.textMuted,
+              ),
+            ),
+          ),
           if (value.isNotEmpty) ...[
             const SizedBox(width: MilkySpace.md),
-            Text(value, textAlign: TextAlign.right, style: MilkyType.chip.copyWith(color: muted ? c.textMuted : c.text)),
+            Flexible(
+              flex: 2,
+              child: Text(
+                value,
+                textAlign: TextAlign.right,
+                softWrap: true,
+                style: MilkyType.chip.copyWith(
+                  color: muted ? c.textMuted : c.text,
+                ),
+              ),
+            ),
           ],
         ],
       ),
@@ -164,12 +249,15 @@ class _StatRow extends StatelessWidget {
   }
 }
 
-
 /// One-line subscription status for the home screen: "● Подписка активна · до 1 января 2100".
 ///
 /// The full dashboard lives in the Subscription tab; home stays focused on the orb.
 class MilkySubscriptionStatus extends StatelessWidget {
-  const MilkySubscriptionStatus({super.key, required this.snapshot, this.onTap});
+  const MilkySubscriptionStatus({
+    super.key,
+    required this.snapshot,
+    this.onTap,
+  });
 
   final SubscriptionSnapshot? snapshot;
   final VoidCallback? onTap;
@@ -187,7 +275,9 @@ class MilkySubscriptionStatus extends StatelessWidget {
       label = t.noSubscription;
       dot = c.textFaint;
     } else if (active) {
-      label = snapshot!.expiresAt == null ? t.subActiveForever : t.subActiveUntil(t.dateLong(snapshot!.expiresAt!));
+      label = snapshot!.expiresAt == null
+          ? t.subActiveForever
+          : t.subActiveUntil(t.dateLong(snapshot!.expiresAt!));
       dot = c.positive;
     } else {
       label = '${t.subscription} · ${t.expired}';
@@ -201,8 +291,11 @@ class MilkySubscriptionStatus extends StatelessWidget {
         onTap: onTap,
         scale: 0.98,
         child: Container(
-          height: 46,
-          padding: const EdgeInsets.symmetric(horizontal: MilkySpace.lg),
+          constraints: const BoxConstraints(minHeight: 48),
+          padding: const EdgeInsets.symmetric(
+            horizontal: MilkySpace.lg,
+            vertical: 12,
+          ),
           decoration: BoxDecoration(
             color: c.isDark ? c.glassTint : Colors.white.withValues(alpha: 0.6),
             borderRadius: BorderRadius.circular(MilkyRadius.control),
@@ -216,16 +309,22 @@ class MilkySubscriptionStatus extends StatelessWidget {
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: dot,
-                  boxShadow: [BoxShadow(color: dot.withValues(alpha: 0.55), blurRadius: 6)],
+                  boxShadow: [
+                    BoxShadow(
+                      color: dot.withValues(alpha: 0.55),
+                      blurRadius: 6,
+                    ),
+                  ],
                 ),
               ),
               const SizedBox(width: MilkySpace.sm),
               Expanded(
                 child: Text(
                   label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: MilkyType.bodySmall.copyWith(color: c.textMuted, fontWeight: FontWeight.w600),
+                  style: MilkyType.bodySmall.copyWith(
+                    color: c.textMuted,
+                    fontWeight: FontWeight.w600,
+                  ),
                 ),
               ),
               Icon(Icons.chevron_right_rounded, size: 18, color: c.textFaint),

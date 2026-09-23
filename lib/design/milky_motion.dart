@@ -11,7 +11,8 @@ bool milkyReduceMotion(BuildContext context) {
 
 /// Mixes an app-lifecycle pause into any animated state so nothing keeps rendering
 /// (and draining battery) while MilkyVPN is in the background.
-mixin MilkyAutoPause<T extends StatefulWidget> on State<T>, WidgetsBindingObserver {
+mixin MilkyAutoPause<T extends StatefulWidget>
+    on State<T>, WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
@@ -50,7 +51,7 @@ abstract final class MilkyHaptics {
   }
 
   static void connect() {
-    if (enabled) HapticFeedback.mediumImpact();
+    if (enabled) HapticFeedback.lightImpact();
   }
 
   static void disconnect() {
@@ -62,7 +63,7 @@ abstract final class MilkyHaptics {
   }
 
   static void error() {
-    if (enabled) HapticFeedback.heavyImpact();
+    if (enabled) HapticFeedback.selectionClick();
   }
 }
 
@@ -113,11 +114,15 @@ class _MilkyPressableState extends State<MilkyPressable> {
         onLongPress: widget.onLongPress,
         child: AnimatedScale(
           scale: _down && active ? widget.scale : 1,
-          duration: const Duration(milliseconds: 120),
+          duration: milkyReduceMotion(context)
+              ? Duration.zero
+              : const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           child: AnimatedOpacity(
             opacity: _down && active ? widget.dim : 1,
-            duration: const Duration(milliseconds: 120),
+            duration: milkyReduceMotion(context)
+                ? Duration.zero
+                : const Duration(milliseconds: 120),
             child: widget.child,
           ),
         ),
@@ -128,7 +133,12 @@ class _MilkyPressableState extends State<MilkyPressable> {
 
 /// Fades + slides a child in the first time it appears. Used for cards entering a screen.
 class MilkyEnter extends StatelessWidget {
-  const MilkyEnter({super.key, required this.child, this.delay = Duration.zero, this.distance = 14});
+  const MilkyEnter({
+    super.key,
+    required this.child,
+    this.delay = Duration.zero,
+    this.distance = 14,
+  });
 
   final Widget child;
   final Duration delay;
@@ -143,7 +153,10 @@ class MilkyEnter extends StatelessWidget {
       curve: Curves.easeOutCubic,
       builder: (context, t, c) => Opacity(
         opacity: t.clamp(0.0, 1.0),
-        child: Transform.translate(offset: Offset(0, distance * (1 - t)), child: c),
+        child: Transform.translate(
+          offset: Offset(0, distance * (1 - t)),
+          child: c,
+        ),
       ),
       child: child,
     );

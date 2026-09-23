@@ -31,19 +31,22 @@ class MilkyBackdrop extends StatefulWidget {
   State<MilkyBackdrop> createState() => _MilkyBackdropState();
 }
 
-class _MilkyBackdropState extends State<MilkyBackdrop> with SingleTickerProviderStateMixin, MilkyAutoPause {
-  late final AnimationController _c = AnimationController(vsync: this, duration: MilkyMotion.flow);
-
-  @override
-  void initState() {
-    super.initState();
-  }
+class _MilkyBackdropState extends State<MilkyBackdrop>
+    with
+        SingleTickerProviderStateMixin,
+        WidgetsBindingObserver,
+        MilkyAutoPause {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: MilkyMotion.orbit,
+  );
+  bool _reduce = false;
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    final reduce = milkyReduceMotion(context);
-    if (reduce) {
+    _reduce = milkyReduceMotion(context);
+    if (_reduce) {
       _c.value = 0.35;
       _c.stop();
     } else if (!_c.isAnimating) {
@@ -56,7 +59,7 @@ class _MilkyBackdropState extends State<MilkyBackdrop> with SingleTickerProvider
 
   @override
   void resumeMilkyAnimations() {
-    if (!_c.isAnimating) _c.repeat();
+    if (!_reduce && !_c.isAnimating) _c.repeat();
   }
 
   @override
@@ -100,7 +103,12 @@ class _MilkyBackdropState extends State<MilkyBackdrop> with SingleTickerProvider
 }
 
 class _AuroraPainter extends CustomPainter {
-  _AuroraPainter({required this.t, required this.colors, required this.intensity, required this.anchor});
+  _AuroraPainter({
+    required this.t,
+    required this.colors,
+    required this.intensity,
+    required this.anchor,
+  });
 
   final double t;
   final MilkyColors colors;
@@ -116,21 +124,30 @@ class _AuroraPainter extends CustomPainter {
     // Three drifting lights. Radii are large so the gradients stay soft without a blur.
     _blob(
       canvas,
-      center: Offset(w * (0.16 + 0.06 * math.sin(phase)), h * (0.10 + 0.03 * math.cos(phase))),
+      center: Offset(
+        w * (0.16 + 0.06 * math.sin(phase)),
+        h * (0.10 + 0.03 * math.cos(phase)),
+      ),
       radius: w * 0.95,
       color: colors.auroraA,
       alpha: 0.30 * intensity,
     );
     _blob(
       canvas,
-      center: Offset(w * (0.92 + 0.05 * math.cos(phase * 0.8)), h * (0.24 + 0.04 * math.sin(phase * 0.8))),
+      center: Offset(
+        w * (0.92 + 0.05 * math.cos(phase * 0.8)),
+        h * (0.24 + 0.04 * math.sin(phase * 0.8)),
+      ),
       radius: w * 0.85,
       color: colors.auroraB,
       alpha: 0.26 * intensity,
     );
     _blob(
       canvas,
-      center: Offset(w * (0.50 + 0.10 * math.sin(phase * 0.6 + 1.2)), h * (0.94 + 0.03 * math.cos(phase * 0.6))),
+      center: Offset(
+        w * (0.50 + 0.10 * math.sin(phase * 0.6 + 1.2)),
+        h * (0.94 + 0.03 * math.cos(phase * 0.6)),
+      ),
       radius: w * 1.1,
       color: colors.auroraC,
       alpha: 0.16 * intensity,
@@ -139,7 +156,13 @@ class _AuroraPainter extends CustomPainter {
     // Anchor glow — the light that belongs to the connect orb.
     final ax = (anchor.x + 1) / 2 * w;
     final ay = (anchor.y + 1) / 2 * h;
-    _blob(canvas, center: Offset(ax, ay), radius: w * 0.78, color: colors.accent, alpha: 0.16 * intensity);
+    _blob(
+      canvas,
+      center: Offset(ax, ay),
+      radius: w * 0.78,
+      color: colors.accent,
+      alpha: 0.16 * intensity,
+    );
 
     // Bottom vignette keeps the navigation bar legible.
     canvas.drawRect(
@@ -148,18 +171,30 @@ class _AuroraPainter extends CustomPainter {
         ..shader = LinearGradient(
           begin: Alignment.topCenter,
           end: Alignment.bottomCenter,
-          colors: [Colors.transparent, colors.bgDeep.withValues(alpha: colors.isDark ? 0.55 : 0.28)],
+          colors: [
+            Colors.transparent,
+            colors.bgDeep.withValues(alpha: colors.isDark ? 0.55 : 0.28),
+          ],
         ).createShader(Offset.zero & size),
     );
   }
 
-  void _blob(Canvas canvas, {required Offset center, required double radius, required Color color, required double alpha}) {
+  void _blob(
+    Canvas canvas, {
+    required Offset center,
+    required double radius,
+    required Color color,
+    required double alpha,
+  }) {
     canvas.drawCircle(
       center,
       radius,
       Paint()
         ..shader = RadialGradient(
-          colors: [color.withValues(alpha: alpha), color.withValues(alpha: 0)],
+          colors: [
+            color.withValues(alpha: alpha),
+            color.withValues(alpha: 0),
+          ],
           stops: const [0, 1],
         ).createShader(Rect.fromCircle(center: center, radius: radius)),
     );
@@ -167,12 +202,21 @@ class _AuroraPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_AuroraPainter old) =>
-      old.t != t || old.intensity != intensity || old.colors != colors || old.anchor != anchor;
+      old.t != t ||
+      old.intensity != intensity ||
+      old.colors != colors ||
+      old.anchor != anchor;
 }
 
 /// A soft, static radial glow used behind the orb and inside cards.
 class MilkyGlow extends StatelessWidget {
-  const MilkyGlow({super.key, required this.color, this.size = 220, this.opacity = 0.35, this.child});
+  const MilkyGlow({
+    super.key,
+    required this.color,
+    this.size = 220,
+    this.opacity = 0.35,
+    this.child,
+  });
 
   final Color color;
   final double size;
@@ -188,7 +232,10 @@ class MilkyGlow extends StatelessWidget {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           gradient: RadialGradient(
-            colors: [color.withValues(alpha: opacity), color.withValues(alpha: 0)],
+            colors: [
+              color.withValues(alpha: opacity),
+              color.withValues(alpha: 0),
+            ],
             stops: const [0, 1],
           ),
         ),

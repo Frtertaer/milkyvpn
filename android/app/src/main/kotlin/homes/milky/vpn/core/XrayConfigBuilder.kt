@@ -29,6 +29,38 @@ object XrayConfigBuilder {
     val SUPPORTED_VLESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp")
     val SUPPORTED_VLESS_SECURITY = setOf("reality", "tls", "none")
 
+    /**
+     * Inline equivalent of the upstream `geoip:private` entry.
+     *
+     * Android embeds the core library without the optional geoip.dat asset. Keeping these
+     * prefixes in the generated config preserves local/private bypass routing without making
+     * core startup depend on an external geodata file.
+     * Source: https://github.com/v2fly/geoip/blob/master/plugin/special/private.go
+     */
+    private val PRIVATE_AND_LOCAL_CIDRS = listOf(
+        "0.0.0.0/8",
+        "10.0.0.0/8",
+        "100.64.0.0/10",
+        "127.0.0.0/8",
+        "169.254.0.0/16",
+        "172.16.0.0/12",
+        "192.0.0.0/24",
+        "192.0.2.0/24",
+        "192.88.99.0/24",
+        "192.168.0.0/16",
+        "198.18.0.0/15",
+        "198.51.100.0/24",
+        "203.0.113.0/24",
+        "224.0.0.0/4",
+        "240.0.0.0/4",
+        "255.255.255.255/32",
+        "::/128",
+        "::1/128",
+        "fc00::/7",
+        "fe80::/10",
+        "ff00::/8",
+    )
+
     class ProfileSpec(
         val protocol: String,
         val address: String,
@@ -193,10 +225,11 @@ object XrayConfigBuilder {
                 .put(if (isIpLiteral(p.address)) "ip" else "domain", JSONArray().put(p.address))
                 .put("outboundTag", "direct")
         )
-        // Local / private ranges bypass.
+        // Local / private ranges bypass. Use literal CIDRs because the embedded Android core
+        // does not ship geoip.dat; a geoip:private rule would make configuration loading fail.
         rules.put(
             JSONObject().put("type", "field")
-                .put("ip", JSONArray().put("geoip:private"))
+                .put("ip", JSONArray(PRIVATE_AND_LOCAL_CIDRS))
                 .put("outboundTag", "direct")
         )
         root.put(

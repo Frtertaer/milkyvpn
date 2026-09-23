@@ -91,10 +91,11 @@ abstract final class MilkyType {
   );
 
   static const TextStyle mono = TextStyle(
-    fontFamily: 'monospace',
+    fontFamily: family,
     fontSize: 12.5,
     height: 1.6,
     fontWeight: FontWeight.w400,
+    fontFeatures: [FontFeature.tabularFigures()],
   );
 }
 
@@ -104,12 +105,25 @@ class MilkyPageTransitionsBuilder extends PageTransitionsBuilder {
   const MilkyPageTransitionsBuilder();
 
   @override
-  Widget buildTransitions<T>(PageRoute<T> route, BuildContext context, Animation<double> animation, Animation<double> secondaryAnimation, Widget child) {
-    final curved = CurvedAnimation(parent: animation, curve: MilkyMotion.standard, reverseCurve: Curves.easeInCubic);
+  Widget buildTransitions<T>(
+    PageRoute<T> route,
+    BuildContext context,
+    Animation<double> animation,
+    Animation<double> secondaryAnimation,
+    Widget child,
+  ) {
+    final curved = CurvedAnimation(
+      parent: animation,
+      curve: MilkyMotion.standard,
+      reverseCurve: Curves.easeInCubic,
+    );
     return FadeTransition(
       opacity: curved,
       child: SlideTransition(
-        position: Tween<Offset>(begin: const Offset(0, 0.035), end: Offset.zero).animate(curved),
+        position: Tween<Offset>(
+          begin: const Offset(0, 0.035),
+          end: Offset.zero,
+        ).animate(curved),
         child: child,
       ),
     );
@@ -122,20 +136,21 @@ abstract final class MilkyTheme {
   static ThemeData dark() => _build(MilkyColors.dark);
 
   static ThemeData _build(MilkyColors c) {
-    final scheme = ColorScheme.fromSeed(
-      seedColor: c.accentDeep,
-      brightness: c.isDark ? Brightness.dark : Brightness.light,
-    ).copyWith(
-      primary: c.accent,
-      onPrimary: c.isDark ? const Color(0xFF070C1A) : Colors.white,
-      secondary: c.auroraB,
-      surface: c.surface,
-      onSurface: c.text,
-      onSurfaceVariant: c.textMuted,
-      outline: c.stroke,
-      error: c.danger,
-      onError: Colors.white,
-    );
+    final scheme =
+        ColorScheme.fromSeed(
+          seedColor: c.accentDeep,
+          brightness: c.isDark ? Brightness.dark : Brightness.light,
+        ).copyWith(
+          primary: c.accent,
+          onPrimary: c.isDark ? const Color(0xFF070C1A) : Colors.white,
+          secondary: c.auroraB,
+          surface: c.surface,
+          onSurface: c.text,
+          onSurfaceVariant: c.textMuted,
+          outline: c.stroke,
+          error: c.danger,
+          onError: Colors.white,
+        );
 
     final textTheme = TextTheme(
       displayLarge: MilkyType.display.copyWith(fontSize: 40),
@@ -177,19 +192,32 @@ abstract final class MilkyTheme {
         centerTitle: false,
         foregroundColor: c.text,
         titleTextStyle: MilkyType.title.copyWith(color: c.text),
-        systemOverlayStyle: c.isDark ? SystemUiOverlayStyle.light : SystemUiOverlayStyle.dark,
+        systemOverlayStyle: c.isDark
+            ? SystemUiOverlayStyle.light
+            : SystemUiOverlayStyle.dark,
       ),
       snackBarTheme: SnackBarThemeData(
         behavior: SnackBarBehavior.floating,
         backgroundColor: c.surfaceRaised,
         contentTextStyle: MilkyType.bodySmall.copyWith(color: c.text),
-        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(MilkyRadius.control), side: BorderSide(color: c.stroke)),
-        insetPadding: const EdgeInsets.fromLTRB(MilkySpace.lg, 0, MilkySpace.lg, MilkySpace.xxl),
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(MilkyRadius.control),
+          side: BorderSide(color: c.stroke),
+        ),
+        insetPadding: const EdgeInsets.fromLTRB(
+          MilkySpace.lg,
+          0,
+          MilkySpace.lg,
+          MilkySpace.xxl,
+        ),
       ),
       inputDecorationTheme: InputDecorationTheme(
         filled: true,
         fillColor: c.isDark ? c.glassTint : c.surfaceRaised,
-        contentPadding: const EdgeInsets.symmetric(horizontal: MilkySpace.lg, vertical: MilkySpace.lg),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: MilkySpace.lg,
+          vertical: MilkySpace.lg,
+        ),
         hintStyle: MilkyType.body.copyWith(color: c.textFaint),
         labelStyle: MilkyType.bodySmall.copyWith(color: c.textMuted),
         errorStyle: MilkyType.bodySmall.copyWith(color: c.danger),

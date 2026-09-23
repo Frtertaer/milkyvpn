@@ -5,7 +5,6 @@ import 'package:provider/provider.dart';
 
 import '../../app/app_settings.dart';
 import '../../app/milky_device.dart';
-import '../../core/errors/milky_error.dart';
 import '../../core/subscription/subscription_repository.dart';
 import '../../core/subscription/vpn_profile.dart';
 import '../../core/vpn/vpn_bridge.dart';
@@ -17,6 +16,7 @@ import '../../design/milky_connect_orb.dart';
 import '../../design/milky_error_sheet.dart';
 import '../../design/milky_glass.dart';
 import '../../design/milky_motion.dart';
+import '../../design/milky_sheet.dart';
 import '../../design/milky_theme.dart';
 import '../../design/milky_tokens.dart';
 import '../../l10n/milky_strings.dart';
@@ -47,60 +47,80 @@ class _HomeScreenState extends State<HomeScreen> {
     final settings = context.watch<AppSettings>();
 
     final orbState = _orbState(vpn, repo);
-    final counts = locationCounts(repo.snapshot?.profiles ?? const <VpnProfile>[]);
+    final counts = locationCounts(
+      repo.snapshot?.profiles ?? const <VpnProfile>[],
+    );
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.fromLTRB(MilkySpace.screen, MilkySpace.sm, MilkySpace.screen, MilkySpace.xxl),
-      child: MilkyColumn(
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _TopBar(
-              state: vpn.state,
-              connected: vpn.isConnected,
-              onOpenSettings: () => widget.onOpenTab(2),
-            ),
-            const SizedBox(height: MilkySpace.huge),
-            Center(
-              child: MilkyConnectOrb(
-                key: const Key('connect_orb'),
-                state: orbState,
-                enabled: !_working,
-                progress: vpn.isBusy ? _progress(vpn) : null,
-                caption: _orbCaption(t, orbState),
-                semanticLabel: vpn.isConnected ? t.tapToDisconnect : t.tapToConnect,
-                semanticValue: _statusText(t, vpn, repo),
-                onTap: _toggle,
-              ),
-            ),
-            const SizedBox(height: MilkySpace.xxl),
-            _StatusBlock(vpn: vpn, repo: repo),
-            const SizedBox(height: MilkySpace.huge),
-            MilkyServerSelector(
-              value: settings.location,
-              counts: counts,
-              enabled: !vpn.isBusy,
-              onChanged: (choice) {
-                if (choice == settings.location) return;
-                context.read<AppSettings>().setLocation(choice);
-              },
-            ),
-            const SizedBox(height: MilkySpace.lg),
-            MilkySubscriptionStatus(
-              snapshot: repo.snapshot,
-              onTap: () => repo.hasSubscription ? widget.onOpenTab(1) : _openImport(),
-            ),
-            if (!repo.hasSubscription) ...[
-              const SizedBox(height: MilkySpace.md),
-              MilkyPrimaryButton(
+    final orb = MilkyConnectOrb(
+      key: const Key('connect_orb'),
+      size: MediaQuery.sizeOf(context).height < 650 ? 180 : null,
+      state: orbState,
+      enabled: !_working && !vpn.isBusy,
+      progress: vpn.isBusy ? _progress(vpn) : null,
+      caption: _orbCaption(t, orbState),
+      semanticLabel: vpn.isConnected ? t.tapToDisconnect : t.tapToConnect,
+      semanticValue: _statusText(t, vpn, repo),
+      onTap: _toggle,
+    );
+    final selector = MilkyServerSelector(
+      value: settings.location,
+      counts: counts,
+      enabled: !vpn.isBusy,
+      onChanged: (choice) {
+        if (choice == settings.location) return;
+        context.read<AppSettings>().setLocation(choice);
+      },
+    );
+    final subscription = MilkySubscriptionStatus(
+      snapshot: repo.snapshot,
+      onTap: () => repo.hasSubscription ? widget.onOpenTab(1) : _openImport(),
+    );
+
+    return LayoutBuilder(
+      builder: (context, bounds) {
+        final topBar = _TopBar(
+          state: vpn.state,
+          connected: vpn.isConnected,
+          onOpenSettings: () => widget.onOpenTab(2),
+        );
+        final status = _StatusBlock(vpn: vpn, repo: repo);
+        final addButton = repo.hasSubscription
+            ? null
+            : MilkyPrimaryButton(
                 label: t.addSubscription,
                 icon: Icons.add_rounded,
                 onPressed: _openImport,
-              ),
-            ],
-          ],
-        ),
-      ),
+              );
+
+        return SingleChildScrollView(
+          padding: const EdgeInsets.fromLTRB(20, 12, 20, 24),
+          child: MilkyColumn(
+            shrinkWrap: true,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                topBar,
+                SizedBox(
+                  height: bounds.maxHeight > 760
+                      ? 48
+                      : (bounds.maxHeight < 580 ? 8 : 20),
+                ),
+                Center(child: orb),
+                const SizedBox(height: 18),
+                status,
+                SizedBox(height: bounds.maxHeight < 580 ? 16 : 28),
+                selector,
+                const SizedBox(height: 12),
+                subscription,
+                if (addButton != null) ...[
+                  const SizedBox(height: MilkySpace.md),
+                  addButton,
+                ],
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -123,7 +143,10 @@ class _HomeScreenState extends State<HomeScreen> {
     }
   }
 
-  static MilkyOrbState _orbState(VpnController vpn, SubscriptionRepository repo) {
+  static MilkyOrbState _orbState(
+    VpnController vpn,
+    SubscriptionRepository repo,
+  ) {
     if (vpn.isBusy) return MilkyOrbState.connecting;
     if (vpn.isConnected) return MilkyOrbState.connected;
     if (!repo.hasSubscription) return MilkyOrbState.disabled;
@@ -160,7 +183,10 @@ class _HomeScreenState extends State<HomeScreen> {
     MilkyHaptics.connect();
     final bool ok;
     try {
-      ok = await vpn.connect(repo.snapshot?.profiles ?? const <VpnProfile>[], settings.location);
+      ok = await vpn.connect(
+        repo.snapshot?.profiles ?? const <VpnProfile>[],
+        settings.location,
+      );
     } finally {
       if (mounted) setState(() => _working = false);
     }
@@ -175,43 +201,61 @@ class _HomeScreenState extends State<HomeScreen> {
     await MilkyErrorSheet.show(
       context,
       error: err.withDeviceContext(isEmulator: device.isEmulator),
-      subtitle: err.kind == MilkyErrorKind.noServers ? null : t.searchingServer,
       onRetry: _toggle,
       onChooseServer: _pickAnotherLocation,
       onAddSubscription: _openImport,
       onOpenVpnSettings: () => context.read<VpnBridge>().openVpnSettings(),
-      onOpenDiagnostics: () => Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const DiagnosticsScreen())),
+      onOpenDiagnostics: () => Navigator.of(context).push(
+        MaterialPageRoute<void>(builder: (_) => const DiagnosticsScreen()),
+      ),
     );
   }
 
   /// "Другой сервер": move off Auto (or off the current country) and retry immediately.
   Future<void> _pickAnotherLocation() async {
     final settings = context.read<AppSettings>();
-    final LocationChoice next;
-    switch (settings.location) {
-      case LocationChoice.auto:
-        next = LocationChoice.finland;
-        break;
-      case LocationChoice.finland:
-        next = LocationChoice.usa;
-        break;
-      case LocationChoice.usa:
-        next = LocationChoice.auto;
-        break;
-    }
+    final counts = locationCounts(
+      context.read<SubscriptionRepository>().snapshot?.profiles ?? [],
+    );
+    final next = await showModalBottomSheet<LocationChoice>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (ctx) => MilkySheetFrame(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(S.of(ctx).chooseCountry, style: MilkyType.headline),
+            const SizedBox(height: 24),
+            MilkyServerSelector(
+              value: settings.location,
+              counts: counts,
+              onChanged: (choice) => Navigator.of(ctx).pop(choice),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (next == null) return;
     await settings.setLocation(next);
     if (mounted) _toggle();
   }
 
   void _openImport() {
-    Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const ImportScreen()));
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<void>(builder: (_) => const ImportScreen()));
   }
 }
 
 // ------------------------------------------------------------------ top bar
 
 class _TopBar extends StatelessWidget {
-  const _TopBar({required this.state, required this.connected, required this.onOpenSettings});
+  const _TopBar({
+    required this.state,
+    required this.connected,
+    required this.onOpenSettings,
+  });
 
   final VpnState state;
   final bool connected;
@@ -221,7 +265,8 @@ class _TopBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final c = context.milky;
     final t = S.of(context);
-    final busy = state == VpnState.connecting || state == VpnState.disconnecting;
+    final busy =
+        state == VpnState.connecting || state == VpnState.disconnecting;
 
     final String label;
     final Color color;
@@ -237,28 +282,34 @@ class _TopBar extends StatelessWidget {
     }
 
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const MilkyWordmark(size: 19),
-        const Spacer(),
-        Flexible(
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerRight,
-            child: MilkyStatusPill(label: label, color: color, compact: true, pulse: busy),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const MilkyWordmark(size: 24),
+              const SizedBox(height: 8),
+              MilkyStatusPill(
+                label: label,
+                color: color,
+                compact: true,
+                pulse: busy,
+              ),
+            ],
           ),
         ),
-        const SizedBox(width: MilkySpace.sm),
+        const SizedBox(width: 12),
         MilkyIconButton(
-          icon: Icons.settings_rounded,
+          icon: Icons.tune_rounded,
           tooltip: t.settings,
-          size: 40,
+          size: 48,
           onPressed: onOpenSettings,
         ),
       ],
     );
   }
 }
-
 // ------------------------------------------------------------------ status block
 
 class _StatusBlock extends StatelessWidget {
@@ -274,14 +325,23 @@ class _StatusBlock extends StatelessWidget {
 
     if (vpn.isBusy) {
       final attempt = vpn.attemptsMade <= 0 ? 1 : vpn.attemptsMade;
+      final location = vpn.attemptingLocation;
+      final searchText = location == null
+          ? t.searchingServer
+          : '${t.searchingServer} · ${_locationLabel(t, location)}';
       return Column(
         key: const Key('state_text'),
         children: [
-          Text(t.connecting, textAlign: TextAlign.center, style: MilkyType.headline.copyWith(color: c.accent)),
+          Text(
+            t.connecting,
+            textAlign: TextAlign.center,
+            style: MilkyType.headline.copyWith(color: c.accent),
+          ),
           const SizedBox(height: 6),
           Text(
-            '${t.searchingServer}  ${t.attemptOf(attempt, vpn.attemptTotal)}',
+            '$searchText  ${t.attemptOf(attempt, vpn.attemptTotal)}',
             textAlign: TextAlign.center,
+            maxLines: 2,
             style: MilkyType.bodySmall.copyWith(color: c.textMuted),
           ),
         ],
@@ -301,12 +361,20 @@ class _StatusBlock extends StatelessWidget {
             style: MilkyType.display.copyWith(fontSize: 30, color: c.text),
           ),
           const SizedBox(height: 8),
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
+          Wrap(
+            alignment: WrapAlignment.center,
+            crossAxisAlignment: WrapCrossAlignment.center,
             children: [
-              MilkyStatusPill(label: t.protectedShort, color: c.positive, compact: true),
+              MilkyStatusPill(
+                label: t.protectedShort,
+                color: c.positive,
+                compact: true,
+              ),
               const SizedBox(width: MilkySpace.sm),
-              _ConnectionClock(since: vpn.connectedSince, style: MilkyType.subtitle.copyWith(color: c.textMuted)),
+              _ConnectionClock(
+                since: vpn.connectedSince,
+                style: MilkyType.subtitle.copyWith(color: c.textMuted),
+              ),
             ],
           ),
         ],
@@ -319,12 +387,20 @@ class _StatusBlock extends StatelessWidget {
     return Column(
       key: const Key('state_text'),
       children: [
-        Text(t.notConnected, textAlign: TextAlign.center, style: MilkyType.headline.copyWith(color: c.text)),
+        Text(
+          t.notConnected,
+          textAlign: TextAlign.center,
+          style: MilkyType.headline.copyWith(color: c.text),
+        ),
         const SizedBox(height: 6),
         Text(
-          showInlineError ? t.errorBody(err.kind) : (repo.hasSubscription ? t.tapToConnect : t.needSubscription),
+          showInlineError
+              ? t.errorBody(err.kind)
+              : (repo.hasSubscription ? t.tapToConnect : t.needSubscription),
           textAlign: TextAlign.center,
-          style: MilkyType.bodySmall.copyWith(color: showInlineError ? c.danger : c.textMuted),
+          style: MilkyType.bodySmall.copyWith(
+            color: showInlineError ? c.danger : c.textMuted,
+          ),
         ),
       ],
     );
@@ -379,7 +455,12 @@ class _ConnectionClockState extends State<_ConnectionClock> {
   @override
   Widget build(BuildContext context) {
     final since = widget.since;
-    final dur = since == null ? Duration.zero : DateTime.now().difference(since);
-    return Text(format(dur < Duration.zero ? Duration.zero : dur), style: widget.style);
+    final dur = since == null
+        ? Duration.zero
+        : DateTime.now().difference(since);
+    return Text(
+      format(dur < Duration.zero ? Duration.zero : dur),
+      style: widget.style,
+    );
   }
 }

@@ -38,7 +38,9 @@ class MilkyPrimaryButton extends StatelessWidget {
     final Color foreground;
     switch (tone) {
       case MilkyButtonTone.accent:
-        gradient = [c.accent, c.accentDeep];
+        gradient = c.isDark
+            ? [const Color(0xFFE9E4F7), const Color(0xFFBDB2E4)]
+            : [c.accent, c.accentDeep];
         foreground = c.isDark ? const Color(0xFF08101F) : Colors.white;
         break;
       case MilkyButtonTone.positive:
@@ -46,7 +48,10 @@ class MilkyPrimaryButton extends StatelessWidget {
         foreground = const Color(0xFF06170F);
         break;
       case MilkyButtonTone.danger:
-        gradient = [c.danger, Color.alphaBlend(const Color(0xFF7A1B2E), c.danger)];
+        gradient = [
+          c.danger,
+          Color.alphaBlend(const Color(0xFF7A1B2E), c.danger),
+        ];
         foreground = Colors.white;
         break;
       case MilkyButtonTone.quiet:
@@ -60,18 +65,26 @@ class MilkyPrimaryButton extends StatelessWidget {
     final content = AnimatedContainer(
       duration: MilkyMotion.fast,
       curve: MilkyMotion.standard,
-      height: height,
+      constraints: BoxConstraints(minHeight: height),
       width: expanded ? double.infinity : null,
-      padding: EdgeInsets.symmetric(horizontal: expanded ? MilkySpace.xxl : MilkySpace.xxl),
+      padding: EdgeInsets.symmetric(horizontal: MilkySpace.xl, vertical: 16),
       decoration: BoxDecoration(
         borderRadius: radius,
-        gradient: enabled ? LinearGradient(begin: Alignment.topLeft, end: Alignment.bottomRight, colors: gradient) : null,
+        gradient: enabled
+            ? LinearGradient(
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+                colors: gradient,
+              )
+            : null,
         color: enabled ? null : (c.isDark ? c.surface : c.surfaceRaised),
         border: enabled ? null : Border.all(color: c.stroke),
         boxShadow: enabled && tone != MilkyButtonTone.quiet
             ? [
                 BoxShadow(
-                  color: gradient.first.withValues(alpha: c.isDark ? 0.40 : 0.26),
+                  color: gradient.first.withValues(
+                    alpha: c.isDark ? 0.40 : 0.26,
+                  ),
                   blurRadius: 26,
                   offset: const Offset(0, 12),
                   spreadRadius: -6,
@@ -90,20 +103,28 @@ class MilkyPrimaryButton extends StatelessWidget {
                     key: const ValueKey('spinner'),
                     width: 20,
                     height: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2.4, color: foreground),
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2.4,
+                      color: foreground,
+                    ),
                   )
                 : icon == null
-                    ? const SizedBox.shrink(key: ValueKey('none'))
-                    : Icon(icon, key: const ValueKey('icon'), size: 20, color: foreground),
+                ? const SizedBox.shrink(key: ValueKey('none'))
+                : Icon(
+                    icon,
+                    key: const ValueKey('icon'),
+                    size: 20,
+                    color: foreground,
+                  ),
           ),
           if (loading || icon != null) const SizedBox(width: MilkySpace.md),
           Flexible(
             child: Text(
               label,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,
-              style: MilkyType.button.copyWith(color: enabled ? foreground : c.textFaint),
+              style: MilkyType.button.copyWith(
+                color: enabled ? foreground : c.textFaint,
+              ),
             ),
           ),
         ],
@@ -157,9 +178,12 @@ class MilkyGhostButton extends StatelessWidget {
         scale: 0.985,
         dim: 0.9,
         child: Container(
-          height: height,
+          constraints: BoxConstraints(minHeight: height),
           width: expanded ? double.infinity : null,
-          padding: const EdgeInsets.symmetric(horizontal: MilkySpace.xl),
+          padding: const EdgeInsets.symmetric(
+            horizontal: MilkySpace.xl,
+            vertical: 14,
+          ),
           decoration: BoxDecoration(
             color: c.isDark ? c.glassTint : Colors.white.withValues(alpha: 0.7),
             borderRadius: BorderRadius.circular(height / 2),
@@ -176,10 +200,10 @@ class MilkyGhostButton extends StatelessWidget {
               Flexible(
                 child: Text(
                   label,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.center,
-                  style: MilkyType.button.copyWith(color: enabled ? fg : c.textFaint),
+                  style: MilkyType.button.copyWith(
+                    color: enabled ? fg : c.textFaint,
+                  ),
                 ),
               ),
             ],
@@ -192,7 +216,13 @@ class MilkyGhostButton extends StatelessWidget {
 
 /// Small tappable glass tile for text-only actions inside cards.
 class MilkyLinkButton extends StatelessWidget {
-  const MilkyLinkButton({super.key, required this.label, this.onPressed, this.icon, this.color});
+  const MilkyLinkButton({
+    super.key,
+    required this.label,
+    this.onPressed,
+    this.icon,
+    this.color,
+  });
 
   final String label;
   final VoidCallback? onPressed;
@@ -207,7 +237,10 @@ class MilkyLinkButton extends StatelessWidget {
       onTap: onPressed,
       scale: 0.97,
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: MilkySpace.sm, horizontal: MilkySpace.xs),
+        padding: const EdgeInsets.symmetric(
+          vertical: MilkySpace.sm,
+          horizontal: MilkySpace.xs,
+        ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -215,7 +248,13 @@ class MilkyLinkButton extends StatelessWidget {
               Icon(icon, size: 17, color: fg),
               const SizedBox(width: 6),
             ],
-            Text(label, style: MilkyType.chip.copyWith(color: fg)),
+            Flexible(
+              child: Text(
+                label,
+                textAlign: TextAlign.center,
+                style: MilkyType.chip.copyWith(color: fg),
+              ),
+            ),
           ],
         ),
       ),
@@ -250,12 +289,16 @@ class MilkyIconButton extends StatelessWidget {
       onTap: onPressed,
       scale: 0.92,
       child: Container(
-        width: size,
-        height: size,
+        width: size < 48 ? 48 : size,
+        height: size < 48 ? 48 : size,
         decoration: BoxDecoration(
-          color: filled ? c.accentSoft : (c.isDark ? c.glassTint : Colors.white.withValues(alpha: 0.8)),
+          color: filled
+              ? c.accentSoft
+              : (c.isDark ? c.glassTint : Colors.white.withValues(alpha: 0.8)),
           shape: BoxShape.circle,
-          border: Border.all(color: filled ? c.accent.withValues(alpha: 0.4) : c.stroke),
+          border: Border.all(
+            color: filled ? c.accent.withValues(alpha: 0.4) : c.stroke,
+          ),
         ),
         child: Icon(icon, size: size * 0.46, color: fg),
       ),

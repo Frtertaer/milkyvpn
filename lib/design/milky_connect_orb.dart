@@ -49,7 +49,8 @@ class MilkyConnectOrb extends StatefulWidget {
   State<MilkyConnectOrb> createState() => _MilkyConnectOrbState();
 }
 
-class _MilkyConnectOrbState extends State<MilkyConnectOrb> with TickerProviderStateMixin, MilkyAutoPause {
+class _MilkyConnectOrbState extends State<MilkyConnectOrb>
+    with TickerProviderStateMixin, WidgetsBindingObserver, MilkyAutoPause {
   late final AnimationController _loop;
   late final AnimationController _energy;
   late final AnimationController _check;
@@ -74,8 +75,15 @@ class _MilkyConnectOrbState extends State<MilkyConnectOrb> with TickerProviderSt
   void initState() {
     super.initState();
     _loop = AnimationController(vsync: this, duration: MilkyMotion.breathing);
-    _energy = AnimationController(vsync: this, duration: const Duration(milliseconds: 620), value: _target(widget.state));
-    _check = AnimationController(vsync: this, duration: const Duration(milliseconds: 460));
+    _energy = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 620),
+      value: _target(widget.state),
+    );
+    _check = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 460),
+    );
     if (widget.state == MilkyOrbState.connected) _check.value = 1;
   }
 
@@ -115,10 +123,16 @@ class _MilkyConnectOrbState extends State<MilkyConnectOrb> with TickerProviderSt
   }
 
   @override
-  void pauseMilkyAnimations() => _loop.stop();
+  void pauseMilkyAnimations() {
+    _loop.stop();
+    _energy.stop();
+    _check.stop();
+  }
 
   @override
   void resumeMilkyAnimations() {
+    _energy.value = _target(widget.state);
+    _check.value = widget.state == MilkyOrbState.connected ? 1 : 0;
     if (!_reduce && !_loop.isAnimating) _loop.repeat();
   }
 
@@ -147,7 +161,9 @@ class _MilkyConnectOrbState extends State<MilkyConnectOrb> with TickerProviderSt
     return Semantics(
       button: true,
       enabled: active,
-      label: widget.caption == null ? widget.semanticLabel : '${widget.semanticLabel}. ${widget.caption}',
+      label: widget.caption == null
+          ? widget.semanticLabel
+          : '${widget.semanticLabel}. ${widget.caption}',
       value: widget.semanticValue,
       child: MilkyPressable(
         onTap: active ? widget.onTap : null,
@@ -161,7 +177,11 @@ class _MilkyConnectOrbState extends State<MilkyConnectOrb> with TickerProviderSt
               height: diameter,
               child: RepaintBoundary(
                 child: AnimatedBuilder(
-                  animation: Listenable.merge(<Listenable>[_loop, _energy, _check]),
+                  animation: Listenable.merge(<Listenable>[
+                    _loop,
+                    _energy,
+                    _check,
+                  ]),
                   builder: (context, _) => CustomPaint(
                     painter: _OrbPainter(
                       t: _loop.value,
@@ -203,10 +223,7 @@ class _OrbPainter extends CustomPainter {
     required this.state,
     required this.colors,
   });
-
-  final double t;
-  final double energy;
-  final double check;
+  final double t, energy, check;
   final double? progress;
   final MilkyOrbState state;
   final MilkyColors colors;
@@ -214,240 +231,202 @@ class _OrbPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final c = colors;
-    final radius = math.min(size.width, size.height) / 2;
-    final center = Offset(size.width / 2, size.height / 2);
-    final phase = t * 2 * math.pi;
-
-    // State colour: accent while working, mint when protected, coral on failure.
-    final Color stateColor;
-    switch (state) {
-      case MilkyOrbState.connected:
-        stateColor = c.positive;
-        break;
-      case MilkyOrbState.error:
-        stateColor = c.danger;
-        break;
-      case MilkyOrbState.disabled:
-        stateColor = c.textFaint;
-        break;
-      default:
-        stateColor = c.accent;
-    }
-
-    // Breathing: slow and small when idle, faster and stronger while connecting.
-    final breath = state == MilkyOrbState.connecting
-        ? 0.018 * math.sin(phase * 2.2)
-        : 0.012 * math.sin(phase);
-    canvas.translate(center.dx, center.dy);
-    canvas.scale(1 + breath);
-    canvas.translate(-center.dx, -center.dy);
-
-    // 1 — Ambient halo.
-    final haloR = radius * 1.02;
-    canvas.drawCircle(
-      center,
-      haloR,
+    final phase = t * math.pi * 2;
+    final center = size.center(Offset.zero);
+    final radius = size.shortestSide * .385;
+    final connected = state == MilkyOrbState.connected;
+    final failed = state == MilkyOrbState.error;
+    final tint = failed ? c.danger : (connected ? c.auroraC : c.auroraB);
+    final bounds = Rect.fromCircle(center: center, radius: radius);
+    final halo = Rect.fromCircle(center: center, radius: radius * 1.32);
+    // A radial falloff replaces expensive backdrop/mask blur filters.
+    canvas.drawOval(
+      halo,
       Paint()
         ..shader = RadialGradient(
           colors: [
-            stateColor.withValues(alpha: 0.05 + 0.30 * energy),
-            stateColor.withValues(alpha: 0.03 + 0.10 * energy),
-            stateColor.withValues(alpha: 0),
+            tint.withValues(alpha: .09 + energy * .12),
+            tint.withValues(alpha: 0),
           ],
-          stops: const [0.35, 0.72, 1],
-        ).createShader(Rect.fromCircle(center: center, radius: haloR)),
+          stops: const [.45, 1],
+        ).createShader(halo),
     );
 
-    // 2 — Rim track.
-    final rimR = radius * 0.855;
-    canvas.drawCircle(
-      center,
-      rimR,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 2
-        ..color = (c.isDark ? Colors.white : const Color(0xFF1B2340)).withValues(alpha: 0.07 + 0.06 * energy),
-    );
-
-    // 3 — Rotating liquid halo (connecting) / protected ring (connected).
-    if (state == MilkyOrbState.connecting) {
-      final p = progress;
-      if (p != null) {
-        final rect = Rect.fromCircle(center: center, radius: rimR);
-        canvas.drawArc(
-          rect,
-          -math.pi / 2,
-          2 * math.pi * p.clamp(0.0, 1.0),
-          false,
-          Paint()
-            ..style = PaintingStyle.stroke
-            ..strokeWidth = 3.4
-            ..strokeCap = StrokeCap.round
-            ..shader = SweepGradient(
-              colors: [c.auroraC, c.accent, c.auroraB, c.auroraC],
-              transform: GradientRotation(-math.pi / 2 + phase * 0.6),
-            ).createShader(rect),
-        );
-      } else {
-        final rect = Rect.fromCircle(center: center, radius: rimR);
-        final paint = Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 3.4
-          ..strokeCap = StrokeCap.round
-          ..shader = SweepGradient(
-            colors: [c.auroraC, c.accent, c.auroraB, c.auroraC],
-            transform: GradientRotation(phase),
-          ).createShader(rect);
-        for (var i = 0; i < 3; i++) {
-          canvas.drawArc(rect, phase + i * (2 * math.pi / 3), 1.15, false, paint);
-        }
-      }
-    } else if (state == MilkyOrbState.connected) {
-      canvas.drawCircle(
-        center,
-        rimR,
-        Paint()
-          ..style = PaintingStyle.stroke
-          ..strokeWidth = 2.6
-          ..color = stateColor.withValues(alpha: 0.55),
-      );
-      // Travelling light on the protected ring.
-      final a = phase * 0.9;
-      canvas.drawCircle(
-        center + Offset(math.cos(a) * rimR, math.sin(a) * rimR),
-        4.2,
-        Paint()
-          ..color = stateColor
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 3),
-      );
-      canvas.drawCircle(center + Offset(math.cos(a) * rimR, math.sin(a) * rimR), 2.4, Paint()..color = Colors.white.withValues(alpha: 0.9));
-    }
-
-    // 4 — Glass sphere.
-    final discR = radius * 0.635;
-    final discRect = Rect.fromCircle(center: center, radius: discR);
-    canvas.drawCircle(
-      center,
-      discR,
-      Paint()
-        ..shader = RadialGradient(
-          center: const Alignment(-0.45, -0.6),
-          colors: [
-            (c.isDark ? Colors.white : Colors.white).withValues(alpha: 0.10 + 0.10 * energy),
-            (c.isDark ? const Color(0xFF1B2440) : const Color(0xFFEDE8E0)).withValues(alpha: c.isDark ? 0.55 : 0.85),
-            c.isDark ? const Color(0xFF0E1428) : const Color(0xFFE4DFD6),
-          ],
-          stops: const [0, 0.62, 1],
-        ).createShader(discRect),
-    );
-
-    // 5 — Milk pool, clipped inside the sphere.
     canvas.save();
-    canvas.clipPath(Path()..addOval(discRect));
-    final poolR = discR * (0.78 + 0.05 * energy);
-    final amp = 0.014 + 0.030 * energy;
-    final pool = _blob(center, poolR, phase, amp);
+    canvas.translate(center.dx, center.dy);
+    canvas.rotate(.025 * math.sin(phase));
+    canvas.scale(1 + .009 * math.sin(phase));
+    canvas.translate(-center.dx, -center.dy);
+    final silhouette = _contour(center, radius, phase);
     canvas.drawPath(
-      pool,
+      silhouette,
       Paint()
-        ..shader = LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [
-            c.milk.withValues(alpha: 0.10 + 0.22 * energy),
-            c.milk.withValues(alpha: 0.04 + 0.10 * energy),
-          ],
-        ).createShader(Rect.fromCircle(center: center, radius: poolR)),
+        ..shader = RadialGradient(
+          center: const Alignment(-.65, -.75),
+          radius: 1.4,
+          colors: failed
+              ? const [Color(0xFFF4D8DE), Color(0xFFB695BB), Color(0xFF56486A)]
+              : connected
+              ? const [
+                  Color(0xFFF9F7ED),
+                  Color(0xFFC2EAE8),
+                  Color(0xFF8EA5DE),
+                  Color(0xFF514776),
+                ]
+              : const [
+                  Color(0xFFE7E5F3),
+                  Color(0xFFB8B8D8),
+                  Color(0xFF9399C9),
+                  Color(0xFF4D466E),
+                ],
+          stops: failed ? null : const [0, .34, .68, 1],
+        ).createShader(bounds),
     );
-    canvas.drawPath(
-      pool,
-      Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.2
-        ..color = c.milk.withValues(alpha: 0.10 + 0.16 * energy),
-    );
-    canvas.restore();
 
-    // 6 — Rim of the sphere.
-    canvas.drawCircle(
-      center,
-      discR,
+    canvas.save();
+    canvas.clipPath(silhouette);
+    final drift = math.sin(phase) * radius * .06;
+    // Broad curved ribbons look like milk folding into water; no nested glass discs.
+    final ribbon = Path()
+      ..moveTo(center.dx - radius * 1.1, center.dy + radius * .02)
+      ..cubicTo(
+        center.dx - radius * .5,
+        center.dy + radius * .62 + drift,
+        center.dx + radius * .14,
+        center.dy - radius * .9,
+        center.dx + radius * 1.1,
+        center.dy - radius * .28,
+      )
+      ..lineTo(center.dx + radius * 1.1, center.dy + radius * 1.1)
+      ..lineTo(center.dx - radius * 1.1, center.dy + radius * 1.1)
+      ..close();
+    canvas.drawPath(
+      ribbon,
       Paint()
-        ..style = PaintingStyle.stroke
-        ..strokeWidth = 1.3
         ..shader = LinearGradient(
           begin: Alignment.topLeft,
           end: Alignment.bottomRight,
           colors: [
-            Colors.white.withValues(alpha: c.isDark ? 0.34 : 0.85),
-            Colors.white.withValues(alpha: 0.04),
+            c.milk.withValues(alpha: .88),
+            (connected ? const Color(0xFFAAE3E4) : const Color(0xFFB8BDE5))
+                .withValues(alpha: .86),
+            const Color(0xFF8C71B8).withValues(alpha: .62),
           ],
-        ).createShader(discRect),
+        ).createShader(bounds),
+    );
+    final fold = Path()
+      ..moveTo(center.dx - radius, center.dy + radius * .36)
+      ..cubicTo(
+        center.dx - radius * .1,
+        center.dy + radius * .92,
+        center.dx + radius * .22,
+        center.dy - radius * .24 + drift,
+        center.dx + radius * 1.2,
+        center.dy + radius * .08,
+      )
+      ..lineTo(center.dx + radius, center.dy + radius * 1.1)
+      ..lineTo(center.dx - radius, center.dy + radius * 1.1)
+      ..close();
+    canvas.drawPath(
+      fold,
+      Paint()
+        ..shader = LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [c.milk.withValues(alpha: .52), tint.withValues(alpha: .08)],
+        ).createShader(bounds),
+    );
+    canvas.restore();
+    canvas.drawPath(
+      silhouette,
+      Paint()
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = 1.2
+        ..shader = LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            Colors.white.withValues(alpha: .8),
+            Colors.white.withValues(alpha: .04),
+            tint.withValues(alpha: .55),
+          ],
+        ).createShader(bounds),
     );
 
-    // 7 — Mark / check.
-    final markSize = discR * 0.92;
-    final markRect = Rect.fromCenter(center: center, width: markSize, height: markSize);
-    final markOpacity = (1 - check).clamp(0.0, 1.0);
-    if (markOpacity > 0.01) {
-      final glyph = state == MilkyOrbState.error ? c.danger : (state == MilkyOrbState.idle ? c.textMuted : stateColor);
-      canvas.saveLayer(markRect, Paint()..color = Colors.white.withValues(alpha: markOpacity));
-      MilkyMark.paint(
-        canvas,
-        markRect,
-        fill: Color.lerp(glyph, c.accent, 0.35 * energy)!,
-        glyph: c.isDark ? const Color(0xFF0A1020) : Colors.white,
-        glow: energy > 0.5 ? stateColor.withValues(alpha: 0.35 * energy) : null,
+    // The same M/drop remains visible in all states; connection adds a small check.
+    final markRect = Rect.fromCenter(
+      center: center.translate(0, -radius * .08),
+      width: radius * .72,
+      height: radius * .78,
+    );
+    MilkyMark.paint(
+      canvas,
+      markRect,
+      fill: const Color(0xFFF9F7F0).withValues(alpha: .92),
+      glyph: const Color(0xFF61577F),
+      glyphWeight: .08,
+    );
+    if (check > 0) {
+      final badge = center.translate(radius * .52, radius * .55);
+      canvas.drawCircle(
+        badge,
+        radius * .135,
+        Paint()..color = const Color(0xFF173D41),
       );
-      canvas.restore();
-    }
-    if (check > 0.01) {
-      final box = Rect.fromCenter(center: center, width: discR * 0.66, height: discR * 0.66);
       final path = Path()
-        ..moveTo(box.left + box.width * 0.24, box.top + box.height * 0.54)
-        ..lineTo(box.left + box.width * 0.44, box.top + box.height * 0.73)
-        ..lineTo(box.left + box.width * 0.78, box.top + box.height * 0.30);
-      final metrics = path.computeMetrics();
-      final trimmed = Path();
-      for (final m in metrics) {
-        trimmed.addPath(m.extractPath(0, m.length * check.clamp(0.0, 1.0)), Offset.zero);
-      }
+        ..moveTo(badge.dx - radius * .065, badge.dy)
+        ..lineTo(badge.dx - radius * .015, badge.dy + radius * .048)
+        ..lineTo(badge.dx + radius * .072, badge.dy - radius * .052);
+      final metric = path.computeMetrics().first;
       canvas.drawPath(
-        trimmed,
+        metric.extractPath(0, metric.length * check),
         Paint()
+          ..color = const Color(0xFFCDFFF2)
           ..style = PaintingStyle.stroke
-          ..strokeWidth = discR * 0.115
+          ..strokeWidth = 2.2
           ..strokeCap = StrokeCap.round
-          ..strokeJoin = StrokeJoin.round
-          ..color = stateColor
-          ..maskFilter = const MaskFilter.blur(BlurStyle.solid, 2),
+          ..strokeJoin = StrokeJoin.round,
       );
-      canvas.drawPath(
-        trimmed,
+    }
+    canvas.restore();
+
+    if (state == MilkyOrbState.connecting || connected) {
+      final ring = Rect.fromCircle(center: center, radius: radius * 1.13);
+      final start = state == MilkyOrbState.connecting ? phase : -math.pi * .65;
+      canvas.drawArc(
+        ring,
+        start,
+        connected ? math.pi * 1.5 : math.pi * (1.0 + .35 * math.sin(phase)),
+        false,
         Paint()
           ..style = PaintingStyle.stroke
-          ..strokeWidth = discR * 0.10
+          ..strokeWidth = connected ? 1.2 : 2.0
           ..strokeCap = StrokeCap.round
-          ..strokeJoin = StrokeJoin.round
-          ..color = Colors.white.withValues(alpha: 0.92),
+          ..shader = SweepGradient(
+            transform: GradientRotation(start),
+            colors: [
+              tint.withValues(alpha: .02),
+              c.milk.withValues(alpha: .8),
+              tint.withValues(alpha: .55),
+              tint.withValues(alpha: 0),
+            ],
+          ).createShader(ring),
       );
     }
   }
 
-  Path _blob(Offset center, double radius, double phase, double amp) {
-    const steps = 44;
+  Path _contour(Offset center, double r, double phase) {
     final path = Path();
+    const steps = 96;
     for (var i = 0; i <= steps; i++) {
-      final a = i / steps * 2 * math.pi;
-      final wobble = 1 +
-          amp * (0.6 * math.sin(a * 3 + phase) + 0.4 * math.sin(a * 5 - phase * 1.4));
-      final r = radius * wobble;
-      final x = center.dx + math.cos(a) * r;
-      final y = center.dy + math.sin(a) * r * 0.94;
+      final a = i / steps * math.pi * 2;
+      final wobble =
+          1 + .018 * math.sin(a * 3 + phase) + .009 * math.cos(a * 2 - phase);
+      final point = center + Offset(math.cos(a), math.sin(a)) * (r * wobble);
       if (i == 0) {
-        path.moveTo(x, y);
+        path.moveTo(point.dx, point.dy);
       } else {
-        path.lineTo(x, y);
+        path.lineTo(point.dx, point.dy);
       }
     }
     return path..close();
@@ -455,5 +434,10 @@ class _OrbPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(_OrbPainter old) =>
-      old.t != t || old.energy != energy || old.check != check || old.progress != progress || old.state != state || old.colors != colors;
+      old.t != t ||
+      old.energy != energy ||
+      old.check != check ||
+      old.progress != progress ||
+      old.state != state ||
+      old.colors != colors;
 }

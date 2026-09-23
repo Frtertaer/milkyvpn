@@ -151,4 +151,50 @@ class XrayConfigBuilderTest {
         assertEquals(1, inbounds.length())
         assertEquals("socks", inbounds.getJSONObject(0).getString("protocol"))
     }
+
+    @Test
+    fun generatedConfigsUseInlinePrivateRoutesWithoutGeodataFiles() {
+        val expectedPrivateCidrs = setOf(
+            "0.0.0.0/8",
+            "10.0.0.0/8",
+            "100.64.0.0/10",
+            "127.0.0.0/8",
+            "169.254.0.0/16",
+            "172.16.0.0/12",
+            "192.0.0.0/24",
+            "192.0.2.0/24",
+            "192.88.99.0/24",
+            "192.168.0.0/16",
+            "198.18.0.0/15",
+            "198.51.100.0/24",
+            "203.0.113.0/24",
+            "224.0.0.0/4",
+            "240.0.0.0/4",
+            "255.255.255.255/32",
+            "::/128",
+            "::1/128",
+            "fc00::/7",
+            "fe80::/10",
+            "ff00::/8",
+        )
+
+        for (tunEnabled in listOf(true, false)) {
+            val cfg = XrayConfigBuilder.build(reality(), tunEnabled = tunEnabled)
+            val serialized = cfg.toString()
+            assertFalse("config must not require geoip.dat", serialized.contains("geoip:"))
+            assertFalse("config must not require geosite.dat", serialized.contains("geosite:"))
+
+            val rules = cfg.getJSONObject("routing").getJSONArray("rules")
+            var actualPrivateCidrs: Set<String>? = null
+            for (i in 0 until rules.length()) {
+                val rule = rules.getJSONObject(i)
+                if (rule.optString("outboundTag") != "direct" || !rule.has("ip")) continue
+                val ips = rule.getJSONArray("ip")
+                val values = (0 until ips.length()).map { ips.getString(it) }.toSet()
+                if ("10.0.0.0/8" in values) actualPrivateCidrs = values
+            }
+
+            assertEquals(expectedPrivateCidrs, actualPrivateCidrs)
+        }
+    }
 }

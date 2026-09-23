@@ -141,11 +141,16 @@ class MainActivity : FlutterActivity() {
                     "disconnect" -> {
                         val running = MilkyVpnService.instance
                         if (running != null) {
-                            running.requestDisconnect()
+                            running.requestDisconnect().invokeOnCompletion { failure ->
+                                main.post {
+                                    if (failure == null) result.success(true)
+                                    else result.error("error", "disconnect_failed", null)
+                                }
+                            }
                         } else {
                             VpnStateStore.update(VpnStateStore.State.DISCONNECTED, connectedSinceEpochMs = null)
+                            result.success(true)
                         }
-                        result.success(true)
                     }
 
                     "clearActiveProfile" -> {

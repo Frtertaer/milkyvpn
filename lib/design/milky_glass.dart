@@ -60,73 +60,41 @@ class MilkyGlassCard extends StatelessWidget {
         break;
     }
 
-    final fill = LinearGradient(
-      begin: Alignment.topLeft,
-      end: Alignment.bottomRight,
-      colors: [
-        Color.alphaBlend(c.glassHighlight.withValues(alpha: c.isDark ? 0.10 : 0.75), tint),
-        tint,
-      ],
+    final fill = Color.alphaBlend(
+      tone == MilkyGlassTone.neutral || tone == MilkyGlassTone.muted
+          ? Colors.transparent
+          : tint,
+      c.surface,
     );
-
-    Widget content = DecoratedBox(
+    Widget content = Container(
       decoration: BoxDecoration(
+        color: fill,
         borderRadius: br,
-        gradient: fill,
-        border: Border.all(color: borderColor, width: selected ? 1.4 : 1),
+        border: selected ? Border.all(color: borderColor, width: 1.2) : null,
       ),
-      child: ClipRRect(
-        borderRadius: br,
-        child: Stack(
-          children: [
-            // Specular top edge — the "glass" read.
-            Positioned(
-              left: 0,
-              right: 0,
-              top: 0,
-              height: 1.2,
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: [c.glassHighlight.withValues(alpha: c.isDark ? 0.5 : 0.9), c.glassHighlight.withValues(alpha: 0)],
-                  ),
-                ),
-              ),
-            ),
-            Padding(padding: padding, child: child),
-          ],
-        ),
-      ),
+      padding: padding,
+      child: child,
     );
-
     if (onTap != null) {
       content = MilkyPressable(onTap: onTap, child: content);
     }
-
-    return Container(
-      decoration: BoxDecoration(
-        borderRadius: br,
-        boxShadow: elevated
-            ? [
-                BoxShadow(
-                  color: c.shadow.withValues(alpha: c.isDark ? 0.55 : 0.16),
-                  blurRadius: 26,
-                  offset: const Offset(0, 12),
-                  spreadRadius: -8,
-                ),
-                if (tone == MilkyGlassTone.accent)
-                  BoxShadow(color: c.accent.withValues(alpha: 0.14), blurRadius: 28, offset: const Offset(0, 10), spreadRadius: -6),
-              ]
-            : null,
-      ),
-      child: content,
-    );
+    return content;
   }
 }
 
 /// Section caption above a group of glass cards ("Подключение", "Приложение"…).
 class MilkySectionHeader extends StatelessWidget {
-  const MilkySectionHeader(this.title, {super.key, this.trailing, this.padding = const EdgeInsets.fromLTRB(MilkySpace.xxs, MilkySpace.xxl, MilkySpace.xxs, MilkySpace.md)});
+  const MilkySectionHeader(
+    this.title, {
+    super.key,
+    this.trailing,
+    this.padding = const EdgeInsets.fromLTRB(
+      MilkySpace.xxs,
+      MilkySpace.xxl,
+      MilkySpace.xxs,
+      MilkySpace.md,
+    ),
+  });
 
   final String title;
   final Widget? trailing;
@@ -140,7 +108,13 @@ class MilkySectionHeader extends StatelessWidget {
       child: Row(
         children: [
           Expanded(
-            child: Text(title.toUpperCase(), style: MilkyType.label.copyWith(color: c.textFaint)),
+            child: Text(
+              title,
+              style: MilkyType.bodySmall.copyWith(
+                color: c.textFaint,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
           if (trailing != null) trailing!,
         ],
@@ -165,7 +139,11 @@ class MilkyHairline extends StatelessWidget {
         child: DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
-              colors: [c.stroke.withValues(alpha: 0), c.stroke, c.stroke.withValues(alpha: 0)],
+              colors: [
+                c.stroke.withValues(alpha: 0),
+                c.stroke,
+                c.stroke.withValues(alpha: 0),
+              ],
             ),
           ),
         ),
@@ -198,11 +176,16 @@ class MilkyStatusPill extends StatelessWidget {
     final c = context.milky;
     final tint = color ?? c.textMuted;
     return Container(
-      padding: EdgeInsets.symmetric(horizontal: compact ? MilkySpace.md : MilkySpace.lg, vertical: compact ? 6 : 8),
+      padding: EdgeInsets.symmetric(
+        horizontal: compact ? MilkySpace.md : MilkySpace.lg,
+        vertical: compact ? 6 : 8,
+      ),
       decoration: BoxDecoration(
         color: tint.withValues(alpha: c.isDark ? 0.14 : 0.10),
         borderRadius: MilkyRadius.pillRadius,
-        border: Border.all(color: tint.withValues(alpha: c.isDark ? 0.34 : 0.24)),
+        border: Border.all(
+          color: tint.withValues(alpha: c.isDark ? 0.34 : 0.24),
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -214,9 +197,14 @@ class MilkyStatusPill extends StatelessWidget {
             _Dot(color: tint, pulse: pulse),
             const SizedBox(width: 7),
           ],
-          Text(
-            label,
-            style: (compact ? MilkyType.bodySmall : MilkyType.chip).copyWith(color: tint, fontWeight: FontWeight.w600),
+          Flexible(
+            child: Text(
+              label,
+              style: (compact ? MilkyType.bodySmall : MilkyType.chip).copyWith(
+                color: tint,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
           ),
         ],
       ),
@@ -233,15 +221,22 @@ class _Dot extends StatefulWidget {
   State<_Dot> createState() => _DotState();
 }
 
-class _DotState extends State<_Dot> with SingleTickerProviderStateMixin, MilkyAutoPause {
-  late final AnimationController _c = AnimationController(vsync: this, duration: const Duration(milliseconds: 1400));
+class _DotState extends State<_Dot>
+    with
+        SingleTickerProviderStateMixin,
+        WidgetsBindingObserver,
+        MilkyAutoPause {
+  late final AnimationController _c = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 1400),
+  );
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
     if (widget.pulse && !milkyReduceMotion(context) && !_c.isAnimating) {
       _c.repeat(reverse: true);
-    } else if (!widget.pulse) {
+    } else {
       _c.stop();
       _c.value = 0;
     }
@@ -249,6 +244,17 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin, MilkyAu
 
   @override
   void pauseMilkyAnimations() => _c.stop();
+
+  @override
+  void didUpdateWidget(_Dot oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.pulse && !milkyReduceMotion(context)) {
+      if (!_c.isAnimating) _c.repeat(reverse: true);
+    } else {
+      _c.stop();
+      _c.value = 0;
+    }
+  }
 
   @override
   void resumeMilkyAnimations() {
@@ -273,7 +279,12 @@ class _DotState extends State<_Dot> with SingleTickerProviderStateMixin, MilkyAu
           decoration: BoxDecoration(
             color: widget.color,
             shape: BoxShape.circle,
-            boxShadow: [BoxShadow(color: widget.color.withValues(alpha: 0.35 + t * 0.3), blurRadius: 6 + t * 6)],
+            boxShadow: [
+              BoxShadow(
+                color: widget.color.withValues(alpha: 0.35 + t * 0.3),
+                blurRadius: 6 + t * 6,
+              ),
+            ],
           ),
         );
       },
@@ -289,17 +300,20 @@ class MilkyColumn extends StatelessWidget {
     this.maxWidth = MilkyLayout.maxContentWidth,
     this.padding = EdgeInsets.zero,
     this.alignment = Alignment.topCenter,
+    this.shrinkWrap = false,
   });
 
   final Widget child;
   final double maxWidth;
   final EdgeInsetsGeometry padding;
   final Alignment alignment;
+  final bool shrinkWrap;
 
   @override
   Widget build(BuildContext context) {
     return Align(
       alignment: alignment,
+      heightFactor: shrinkWrap ? 1 : null,
       child: ConstrainedBox(
         constraints: BoxConstraints(maxWidth: maxWidth),
         child: Padding(padding: padding, child: child),

@@ -18,14 +18,22 @@ class _CodeBridge extends FakeBridge {
   @override
   Future<void> connect(VpnProfile p) async {
     connectCalls.add(p.id);
-    emit(VpnSnapshot(state: VpnState.connecting, profileId: p.id, profileRemark: p.redactedRemark));
+    emit(
+      VpnSnapshot(
+        state: VpnState.connecting,
+        profileId: p.id,
+        profileRemark: p.redactedRemark,
+      ),
+    );
     emit(VpnSnapshot(state: VpnState.error, profileId: p.id, errorCode: code));
   }
 }
 
 void main() {
   group('home states', () {
-    testWidgets('disconnected: idle orb, status text, subscription summary', (tester) async {
+    testWidgets('disconnected: idle orb, status text, subscription summary', (
+      tester,
+    ) async {
       final repo = await repoWith(fixture('subscription_16_fake.txt'));
       final bridge = FakeBridge();
       final vpn = VpnController(bridge: bridge);
@@ -34,15 +42,26 @@ void main() {
       expect(find.text('Не подключено'), findsOneWidget);
       expect(find.text('Защита выключена'), findsOneWidget);
       expect(find.text('ВКЛЮЧИТЬ'), findsOneWidget);
-      expect(tester.widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb'))).state, MilkyOrbState.idle);
+      expect(
+        tester
+            .widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb')))
+            .state,
+        MilkyOrbState.idle,
+      );
       expect(tester.takeException(), isNull);
       vpn.dispose();
     });
 
-    testWidgets('connecting: "Подключаем…" plus the attempt counter', (tester) async {
+    testWidgets('connecting: "Подключаем…" plus the attempt counter', (
+      tester,
+    ) async {
       final repo = await repoWith(fixture('subscription_16_fake.txt'));
       final bridge = FakeBridge()..hang = true;
-      final vpn = VpnController(bridge: bridge, attemptTimeout: const Duration(milliseconds: 400), maxAttempts: 2);
+      final vpn = VpnController(
+        bridge: bridge,
+        attemptTimeout: const Duration(milliseconds: 400),
+        maxAttempts: 2,
+      );
       await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
 
       await tester.tap(find.byKey(const Key('connect_orb')));
@@ -55,7 +74,9 @@ void main() {
       expect(find.text('Защита выключена'), findsNothing);
       expect(find.text('Подключаем…'), findsWidgets);
       expect(
-        tester.widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb'))).state,
+        tester
+            .widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb')))
+            .state,
         MilkyOrbState.connecting,
       );
 
@@ -66,7 +87,9 @@ void main() {
       await tester.pumpWidget(const SizedBox());
     });
 
-    testWidgets('connected: country name, protected pill and a running timer', (tester) async {
+    testWidgets('connected: country name, protected pill and a running timer', (
+      tester,
+    ) async {
       final repo = await repoWith(fixture('subscription_16_fake.txt'));
       final bridge = FakeBridge();
       final vpn = VpnController(bridge: bridge);
@@ -81,7 +104,12 @@ void main() {
       expect(find.text('VPN подключён'), findsOneWidget);
       expect(find.text('00:00:00'), findsOneWidget);
       expect(find.text('ОТКЛЮЧИТЬ'), findsOneWidget);
-      expect(tester.widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb'))).state, MilkyOrbState.connected);
+      expect(
+        tester
+            .widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb')))
+            .state,
+        MilkyOrbState.connected,
+      );
       // Never leak the raw profile remark, which contains protocol words.
       expect(find.textContaining('Reality'), findsNothing);
 
@@ -108,13 +136,20 @@ void main() {
     });
   });
 
-  testWidgets('orb transitions idle → connecting → connected → idle', (tester) async {
+  testWidgets('orb transitions idle → connecting → connected → idle', (
+    tester,
+  ) async {
     final repo = await repoWith(fixture('subscription_16_fake.txt'));
     final bridge = FakeBridge()..hang = true;
-    final vpn = VpnController(bridge: bridge, attemptTimeout: const Duration(milliseconds: 300), maxAttempts: 2);
+    final vpn = VpnController(
+      bridge: bridge,
+      attemptTimeout: const Duration(milliseconds: 300),
+      maxAttempts: 2,
+    );
     await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
 
-    MilkyConnectOrb orb() => tester.widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb')));
+    MilkyConnectOrb orb() =>
+        tester.widget<MilkyConnectOrb>(find.byKey(const Key('connect_orb')));
     expect(orb().state, MilkyOrbState.idle);
 
     await tester.tap(find.byKey(const Key('connect_orb')));
@@ -132,11 +167,22 @@ void main() {
   });
 
   group('failure sheet', () {
-    for (final code in ['tls_handshake', 'proxyerror', 'S', 'all_attempts_failed']) {
-      testWidgets('maps "$code" to a human message and hides the raw code', (tester) async {
+    for (final code in [
+      'tls_handshake',
+      'proxyerror',
+      'S',
+      'all_attempts_failed',
+    ]) {
+      testWidgets('maps "$code" to a human message and hides the raw code', (
+        tester,
+      ) async {
         final repo = await repoWith(fixture('subscription_16_fake.txt'));
         final bridge = _CodeBridge(code);
-        final vpn = VpnController(bridge: bridge, attemptTimeout: const Duration(milliseconds: 200), maxAttempts: 2);
+        final vpn = VpnController(
+          bridge: bridge,
+          attemptTimeout: const Duration(milliseconds: 200),
+          maxAttempts: 2,
+        );
         await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
 
         await tester.tap(find.byKey(const Key('connect_orb')));
@@ -144,17 +190,22 @@ void main() {
 
         expect(find.text('Не удалось подключиться'), findsWidgets);
         expect(find.text('Попробовать снова'), findsOneWidget);
-        expect(find.text('Другой сервер'), findsOneWidget);
+        expect(find.text('Выбрать страну'), findsOneWidget);
         expect(find.text('Диагностика'), findsWidgets);
         expect(find.textContaining(code), findsNothing);
         expect(find.textContaining('proxyerror'), findsNothing);
-        expect(find.textContaining('Не удалось выполнить операцию'), findsNothing);
+        expect(
+          find.textContaining('Не удалось выполнить операцию'),
+          findsNothing,
+        );
         vpn.dispose();
         await tester.pumpWidget(const SizedBox());
       });
     }
 
-    testWidgets('permission failure offers the VPN settings action', (tester) async {
+    testWidgets('permission failure offers the VPN settings action', (
+      tester,
+    ) async {
       final repo = await repoWith(fixture('subscription_16_fake.txt'));
       final bridge = FakeBridge()..permission = false;
       final vpn = VpnController(bridge: bridge);
@@ -172,7 +223,9 @@ void main() {
   });
 
   group('subscription tab', () {
-    testWidgets('shows real counts, actions and never the token', (tester) async {
+    testWidgets('shows real counts, actions and never the token', (
+      tester,
+    ) async {
       final repo = await repoWith(fixture('subscription_16_fake.txt'));
       final bridge = FakeBridge();
       final vpn = VpnController(bridge: bridge);
@@ -182,10 +235,15 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Активна'), findsWidgets);
-      expect(find.textContaining('16 профилей найдено'), findsOneWidget);
-      expect(find.textContaining('16 совместимых с приложением'), findsOneWidget);
+      expect(find.text('Профилей получено'), findsOneWidget);
+      expect(find.text('Совместимо'), findsOneWidget);
+      expect(find.text('16'), findsNWidgets(2));
       expect(find.text('Обновить'), findsOneWidget);
       expect(find.text('Удалить подписку'), findsOneWidget);
+      expect(find.text('Скопировать ссылку'), findsNothing);
+      await tester.ensureVisible(find.text('Дополнительно'));
+      await tester.tap(find.text('Дополнительно'));
+      await tester.pumpAndSettle();
       expect(find.text('Скопировать ссылку'), findsOneWidget);
       // The token is a credential: it must not be rendered anywhere.
       expect(find.textContaining('sub.milky.homes/s/'), findsNothing);
@@ -205,11 +263,19 @@ void main() {
     };
 
     for (final entry in sizes.entries) {
-      testWidgets('${entry.key} ${entry.value} lays out without overflow', (tester) async {
+      testWidgets('${entry.key} ${entry.value} lays out without overflow', (
+        tester,
+      ) async {
         final repo = await repoWith(fixture('subscription_16_fake.txt'));
         final bridge = FakeBridge();
         final vpn = VpnController(bridge: bridge);
-        await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge, size: entry.value);
+        await pumpMilky(
+          tester,
+          repo: repo,
+          vpn: vpn,
+          bridge: bridge,
+          size: entry.value,
+        );
 
         expect(tester.takeException(), isNull);
         final orb = tester.getSize(find.byKey(const Key('connect_orb')));
@@ -218,22 +284,49 @@ void main() {
         // Content never stretches across a tablet display.
         final selector = tester.getSize(find.text('Финляндия').first);
         expect(selector.width, lessThan(entry.value.width));
+        final navBottom = tester.getBottomRight(
+          find.byKey(const ValueKey('milky_nav_0')),
+        );
+        // The phone stays bottom anchored; a tall tablet centers the capped 960dp app surface.
+        final surfaceBottom = entry.value.height > 960
+            ? (entry.value.height + 960) / 2
+            : entry.value.height;
+        expect(navBottom.dy, greaterThan(surfaceBottom - 110));
+        expect(navBottom.dy, lessThanOrEqualTo(surfaceBottom));
         vpn.dispose();
       });
     }
 
-    testWidgets('light theme uses the milky palette, dark uses midnight', (tester) async {
+    testWidgets('light theme uses the milky palette, dark uses midnight', (
+      tester,
+    ) async {
       final repo = await repoWith(fixture('subscription_16_fake.txt'));
       final bridge = FakeBridge();
       final vpn = VpnController(bridge: bridge);
 
-      await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge, themeMode: ThemeMode.light);
-      var colors = Theme.of(tester.element(find.byKey(const Key('connect_orb')))).extension<MilkyColors>()!;
+      await pumpMilky(
+        tester,
+        repo: repo,
+        vpn: vpn,
+        bridge: bridge,
+        themeMode: ThemeMode.light,
+      );
+      var colors = Theme.of(
+        tester.element(find.byKey(const Key('connect_orb'))),
+      ).extension<MilkyColors>()!;
       expect(colors.isDark, isFalse);
       expect(colors.bg, const Color(0xFFFAF7F2));
 
-      await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge, themeMode: ThemeMode.dark);
-      colors = Theme.of(tester.element(find.byKey(const Key('connect_orb')))).extension<MilkyColors>()!;
+      await pumpMilky(
+        tester,
+        repo: repo,
+        vpn: vpn,
+        bridge: bridge,
+        themeMode: ThemeMode.dark,
+      );
+      colors = Theme.of(
+        tester.element(find.byKey(const Key('connect_orb'))),
+      ).extension<MilkyColors>()!;
       expect(colors.isDark, isTrue);
       expect(colors.bg, const Color(0xFF0C1224));
       vpn.dispose();
@@ -245,9 +338,19 @@ void main() {
       final repo = await repoWith(fixture('subscription_16_fake.txt'));
       final bridge = FakeBridge();
       final vpn = VpnController(bridge: bridge);
-      await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge, size: const Size(320, 568));
+      await pumpMilky(
+        tester,
+        repo: repo,
+        vpn: vpn,
+        bridge: bridge,
+        size: const Size(320, 568),
+      );
 
-      for (final finder in [find.text('Финляндия'), find.text('Защита выключена'), find.text('Не подключено')]) {
+      for (final finder in [
+        find.text('Финляндия'),
+        find.text('Защита выключена'),
+        find.text('Не подключено'),
+      ]) {
         expect(finder, findsWidgets);
       }
       expect(tester.takeException(), isNull);

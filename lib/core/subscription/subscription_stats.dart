@@ -1,10 +1,10 @@
 import 'subscription_repository.dart';
 import 'vpn_profile.dart';
 
-/// The numbers MilkyVPN shows about a subscription, derived from what was really parsed.
+/// Truthful subscription count boundaries.
 ///
-/// Nothing here is invented: `totalLines`, `malformed`, `duplicates` come from the parser
-/// and `compatible` from the same validation rules the engine applies.
+/// The legacy names remain available for current callers, while the explicit getters make
+/// it impossible to confuse received entries, pre-dedupe parses, and retained profiles.
 class SubscriptionStats {
   const SubscriptionStats({
     required this.totalLines,
@@ -12,34 +12,74 @@ class SubscriptionStats {
     required this.malformed,
     required this.duplicates,
     required this.compatible,
+    this.countsTrusted = true,
   });
 
-  static const SubscriptionStats empty = SubscriptionStats(totalLines: 0, profiles: 0, malformed: 0, duplicates: 0, compatible: 0);
+  static const SubscriptionStats empty = SubscriptionStats(
+    totalLines: 0,
+    profiles: 0,
+    malformed: 0,
+    duplicates: 0,
+    compatible: 0,
+  );
 
-  factory SubscriptionStats.from(SubscriptionSnapshot? s) {
-    if (s == null) return empty;
+  factory SubscriptionStats.from(SubscriptionSnapshot? snapshot) {
+    if (snapshot == null) return empty;
     return SubscriptionStats(
-      totalLines: s.totalEntries,
-      profiles: s.profiles.length,
-      malformed: s.malformedEntries,
-      duplicates: s.duplicateEntries,
-      compatible: compatibleCount(s.profiles),
+      totalLines: snapshot.receivedEntryCount,
+      profiles: snapshot.postDedupeProfileCount,
+      malformed: snapshot.malformedEntryCount,
+      duplicates: snapshot.droppedDuplicateCount,
+      compatible: snapshot.compatibleProfileCount,
+      countsTrusted: snapshot.countsTrusted,
     );
   }
 
+  /// Legacy alias for [receivedEntryCount].
   final int totalLines;
+
+  /// Legacy alias for [postDedupeProfileCount].
   final int profiles;
+
+  /// Legacy alias for [malformedEntryCount].
   final int malformed;
+
+  /// Legacy alias for [droppedDuplicateCount].
   final int duplicates;
+
+  /// Legacy alias for [compatibleProfileCount].
   final int compatible;
 
-  static int compatibleCount(List<VpnProfile> profiles) => profiles.where((p) => p.isStaticCompatible).length;
+  /// False for unversioned, future-version, corrupt, or internally inconsistent snapshots.
+  final bool countsTrusted;
 
-  /// The parser accounted for every line it saw. When this is false the UI must not claim
-  /// a number it cannot explain.
-  bool get isAccounted => totalLines == profiles + malformed + duplicates;
+  int get receivedEntryCount => totalLines;
+  int get parsedProfileCount => profiles + duplicates;
+  int get postDedupeProfileCount => profiles;
+  int get droppedDuplicateCount => duplicates;
+  int get malformedEntryCount => malformed;
+  int get compatibleProfileCount => compatible;
 
-  int get incompatible => profiles - compatible;
+  static int compatibleCount(List<VpnProfile> profiles) =>
+      profiles.where((profile) => profile.isStaticCompatible).length;
 
-  bool get hasDroppedEntries => duplicates > 0 || malformed > 0;
+  /// Every received entry resolves to malformed or parsed; every parsed entry resolves to
+  /// retained or duplicate. Compatibility is a subset of retained profiles.
+  bool get isAccounted =>
+      receivedEntryCount >= 0 &&
+      parsedProfileCount >= 0 &&
+      postDedupeProfileCount >= 0 &&
+      droppedDuplicateCount >= 0 &&
+      malformedEntryCount >= 0 &&
+      compatibleProfileCount >= 0 &&
+      compatibleProfileCount <= postDedupeProfileCount &&
+      receivedEntryCount == parsedProfileCount + malformedEntryCount;
+
+  /// Numeric counts should not be presented as authoritative while this is true.
+  bool get needsRefresh => !countsTrusted || !isAccounted;
+
+  int get incompatible => postDedupeProfileCount - compatibleProfileCount;
+
+  bool get hasDroppedEntries =>
+      droppedDuplicateCount > 0 || malformedEntryCount > 0;
 }

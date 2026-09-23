@@ -195,12 +195,23 @@ void main() {
   });
 
   group('profile selector', () {
-    test('auto prefers Reality, bounded, filters by location', () {
+    test('auto covers transport families, bounded, filters by location', () {
       final all = parser.parse(fixture('subscription_16_fake.txt')).profiles;
       const sel = ProfileSelector();
       final auto = sel.candidates(all, LocationChoice.auto);
       expect(auto.length, 4);
-      expect(auto.every((p) => p.kind == ProfileKind.vlessRealityTcp), isTrue);
+      expect(auto.map((p) => p.kind), [
+        ProfileKind.vlessXhttp,
+        ProfileKind.hysteria2,
+        ProfileKind.vlessWsTls,
+        ProfileKind.vlessRealityTcp,
+      ]);
+      expect(auto.map((p) => p.location), [
+        ServerLocation.finland,
+        ServerLocation.usa,
+        ServerLocation.finland,
+        ServerLocation.usa,
+      ]);
       final us = sel.candidates(all, LocationChoice.usa, maxAttempts: 10);
       expect(us.length, 7);
       expect(us.every((p) => p.location == ServerLocation.usa), isTrue);

@@ -84,6 +84,7 @@ class MilkyVpnService : VpnService() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mutex = Mutex()
+    private val attempts = ConnectionAttemptGate()
     private var tunFd: ParcelFileDescriptor? = null
     private var controller: CoreController? = null
     private var connectJob: Job? = null
@@ -103,15 +104,16 @@ class MilkyVpnService : VpnService() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_DISCONNECT -> {
-                scope.launch { disconnect(userInitiated = true) }
+                requestDisconnect()
                 return START_NOT_STICKY
             }
 
             ACTION_CONNECT, null, SERVICE_INTERFACE -> {
                 // null / SERVICE_INTERFACE == started by the system (Always-on VPN).
                 startAsForeground(getString(R.string.vpn_notif_connecting))
+                val attemptId = attempts.begin()
                 connectJob?.cancel()
-                connectJob = scope.launch { connect() }
+                connectJob = scope.launch { connect(attemptId) }
                 return START_STICKY
             }
 
@@ -122,10 +124,12 @@ class MilkyVpnService : VpnService() {
     override fun onRevoke() {
         // Another VPN app took over or the user revoked permission in system settings.
         SafeLog.i("onRevoke")
-        scope.launch { disconnect(userInitiated = false, revoked = true) }
+        requestDisconnect(revoked = true)
     }
 
     override fun onDestroy() {
+        // Invalidate queued core/network callbacks before releasing service resources.
+        attempts.cancelCurrent()
         instance = null
         unregisterNetworkCallback()
         scope.cancel()
@@ -134,80 +138,135 @@ class MilkyVpnService : VpnService() {
 
     // ---------------------------------------------------------------- connect
 
-    private suspend fun connect() = mutex.withLock {
+    private suspend fun connect(attemptId: Long) = mutex.withLock {
+        if (!attempts.isActive(attemptId)) return@withLock
+        // A newer connect command replaces any previously established core/TUN.
+        teardownLocked()
+
         val store = KeystoreSealedStore(this, SEALED_ACTIVE_PROFILE)
-        val raw = store.read()
-        if (raw == null) {
-            SafeLog.w("connect: no active profile")
-            VpnStateStore.update(VpnStateStore.State.ERROR, errorCode = "no_profile")
-            stopForegroundCompat()
-            stopSelf()
-            return@withLock
-        }
-        val json = JSONObject(raw)
-        val profileId = json.optString("id", "")
-        val remark = json.optString("remark", "")
-        val spec = XrayConfigBuilder.ProfileSpec.fromMap(json.toMap())
-
-        VpnStateStore.update(
-            VpnStateStore.State.CONNECTING,
-            profileId = profileId,
-            profileRemark = remark,
-            connectedSinceEpochMs = null,
-        )
-
-        if (prepare(this) != null) {
-            // Consent missing (should have been obtained by the activity).
-            VpnStateStore.update(VpnStateStore.State.ERROR, errorCode = "vpn_permission_missing")
-            stopForegroundCompat()
-            stopSelf()
-            return@withLock
-        }
+        var profileId = ""
+        var remark = ""
+        val trace = ConnectionTrace { SafeLog.i("attempt=$attemptId $it") }
 
         try {
+            trace.begin("PROFILE_SELECTED")
+            val raw = store.read()
+            if (raw == null) {
+                throw XrayConfigBuilder.UnsupportedProfileException("no active profile")
+            }
+            val stored = parseStoredActiveProfile(raw)
+            profileId = stored.profileId
+            remark = stored.remark
+            val spec = stored.spec
+            trace.success("PROFILE_SELECTED", "remark=${SafeLog.redact(remark)}")
+            trace.success("VPN_SERVICE_STARTED", "foreground=true")
+
+            if (!attempts.runIfActive(attemptId) {
+                    VpnStateStore.update(
+                        VpnStateStore.State.CONNECTING,
+                        profileId = profileId,
+                        profileRemark = remark,
+                        connectedSinceEpochMs = null,
+                        lastSuccessfulStage = null,
+                        firstFailedStage = null,
+                    )
+                }
+            ) return@withLock
+
+            trace.begin("VPN_PERMISSION_GRANTED")
+            if (prepare(this) != null) {
+                throw SecurityException("VPN permission missing")
+            }
+
+            trace.success("VPN_PERMISSION_GRANTED")
+            trace.begin("CONFIG_BUILT")
             XrayConfigBuilder.validate(spec)
 
             // 1. Resolve uplink on the underlying network (TUN not yet established).
             val resolved = resolveServer(spec.address)
+            val config = XrayConfigBuilder.build(spec, tunEnabled = true, resolvedServerIps = resolved)
+            trace.success("CONFIG_BUILT", configShape(spec, config))
 
             // 2. Establish TUN.
+            trace.begin("TUN_CREATED")
             val fd = establishTun() ?: throw IllegalStateException("establish returned null")
             tunFd = fd
+            trace.success("TUN_CREATED", "ipv4=true ipv6=blocked mtu=${XrayConfigBuilder.TUN_MTU} appUidExcluded=true")
+            trace.success("TUN_FD_RECEIVED", "valid=${fd.fd >= 0} fd=${fd.fd}")
 
             // 3. Start core.
+            trace.begin("XRAY_PROCESS_STARTING")
             ensureCoreEnv()
-            val config = XrayConfigBuilder.build(spec, tunEnabled = true, resolvedServerIps = resolved)
-            val ctrl = Libv2ray.newCoreController(callbackHandler)
+            val ctrl = Libv2ray.newCoreController(callbackHandler(attemptId))
             controller = ctrl
+            SafeLog.i("attempt=$attemptId nativeMode=inProcess exitCode=not_applicable")
             withTimeout(STARTUP_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) { ctrl.startLoop(config.toString(), fd.fd) }
             }
+            // Native validation is proven only after startLoop accepts the exact JSON.
+            trace.success("CONFIG_VALIDATED", "native=true")
+            trace.begin("XRAY_PROCESS_STARTED")
             if (!ctrl.isRunning) throw IllegalStateException("core did not start")
+            trace.success("XRAY_PROCESS_STARTED", "isRunning=true exitCode=not_applicable")
+            trace.success("OUTBOUND_READY", "configured=true reachabilityNotYetVerified=true")
 
             // 4. Bounded real connectivity verification through the outbound.
+            trace.begin("POST_CONNECT_PROBE")
             val delayMs = withTimeout(VERIFY_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) { ctrl.measureDelay(VERIFY_URL) }
             }
             if (delayMs < 0) throw IllegalStateException("verification failed")
-            SafeLog.i("tunnel verified in ${delayMs}ms")
+            trace.success("POST_CONNECT_PROBE", "delayMs=$delayMs")
+            SafeLog.i("outbound probe succeeded in ${delayMs}ms")
 
-            registerNetworkCallback()
-            updateNotification(getString(R.string.vpn_notif_connected) + " · " + remark)
-            VpnStateStore.update(
-                VpnStateStore.State.CONNECTED,
-                profileId = profileId,
-                profileRemark = remark,
-                connectedSinceEpochMs = System.currentTimeMillis(),
-            )
+            val published = attempts.runIfActive(attemptId) {
+                trace.success("CONNECTED")
+                registerNetworkCallback(attemptId)
+                updateNotification(getString(R.string.vpn_notif_connected) + " · " + remark)
+                VpnStateStore.update(
+                    VpnStateStore.State.CONNECTED,
+                    profileId = profileId,
+                    profileRemark = remark,
+                    connectedSinceEpochMs = System.currentTimeMillis(),
+                    lastSuccessfulStage = trace.lastSuccessfulStage,
+                    firstFailedStage = null,
+                )
+            }
+            if (!published) teardownLocked()
         } catch (t: Throwable) {
+            val code = SafeLog.errorCode(t)
+            trace.failure(code)
             SafeLog.w("connect failed", t)
             teardownLocked()
+            failAttemptLocked(
+                attemptId,
+                profileId = profileId,
+                profileRemark = remark,
+                errorCode = code,
+                lastSuccessfulStage = trace.lastSuccessfulStage,
+                firstFailedStage = trace.firstFailedStage,
+            )
+        }
+    }
+
+    /** Must be called with [mutex] held. */
+    private fun failAttemptLocked(
+        attemptId: Long,
+        profileId: String? = null,
+        profileRemark: String? = null,
+        errorCode: String,
+        lastSuccessfulStage: String? = VpnStateStore.current.lastSuccessfulStage,
+        firstFailedStage: String? = VpnStateStore.current.firstFailedStage,
+    ) {
+        attempts.finishIfActive(attemptId) {
             VpnStateStore.update(
                 VpnStateStore.State.ERROR,
                 profileId = profileId,
-                profileRemark = remark,
+                profileRemark = profileRemark,
                 connectedSinceEpochMs = null,
-                errorCode = SafeLog.errorCode(t),
+                errorCode = errorCode,
+                lastSuccessfulStage = lastSuccessfulStage,
+                firstFailedStage = firstFailedStage,
             )
             stopForegroundCompat()
             stopSelf()
@@ -239,6 +298,7 @@ class MilkyVpnService : VpnService() {
             b.addDisallowedApplication(packageName)
         } catch (t: Throwable) {
             SafeLog.w("addDisallowedApplication", t)
+            throw IllegalStateException("establish: uplink exclusion failed", t)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             b.setMetered(false)
@@ -251,10 +311,11 @@ class MilkyVpnService : VpnService() {
     }
 
     private fun ensureCoreEnv() {
-        if (coreEnvReady.compareAndSet(false, true)) {
+        if (!coreEnvReady.get()) {
             Seq.setContext(applicationContext)
             val assets = File(filesDir, "xray").apply { mkdirs() }
             Libv2ray.initCoreEnv(assets.absolutePath, xudpBaseKey())
+            coreEnvReady.set(true)
         }
     }
 
@@ -268,29 +329,57 @@ class MilkyVpnService : VpnService() {
         return key
     }
 
-    private val callbackHandler = object : CoreCallbackHandler {
-        override fun onEmitStatus(p0: Long, p1: String?): Long {
-            SafeLog.d("core: ${p1 ?: ""}")
-            return 0
+    private fun callbackHandler(attemptId: Long) = object : CoreCallbackHandler {
+            override fun onEmitStatus(p0: Long, p1: String?): Long {
+                SafeLog.i("attempt=$attemptId nativeStatus=$p0 core: ${p1 ?: ""}")
+                return 0
+            }
+
+            override fun shutdown(): Long {
+                scope.launch { handleCoreShutdown(attemptId) }
+                return 0
+            }
+
+            override fun startup(): Long {
+                SafeLog.i("attempt=$attemptId nativeCallback=startup")
+                return 0
+            }
         }
 
-        override fun shutdown(): Long = 0
-        override fun startup(): Long = 0
+    private suspend fun handleCoreShutdown(attemptId: Long) = mutex.withLock {
+        attempts.finishIfActive(attemptId) {
+            teardownLocked()
+            VpnStateStore.update(
+                VpnStateStore.State.ERROR,
+                connectedSinceEpochMs = null,
+                errorCode = "core_start_failed",
+            )
+            stopForegroundCompat()
+            stopSelf()
+        }
     }
 
     // ---------------------------------------------------------------- disconnect
 
-    private suspend fun disconnect(userInitiated: Boolean, revoked: Boolean = false) = mutex.withLock {
-        connectJob?.cancel()
-        VpnStateStore.update(VpnStateStore.State.DISCONNECTING)
-        teardownLocked()
-        VpnStateStore.update(
-            VpnStateStore.State.DISCONNECTED,
-            connectedSinceEpochMs = null,
-            errorCode = if (revoked) "revoked_by_system" else null,
-        )
-        stopForegroundCompat()
-        stopSelf()
+    private suspend fun disconnect(ticket: DisconnectTicket, revoked: Boolean) {
+        // Cancellation happens before waiting for the mutex held by an in-flight connect.
+        ticket.connectJob?.cancel()
+        mutex.withLock {
+            val stillCurrent = attempts.runIfGeneration(ticket.generation) {
+                VpnStateStore.update(VpnStateStore.State.DISCONNECTING)
+            }
+            if (!stillCurrent) return@withLock
+            teardownLocked()
+            attempts.runIfGeneration(ticket.generation) {
+                VpnStateStore.update(
+                    VpnStateStore.State.DISCONNECTED,
+                    connectedSinceEpochMs = null,
+                    errorCode = if (revoked) "revoked_by_system" else null,
+                )
+                stopForegroundCompat()
+                stopSelf()
+            }
+        }
     }
 
     /** Must be called with [mutex] held. */
@@ -311,29 +400,43 @@ class MilkyVpnService : VpnService() {
     }
 
     /** Called from the bridge (same process). */
-    fun requestDisconnect() {
-        scope.launch { disconnect(userInitiated = true) }
+    fun requestDisconnect(revoked: Boolean = false): Job {
+        val ticket = DisconnectTicket(
+            generation = attempts.cancelCurrent(),
+            connectJob = connectJob,
+        )
+        ticket.connectJob?.cancel()
+        return scope.launch { disconnect(ticket, revoked) }
     }
 
     // ---------------------------------------------------------------- network transitions
 
-    private fun registerNetworkCallback() {
+    private fun registerNetworkCallback(attemptId: Long) {
         if (networkCallback != null) return
         val cb = object : ConnectivityManager.NetworkCallback() {
             override fun onAvailable(network: Network) {
                 // Tell the system which physical network carries the tunnel so that
                 // captive-portal / metered logic and our uplink follow the new network.
-                try {
-                    setUnderlyingNetworks(arrayOf(network))
-                } catch (t: Throwable) {
-                    SafeLog.w("setUnderlyingNetworks", t)
+                attempts.runIfActive(attemptId) {
+                    try {
+                        setUnderlyingNetworks(arrayOf(network))
+                    } catch (t: Throwable) {
+                        SafeLog.w("setUnderlyingNetworks", t)
+                    }
                 }
             }
 
             override fun onLost(network: Network) {
-                try {
-                    setUnderlyingNetworks(null)
-                } catch (_: Throwable) {
+                attempts.runIfActive(attemptId) {
+                    try {
+                        setUnderlyingNetworks(null)
+                    } catch (_: Throwable) {
+                    }
+                    val current = VpnStateStore.current
+                    if (current.state == VpnStateStore.State.CONNECTED) {
+                        VpnStateStore.update(VpnStateStore.State.CONNECTING, connectedSinceEpochMs = null)
+                    }
+                    scope.launch { reverifyAfterNetworkChange(attemptId) }
                 }
             }
         }
@@ -346,6 +449,23 @@ class MilkyVpnService : VpnService() {
             networkCallback = cb
         } catch (t: Throwable) {
             SafeLog.w("registerNetworkCallback", t)
+        }
+    }
+
+    private suspend fun reverifyAfterNetworkChange(attemptId: Long) = mutex.withLock {
+        if (!attempts.isActive(attemptId)) return@withLock
+        try {
+            val ctrl = controller ?: throw IllegalStateException("core unavailable")
+            val delayMs = withTimeout(VERIFY_TIMEOUT_MS) {
+                withContext(Dispatchers.IO) { ctrl.measureDelay(VERIFY_URL) }
+            }
+            if (delayMs < 0) throw IllegalStateException("verification failed")
+            attempts.runIfActive(attemptId) {
+                VpnStateStore.update(VpnStateStore.State.CONNECTED, connectedSinceEpochMs = System.currentTimeMillis())
+            }
+        } catch (t: Throwable) {
+            teardownLocked()
+            failAttemptLocked(attemptId, errorCode = "network_unreachable")
         }
     }
 
@@ -408,6 +528,98 @@ class MilkyVpnService : VpnService() {
     private fun stopForegroundCompat() {
         stopForeground(STOP_FOREGROUND_REMOVE)
     }
+}
+
+/** Logs only structure and whitelisted enum values, never endpoint or key values. */
+internal fun configShape(p: XrayConfigBuilder.ProfileSpec, config: JSONObject): String {
+    fun present(value: String?) = !value.isNullOrBlank()
+    fun enum(value: String?, allowed: Set<String>) = if (value in allowed) value else "other_or_absent"
+    return listOf(
+        "protocol=${enum(p.protocol, setOf("vless", "hysteria2"))}",
+        "network=${enum(p.network, setOf("tcp", "raw", "ws", "xhttp"))}",
+        "security=${enum(p.security, setOf("reality", "tls", "none"))}",
+        "addressPresent=${p.address.isNotBlank()}", "portValid=${p.port in 1..65535}",
+        "credentialPresent=${p.secret.isNotBlank()}", "sniPresent=${present(p.sni)}",
+        "publicKeyPresent=${present(p.publicKey)}", "shortIdPresent=${present(p.shortId)}",
+        "publicKeyLength=${p.publicKey?.length ?: 0}", "shortIdLength=${p.shortId?.length ?: 0}",
+        "fingerprint=${enum(p.fingerprint, setOf("chrome", "firefox", "safari", "ios", "android", "edge", "random", "randomized"))}",
+        "flow=${enum(p.flow, setOf("xtls-rprx-vision", "xtls-rprx-vision-udp443"))}",
+        "pathPresent=${present(p.path)}", "hostPresent=${present(p.host)}",
+        "allowInsecure=${p.allowInsecure}", "routingPresent=${config.has("routing")}",
+        "dnsPresent=${config.has("dns")}", "inbounds=${config.getJSONArray("inbounds").length()}",
+        "tunInbound=true", "tunFdViaStartLoop=true", "staticSupported=${XrayConfigBuilder.isSupported(p)}",
+    ).joinToString(" ")
+}
+
+/**
+ * Orders native connect/disconnect commands and prevents an older coroutine or core callback
+ * from publishing a terminal state for a newer connection.
+ */
+internal class ConnectionAttemptGate {
+    private var generation = 0L
+    private var activeAttempt: Long? = null
+
+    @Synchronized
+    fun begin(): Long {
+        generation += 1
+        activeAttempt = generation
+        return generation
+    }
+
+    @Synchronized
+    fun cancelCurrent(): Long {
+        generation += 1
+        activeAttempt = null
+        return generation
+    }
+
+    @Synchronized
+    fun isActive(attemptId: Long): Boolean = activeAttempt == attemptId
+
+    @Synchronized
+    fun runIfActive(attemptId: Long, action: () -> Unit): Boolean {
+        if (activeAttempt != attemptId) return false
+        action()
+        return true
+    }
+
+    @Synchronized
+    fun finishIfActive(attemptId: Long, action: () -> Unit): Boolean {
+        if (activeAttempt != attemptId) return false
+        activeAttempt = null
+        action()
+        return true
+    }
+
+    @Synchronized
+    fun runIfGeneration(expectedGeneration: Long, action: () -> Unit): Boolean {
+        if (generation != expectedGeneration) return false
+        action()
+        return true
+    }
+}
+
+private data class DisconnectTicket(
+    val generation: Long,
+    val connectJob: Job?,
+)
+
+internal data class StoredActiveProfile(
+    val profileId: String,
+    val remark: String,
+    val spec: XrayConfigBuilder.ProfileSpec,
+)
+
+/** Parses sealed profile data without reflecting malformed JSON or credentials into an error. */
+internal fun parseStoredActiveProfile(raw: String): StoredActiveProfile = try {
+    val json = JSONObject(raw)
+    StoredActiveProfile(
+        profileId = json.optString("id", ""),
+        remark = json.optString("remark", ""),
+        spec = XrayConfigBuilder.ProfileSpec.fromMap(json.toMap()),
+    )
+} catch (t: RuntimeException) {
+    throw IllegalArgumentException("active profile invalid", t)
 }
 
 private fun JSONObject.toMap(): Map<String, Any?> {

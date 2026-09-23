@@ -7,13 +7,21 @@ import '../core/subscription/vpn_profile.dart';
 class AppSettings extends ChangeNotifier {
   AppSettings(this._prefs);
 
-  static Future<AppSettings> load() async => AppSettings(await SharedPreferences.getInstance());
+  static Future<AppSettings> load() async =>
+      AppSettings(await SharedPreferences.getInstance());
 
   final SharedPreferences _prefs;
 
   bool get onboardingDone => _prefs.getBool('onboarding_done') ?? false;
-  ThemeMode get themeMode => ThemeMode.values[_prefs.getInt('theme_mode') ?? 0];
-  LocationChoice get location => LocationChoice.values[_prefs.getInt('location') ?? 0];
+  ThemeMode get themeMode =>
+      _enumValue(ThemeMode.values, _prefs.get('theme_mode'));
+  LocationChoice get location =>
+      _enumValue(LocationChoice.values, _prefs.get('location'));
+
+  static T _enumValue<T>(List<T> values, Object? index) =>
+      index is int && index >= 0 && index < values.length
+      ? values[index]
+      : values.first;
   bool get autoConnect => _prefs.getBool('auto_connect') ?? false;
 
   Future<void> setOnboardingDone() async {

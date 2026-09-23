@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../core/vpn/vpn_controller.dart';
 import '../../design/milky_aurora.dart';
+
 import '../../design/milky_navigation_bar.dart';
 import '../../l10n/milky_strings.dart';
 import '../home/home_screen.dart';
@@ -38,32 +39,64 @@ class _MilkyShellState extends State<MilkyShell> {
         statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
         statusBarBrightness: dark ? Brightness.dark : Brightness.light,
         systemNavigationBarColor: Colors.transparent,
-        systemNavigationBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+        systemNavigationBarIconBrightness: dark
+            ? Brightness.light
+            : Brightness.dark,
       ),
-      child: Scaffold(
-      backgroundColor: Colors.transparent,
-      extendBody: true,
-      body: MilkyBackdrop(
-        intensity: vpn.isBusy ? 0.8 : (vpn.isConnected ? 0.95 : 0.6),
-        glowAnchor: const Alignment(0, -0.28),
-        child: SafeArea(
-          bottom: false,
-          child: IndexedStack(
-            index: _tab,
-            children: [
-              HomeScreen(key: const ValueKey('tab_home'), onOpenTab: _go),
-              const SubscriptionScreen(key: ValueKey('tab_subscription')),
-              SettingsScreen(key: const ValueKey('tab_settings'), onOpenSubscription: () => _go(1)),
-            ],
+      child: MilkyBackdrop(
+        intensity: _tab == 0
+            ? (vpn.isBusy ? .64 : (vpn.isConnected ? .75 : .4))
+            : .16,
+        glowAnchor: const Alignment(0, -.28),
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: SafeArea(
+            bottom: false,
+            child: Center(
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(
+                  maxWidth: 600,
+                  maxHeight: 960,
+                ),
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: IndexedStack(
+                        index: _tab,
+                        children: [
+                          TickerMode(
+                            enabled: _tab == 0,
+                            child: HomeScreen(
+                              key: const ValueKey('tab_home'),
+                              onOpenTab: _go,
+                            ),
+                          ),
+                          const SubscriptionScreen(
+                            key: ValueKey('tab_subscription'),
+                          ),
+                          SettingsScreen(
+                            key: const ValueKey('tab_settings'),
+                            onOpenSubscription: () => _go(1),
+                          ),
+                        ],
+                      ),
+                    ),
+                    MilkyNavigationBar(
+                      index: _tab,
+                      onChanged: _go,
+                      labels: [t.home, t.subscription, t.settings],
+                      icons: const [
+                        Icons.home_outlined,
+                        Icons.layers_outlined,
+                        Icons.tune_rounded,
+                      ],
+                    ),
+                  ],
+                ),
+              ),
+            ),
           ),
         ),
-      ),
-      bottomNavigationBar: MilkyNavigationBar(
-        index: _tab,
-        onChanged: _go,
-        labels: [t.home, t.subscription, t.settings],
-        icons: const [Icons.space_dashboard_rounded, Icons.card_membership_rounded, Icons.tune_rounded],
-      ),
       ),
     );
   }

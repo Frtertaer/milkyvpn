@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'milky_colors.dart';
 import 'milky_motion.dart';
+import 'milky_glass.dart';
 import 'milky_theme.dart';
 import 'milky_tokens.dart';
 
@@ -27,11 +28,19 @@ class MilkyNavigationBar extends StatelessWidget {
     final c = context.milky;
     final bottom = MediaQuery.paddingOf(context).bottom;
     return Padding(
-      padding: EdgeInsets.fromLTRB(MilkySpace.lg, 0, MilkySpace.lg, 12 + bottom),
+      padding: EdgeInsets.fromLTRB(
+        MilkySpace.lg,
+        0,
+        MilkySpace.lg,
+        12 + bottom,
+      ),
       child: MilkyColumn(
         maxWidth: MilkyLayout.maxContentWidth,
+        shrinkWrap: true,
         child: Container(
-          height: MilkyLayout.navBarHeight,
+          constraints: const BoxConstraints(
+            minHeight: MilkyLayout.navBarHeight,
+          ),
           padding: const EdgeInsets.all(6),
           decoration: BoxDecoration(
             color: c.isDark ? const Color(0xE6131B31) : const Color(0xF2FFFFFF),
@@ -67,7 +76,13 @@ class MilkyNavigationBar extends StatelessWidget {
 }
 
 class _NavItem extends StatelessWidget {
-  const _NavItem({super.key, required this.label, required this.icon, required this.selected, this.onTap});
+  const _NavItem({
+    super.key,
+    required this.label,
+    required this.icon,
+    required this.selected,
+    this.onTap,
+  });
 
   final String label;
   final IconData icon;
@@ -88,11 +103,13 @@ class _NavItem extends StatelessWidget {
           duration: MilkyMotion.base,
           curve: MilkyMotion.standard,
           margin: const EdgeInsets.symmetric(horizontal: 3),
+          padding: const EdgeInsets.symmetric(vertical: 10),
           decoration: BoxDecoration(
             color: selected ? c.accentSoft : Colors.transparent,
             borderRadius: BorderRadius.circular(20),
           ),
           child: Column(
+            mainAxisSize: MainAxisSize.min,
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               Icon(icon, size: 21, color: selected ? c.accent : c.textFaint),

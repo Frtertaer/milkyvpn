@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -31,43 +32,69 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
   @override
   Widget build(BuildContext context) {
     final t = S.of(context);
-    final c = context.milky;
     final repo = context.watch<SubscriptionRepository>();
+    final dark = Theme.of(context).brightness == Brightness.dark;
 
-    return MilkyBackdrop(
-      intensity: 0.8,
-      glowAnchor: const Alignment(0, -0.2),
-      child: Scaffold(
-        backgroundColor: Colors.transparent,
-        body: SafeArea(
-          child: MilkyColumn(
-            child: Column(
-              children: [
-                Expanded(
-                  child: AnimatedSwitcher(
-                    duration: MilkyMotion.base,
-                    switchInCurve: MilkyMotion.standard,
-                    transitionBuilder: (child, anim) => FadeTransition(
-                      opacity: anim,
-                      child: SlideTransition(
-                        position: Tween<Offset>(begin: const Offset(0.06, 0), end: Offset.zero).animate(anim),
-                        child: child,
-                      ),
-                    ),
-                    child: _buildPage(context, t, repo),
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: dark ? Brightness.light : Brightness.dark,
+        statusBarBrightness: dark ? Brightness.dark : Brightness.light,
+        systemNavigationBarColor: Colors.transparent,
+        systemNavigationBarIconBrightness: dark
+            ? Brightness.light
+            : Brightness.dark,
+      ),
+      child: MilkyBackdrop(
+        intensity: 0.8,
+        glowAnchor: const Alignment(0, -0.2),
+        child: Scaffold(
+          backgroundColor: Colors.transparent,
+          body: SafeArea(
+            child: MilkyColumn(
+              child: Column(
+                children: [
+                  const Padding(
+                    padding: EdgeInsets.fromLTRB(24, 20, 24, 12),
+                    child: MilkyWordmark(size: 24),
                   ),
-                ),
-                _Dots(index: _page),
-                const SizedBox(height: MilkySpace.lg),
-              ],
+                  Expanded(
+                    child: AnimatedSwitcher(
+                      duration: milkyReduceMotion(context)
+                          ? Duration.zero
+                          : MilkyMotion.base,
+                      switchInCurve: MilkyMotion.standard,
+                      transitionBuilder: (child, anim) => FadeTransition(
+                        opacity: anim,
+                        child: SlideTransition(
+                          position: Tween<Offset>(
+                            begin: const Offset(0.06, 0),
+                            end: Offset.zero,
+                          ).animate(anim),
+                          child: child,
+                        ),
+                      ),
+                      child: _buildPage(context, t, repo),
+                    ),
+                  ),
+                  _Dots(index: _page),
+                  const SizedBox(height: MilkySpace.lg),
+                ],
+              ),
             ),
           ),
-        ),
-        bottomNavigationBar: SafeArea(
-          top: false,
-          child: MilkyColumn(
-            padding: const EdgeInsets.fromLTRB(MilkySpace.screen, 0, MilkySpace.screen, MilkySpace.lg),
-            child: _footer(context, t, repo),
+          bottomNavigationBar: SafeArea(
+            top: false,
+            child: MilkyColumn(
+              shrinkWrap: true,
+              padding: const EdgeInsets.fromLTRB(
+                MilkySpace.screen,
+                0,
+                MilkySpace.screen,
+                MilkySpace.lg,
+              ),
+              child: _footer(context, t, repo),
+            ),
           ),
         ),
       ),
@@ -81,7 +108,11 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
       case 1:
         return _PageTwo(key: const ValueKey('ob2'), t: t);
       default:
-        return _PageThree(key: const ValueKey('ob3'), t: t, hasSubscription: repo.hasSubscription);
+        return _PageThree(
+          key: const ValueKey('ob3'),
+          t: t,
+          hasSubscription: repo.hasSubscription,
+        );
     }
   }
 
@@ -109,22 +140,52 @@ class _OnboardingScreenState extends State<OnboardingScreen> {
         );
       default:
         return Column(
+          mainAxisSize: MainAxisSize.min,
           children: [
-            MilkyPrimaryButton(
-              label: t.addSubscription,
-              icon: Icons.link_rounded,
+            MilkyGhostButton(
+              label: t.pasteFromClipboard,
+              icon: Icons.content_paste_rounded,
               onPressed: () async {
-                final ok = await Navigator.of(context).push<bool>(MaterialPageRoute<bool>(builder: (_) => const ImportScreen()));
+                final data = await Clipboard.getData(Clipboard.kTextPlain);
+                if (!context.mounted) return;
+                final ok = await Navigator.of(context).push<bool>(
+                  MaterialPageRoute<bool>(
+                    builder: (_) =>
+                        ImportScreen(initialValue: data?.text?.trim() ?? ''),
+                  ),
+                );
                 if (ok == true && context.mounted) _finish();
               },
             ),
             const SizedBox(height: MilkySpace.sm),
-            Row(
-              mainAxisAlignment: MainAxisAlignment.center,
+            MilkyPrimaryButton(
+              label: t.addSubscription,
+              icon: Icons.link_rounded,
+              onPressed: () async {
+                final ok = await Navigator.of(context).push<bool>(
+                  MaterialPageRoute<bool>(builder: (_) => const ImportScreen()),
+                );
+                if (ok == true && context.mounted) _finish();
+              },
+            ),
+            const SizedBox(height: MilkySpace.sm),
+            Wrap(
+              alignment: WrapAlignment.center,
+              crossAxisAlignment: WrapCrossAlignment.center,
+              spacing: MilkySpace.sm,
+              runSpacing: MilkySpace.xs,
               children: [
-                MilkyLinkButton(label: t.help, icon: Icons.help_outline_rounded, color: context.milky.textMuted, onPressed: _openSupport),
-                const SizedBox(width: MilkySpace.lg),
-                MilkyLinkButton(label: t.noSubscriptionYet, color: context.milky.textFaint, onPressed: _finish),
+                MilkyLinkButton(
+                  label: t.help,
+                  icon: Icons.help_outline_rounded,
+                  color: context.milky.textMuted,
+                  onPressed: _openSupport,
+                ),
+                MilkyLinkButton(
+                  label: t.noSubscriptionYet,
+                  color: context.milky.textFaint,
+                  onPressed: _finish,
+                ),
               ],
             ),
           ],
@@ -152,16 +213,31 @@ class _PageOne extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.milky;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: MilkySpace.xxl),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const MilkyConnectOrb(state: MilkyOrbState.idle, onTap: null, enabled: false, size: 190, semanticLabel: 'MilkyVPN'),
+          const MilkyConnectOrb(
+            key: Key('connect_orb'),
+            state: MilkyOrbState.idle,
+            onTap: null,
+            enabled: false,
+            size: 244,
+            semanticLabel: 'MilkyVPN',
+          ),
           const SizedBox(height: MilkySpace.huge),
-          Text(t.tagline, textAlign: TextAlign.center, style: MilkyType.display),
+          Text(
+            t.tagline,
+            textAlign: TextAlign.center,
+            style: MilkyType.display,
+          ),
           const SizedBox(height: MilkySpace.md),
-          Text(t.taglineBody, textAlign: TextAlign.center, style: MilkyType.body.copyWith(color: c.textMuted)),
+          Text(
+            t.taglineBody,
+            textAlign: TextAlign.center,
+            style: MilkyType.body.copyWith(color: c.textMuted),
+          ),
         ],
       ),
     );
@@ -175,6 +251,7 @@ class _PageTwo extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final c = context.milky;
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: MilkySpace.xxl),
       child: Column(
@@ -187,9 +264,17 @@ class _PageTwo extends StatelessWidget {
           const _FlowArrow(),
           _FlowStep(icon: Icons.public_rounded, label: t.internet),
           const SizedBox(height: MilkySpace.xxl),
-          Text(t.disclosureTitle, textAlign: TextAlign.center, style: MilkyType.headline),
+          Text(
+            t.disclosureTitle,
+            textAlign: TextAlign.center,
+            style: MilkyType.headline,
+          ),
           const SizedBox(height: MilkySpace.md),
-          Text(t.disclosureBody, textAlign: TextAlign.center, style: MilkyType.bodySmall.copyWith(color: c.textMuted)),
+          Text(
+            t.disclosureBody,
+            textAlign: TextAlign.center,
+            style: MilkyType.bodySmall.copyWith(color: c.textMuted),
+          ),
           const SizedBox(height: MilkySpace.xxl),
         ],
       ),
@@ -198,18 +283,20 @@ class _PageTwo extends StatelessWidget {
 }
 
 class _FlowStep extends StatelessWidget {
-  const _FlowStep({super.key, required this.icon, required this.label, this.sublabel, this.hero = false});
+  const _FlowStep({required this.icon, required this.label, this.hero = false});
 
   final IconData? icon;
   final String label;
-  final String? sublabel;
   final bool hero;
 
   @override
   Widget build(BuildContext context) {
     final c = context.milky;
     return MilkyGlassCard(
-      padding: EdgeInsets.symmetric(horizontal: MilkySpace.xl, vertical: hero ? MilkySpace.md : MilkySpace.md),
+      padding: EdgeInsets.symmetric(
+        horizontal: MilkySpace.xl,
+        vertical: hero ? MilkySpace.md : MilkySpace.md,
+      ),
       tone: hero ? MilkyGlassTone.accent : MilkyGlassTone.neutral,
       child: Row(
         children: [
@@ -219,17 +306,17 @@ class _FlowStep extends StatelessWidget {
             Container(
               width: 38,
               height: 38,
-              decoration: BoxDecoration(color: c.accentSoft, borderRadius: BorderRadius.circular(12)),
+              decoration: BoxDecoration(
+                color: c.accentSoft,
+                borderRadius: BorderRadius.circular(12),
+              ),
               child: Icon(icon, size: 19, color: c.accent),
             ),
           const SizedBox(width: MilkySpace.md),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(label, style: MilkyType.subtitle),
-                if (sublabel != null) Text(sublabel!, style: MilkyType.bodySmall.copyWith(color: c.textMuted)),
-              ],
+              children: [Text(label, style: MilkyType.subtitle)],
             ),
           ),
         ],
@@ -239,7 +326,7 @@ class _FlowStep extends StatelessWidget {
 }
 
 class _FlowArrow extends StatelessWidget {
-  const _FlowArrow({super.key});
+  const _FlowArrow();
 
   @override
   Widget build(BuildContext context) {
@@ -265,14 +352,22 @@ class _PageThree extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final c = context.milky;
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: MilkySpace.xxl),
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(24, 24, 24, 24),
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Text(t.importTitle, textAlign: TextAlign.center, style: MilkyType.display.copyWith(fontSize: 30)),
+          Text(
+            t.importTitle,
+            textAlign: TextAlign.center,
+            style: MilkyType.display.copyWith(fontSize: 30),
+          ),
           const SizedBox(height: MilkySpace.md),
-          Text(t.importBody, textAlign: TextAlign.center, style: MilkyType.body.copyWith(color: c.textMuted)),
+          Text(
+            t.importBody,
+            textAlign: TextAlign.center,
+            style: MilkyType.body.copyWith(color: c.textMuted),
+          ),
           const SizedBox(height: MilkySpace.xxl),
           MilkyGlassCard(
             padding: const EdgeInsets.all(MilkySpace.xl),
@@ -282,11 +377,17 @@ class _PageThree extends StatelessWidget {
                 Container(
                   width: 56,
                   height: 56,
-                  decoration: BoxDecoration(color: c.accentSoft, borderRadius: BorderRadius.circular(18)),
+                  decoration: BoxDecoration(
+                    color: c.accentSoft,
+                    borderRadius: BorderRadius.circular(18),
+                  ),
                   child: Icon(Icons.link_rounded, size: 26, color: c.accent),
                 ),
                 const SizedBox(height: MilkySpace.md),
-                Text('https://sub.milky.homes/s/…', style: MilkyType.bodySmall.copyWith(color: c.textFaint, fontFamily: 'monospace')),
+                Text(
+                  t.subscription,
+                  style: MilkyType.bodySmall.copyWith(color: c.textFaint),
+                ),
                 const SizedBox(height: MilkySpace.md),
                 Text(
                   hasSubscription ? t.importOk : t.subscriptionHint,

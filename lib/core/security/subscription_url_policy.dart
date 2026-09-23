@@ -30,8 +30,16 @@ class SubscriptionUrlPolicy {
     final path = u.path;
     if (!path.startsWith(allowedPathPrefix)) return null;
     final token = path.substring(allowedPathPrefix.length);
-    if (token.contains('/') || token.contains('.') || !_tokenRe.hasMatch(token)) return null;
-    return Uri(scheme: 'https', host: allowedHost, path: '$allowedPathPrefix$token');
+    if (token.contains('/') ||
+        token.contains('.') ||
+        !_tokenRe.hasMatch(token)) {
+      return null;
+    }
+    return Uri(
+      scheme: 'https',
+      host: allowedHost,
+      path: '$allowedPathPrefix$token',
+    );
   }
 
   bool isAllowed(String raw) => validate(raw) != null;

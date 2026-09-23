@@ -18,13 +18,14 @@ class SafeLogTest {
         assertFalse(red.contains("SECRETTOKEN_123"))
         assertFalse(red.contains("FAKEKEY"))
         assertFalse(red.contains("sid=ab12"))
-        assertTrue(red.contains("sub.milky.homes/s/<token>"))
+        assertFalse(red.contains("https://sub.milky.homes/s/"))
         assertTrue(red.contains("vless://<cred>@"))
     }
 
     @Test
     fun errorCodesAreShortAndCredentialFree() {
         assertEquals("timeout", SafeLog.errorCode(RuntimeException("dial tcp: i/o timeout")))
+        assertEquals("timeout", SafeLog.errorCode(S("Get probe: context deadline exceeded")))
         assertEquals("connection_refused", SafeLog.errorCode(RuntimeException("connect: connection refused")))
         assertEquals(
             "tls_handshake",
@@ -63,4 +64,23 @@ class SafeLogTest {
 
     /** Stands in for an R8-shortened exception class (and for gomobile's `proxyerror`). */
     private class S(message: String?) : RuntimeException(message)
+
+    @Test
+    fun missingGeodataHasTypedCodeBeforeGenericGoOrNetworkHeuristics() {
+        val failure = S("config error: failed to build routing configuration > illegal ip rule: geoip:private > failed to open geoip.dat > no such file or directory")
+        assertEquals("config_asset_missing", SafeLog.errorCode(failure))
+        assertEquals("config_asset_missing", SafeLog.errorCode(RuntimeException("start failed", failure)))
+        assertEquals("config_invalid", SafeLog.errorCode(S("config error: failed to build TLS config")))
+    }
+
+    @Test
+    fun sanitizesNativeConfigFieldErrorsAndKeepsStackLocation() {
+        val failure = RuntimeException("invalid \"publicKey\": FakeRealityKeyValue; shortId=abcd1234 password=never-share auth='secret words'")
+        val safe = SafeLog.exceptionSummary(failure)
+        for (secret in listOf("FakeRealityKeyValue", "abcd1234", "never-share", "secret words")) {
+            assertFalse(safe.contains(secret))
+        }
+        assertTrue(safe.contains("RuntimeException"))
+        assertTrue(safe.contains("SafeLogTest.kt:"))
+    }
 }

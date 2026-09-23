@@ -15,14 +15,21 @@ object SafeLog {
     private val subTokenRe = Regex("(sub\\.milky\\.homes/s/)[A-Za-z0-9_\\-]+")
     private val userInfoRe = Regex("(vless|hysteria2|hy2|trojan|ss)://[^@\\s]+@")
     private val queryCredRe = Regex("([?&](pbk|sid|password|obfs-password|auth|token)=)[^&\\s#]+")
+    private val namedCredRe = Regex("(?i)([\"']?(?:publicKey|privateKey|shortId|password|obfsPassword|credential|secret|auth|token|uuid|pbk|sid)[\"']?\\s*[:=]\\s*)(?:\"[^\"]*\"|'[^']*'|[^\\s,;}>]+)")
+    private val opaqueKeyRe = Regex("(?<![A-Za-z0-9_-])[A-Za-z0-9_-]{32,}={0,2}(?![A-Za-z0-9_-])")
+    private val subscriptionUrlRe = Regex("https?://[^\\s\"'<>]+/(?:s|sub|subscription)/[^\\s\"'<>]+", RegexOption.IGNORE_CASE)
 
     fun redact(msg: String?): String {
         if (msg == null) return "null"
         var m = msg
+        m = subscriptionUrlRe.replace(m, "<subscription-url>")
         m = uuidRe.replace(m, "<uuid>")
         m = subTokenRe.replace(m) { "${it.groupValues[1]}<token>" }
         m = userInfoRe.replace(m) { "${it.groupValues[1]}://<cred>@" }
         m = queryCredRe.replace(m) { "${it.groupValues[1]}<redacted>" }
+        m = namedCredRe.replace(m) { "${it.groupValues[1]}<redacted>" }
+        m = subscriptionUrlRe.replace(m, "<subscription-url>")
+        m = opaqueKeyRe.replace(m, "<opaque>")
         return m
     }
 
@@ -35,12 +42,19 @@ object SafeLog {
     }
 
     fun w(msg: String, t: Throwable? = null) {
-        Log.w(TAG, redact(msg) + (t?.let { " :: " + redact(it.javaClass.simpleName + ": " + it.message) } ?: ""))
+        Log.w(TAG, redact(msg) + (t?.let { " :: " + exceptionSummary(it) } ?: ""))
     }
 
     fun e(msg: String, t: Throwable? = null) {
-        Log.e(TAG, redact(msg) + (t?.let { " :: " + redact(it.javaClass.simpleName + ": " + it.message) } ?: ""))
+        Log.e(TAG, redact(msg) + (t?.let { " :: " + exceptionSummary(it) } ?: ""))
     }
+
+    /** Bounded sanitized cause/stack evidence; never pass the raw Throwable to Log. */
+    fun exceptionSummary(t: Throwable): String = generateSequence(t) { it.cause }
+        .take(4).joinToString(" causedBy ") { cause ->
+            redact(cause.javaClass.name + ": " + cause.message) +
+                cause.stackTrace.take(6).joinToString("", prefix = " ") { "at ${it.className}.${it.methodName}(${it.fileName}:${it.lineNumber}) " }
+        }
 
     /**
      * Converts an exception into a short machine-readable, credential-free error code.
@@ -54,9 +68,15 @@ object SafeLog {
      */
     fun errorCode(t: Throwable?): String {
         if (t == null) return "unknown_error"
-        val msg = (t.message ?: "").lowercase()
+        val msg = generateSequence(t) { it.cause }.take(4)
+            .joinToString(" ") { it.message ?: "" }.lowercase()
         return when {
-            msg.contains("timeout") || msg.contains("timed out") -> "timeout"
+            t is XrayConfigBuilder.UnsupportedProfileException -> "unsupported_profile"
+            (msg.contains("geoip.dat") || msg.contains("geosite.dat")) &&
+                (msg.contains("no such file") || msg.contains("failed to open")) -> "config_asset_missing"
+            msg.contains("config error") || msg.contains("failed to parse json config") ||
+                msg.contains("failed to build routing") -> "config_invalid"
+            msg.contains("timeout") || msg.contains("timed out") || msg.contains("deadline exceeded") -> "timeout"
             msg.contains("refused") -> "connection_refused"
             msg.contains("unreachable") || msg.contains("no route") -> "network_unreachable"
             msg.contains("tls") || msg.contains("handshake") || msg.contains("certificate") -> "tls_handshake"
@@ -68,7 +88,6 @@ object SafeLog {
             msg.contains("permission") || msg.contains("not permitted") -> "permission_denied"
             msg.contains("failed host lookup") -> "dns_failure"
             isGoOrObfuscated(t) -> coreErrorCode(msg)
-            t is XrayConfigBuilder.UnsupportedProfileException -> "unsupported_profile"
             t is IllegalArgumentException -> "config_invalid"
             t is SecurityException -> "permission_denied"
             t is java.net.UnknownHostException -> "dns_failure"
@@ -104,3 +123,4 @@ object SafeLog {
         msg.contains("timeout") || msg.contains("timed out") -> "timeout"
         else -> "core_start_failed"
     }
+}

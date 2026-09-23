@@ -1,4 +1,4 @@
-import 'package:flutter/animation.dart';
+import 'package:flutter/material.dart';
 
 /// Spacing scale. Every surface in MilkyVPN is built from these steps so vertical rhythm
 /// stays consistent between screens.
@@ -52,7 +52,7 @@ abstract final class MilkyMotion {
 /// comfortable measure instead of stretching controls across the display.
 abstract final class MilkyLayout {
   /// Primary interaction column (orb, selector, primary buttons).
-  static const double maxContentWidth = 560;
+  static const double maxContentWidth = 480;
 
   /// Reading surfaces (settings lists, subscription details) may be slightly wider.
   static const double maxReadingWidth = 640;
@@ -60,8 +60,10 @@ abstract final class MilkyLayout {
   static const double minTouchTarget = 48;
   static const double navBarHeight = 68;
 
-  static double content(double available) => available > maxContentWidth ? maxContentWidth : available;
-  static double reading(double available) => available > maxReadingWidth ? maxReadingWidth : available;
+  static double content(double available) =>
+      available > maxContentWidth ? maxContentWidth : available;
+  static double reading(double available) =>
+      available > maxReadingWidth ? maxReadingWidth : available;
 
   /// True when the viewport is wide enough to stop behaving like a phone.
   static bool isLargeScreen(double availableWidth) => availableWidth >= 720;

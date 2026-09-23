@@ -18,6 +18,8 @@ object VpnStateStore {
         val connectedSinceEpochMs: Long?,
         /** Sanitized machine-readable error class (never contains credentials). */
         val errorCode: String?,
+        val lastSuccessfulStage: String? = null,
+        val firstFailedStage: String? = null,
     )
 
     interface Listener {
@@ -45,8 +47,10 @@ object VpnStateStore {
         profileRemark: String? = current.profileRemark,
         connectedSinceEpochMs: Long? = current.connectedSinceEpochMs,
         errorCode: String? = null,
+        lastSuccessfulStage: String? = current.lastSuccessfulStage,
+        firstFailedStage: String? = current.firstFailedStage,
     ) {
-        val snap = Snapshot(state, profileId, profileRemark, connectedSinceEpochMs, errorCode)
+        val snap = Snapshot(state, profileId, profileRemark, connectedSinceEpochMs, errorCode, lastSuccessfulStage, firstFailedStage)
         current = snap
         listeners.forEach { it.onStateChanged(snap) }
     }
@@ -57,5 +61,7 @@ object VpnStateStore {
         "profileRemark" to s.profileRemark,
         "connectedSince" to s.connectedSinceEpochMs,
         "errorCode" to s.errorCode,
+        "lastSuccessfulStage" to s.lastSuccessfulStage,
+        "firstFailedStage" to s.firstFailedStage,
     )
 }

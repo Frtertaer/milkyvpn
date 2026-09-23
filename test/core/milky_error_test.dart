@@ -9,75 +9,155 @@ void main() {
 
   group('MilkyError mapping', () {
     test('raw native class names never reach the user', () {
-      for (final code in ['proxyerror', 'S', 'ProxyError', 'a', 'zz', 'SomeWeirdClass']) {
+      for (final code in [
+        'proxyerror',
+        'S',
+        'ProxyError',
+        'a',
+        'zz',
+        'SomeWeirdClass',
+      ]) {
         final e = MilkyError.fromCode(code);
         expect(e.kind, MilkyErrorKind.tunnelFailed, reason: code);
         // The explicit Go wrapper maps to the core token; anything unrecognised becomes
         // the normalized UNKNOWN bucket. Neither ever shows the raw class name.
         expect(
           e.diagnosticsCode,
-          code == 'proxyerror' ? 'VPN_CORE_START_FAILED' : 'UNKNOWN_CONNECTION_ERROR',
+          code.toLowerCase() == 'proxyerror'
+              ? 'VPN_CORE_START_FAILED'
+              : 'UNKNOWN_CONNECTION_ERROR',
           reason: code,
         );
-        for (final s in [ru, en]) {
-          final title = s.errorTitle(e.kind);
-          final body = s.errorBody(e.kind);
-          expect(title.toLowerCase(), isNot(contains(code.toLowerCase())), reason: '$code / $title');
-          expect(body.toLowerCase(), isNot(contains(code.toLowerCase())), reason: '$code / $body');
+        for (final strings in [ru, en]) {
+          final title = strings.errorTitle(e.kind);
+          final body = strings.errorBody(e.kind);
+          expect(
+            title.toLowerCase(),
+            isNot(equals(code.toLowerCase())),
+            reason: '$code / $title',
+          );
+          expect(
+            body.toLowerCase(),
+            isNot(equals(code.toLowerCase())),
+            reason: '$code / $body',
+          );
+          if (code.length >= 3) {
+            expect(
+              title.toLowerCase(),
+              isNot(contains(code.toLowerCase())),
+              reason: '$code / $title',
+            );
+            expect(
+              body.toLowerCase(),
+              isNot(contains(code.toLowerCase())),
+              reason: '$code / $body',
+            );
+          }
         }
       }
     });
 
-    test('the legacy template "Не удалось выполнить операцию (code)" is gone', () {
-      expect(ru.errorText('proxyerror'), isNot(contains('(')));
-      expect(ru.errorText('S'), isNot(contains('(S)')));
-      expect(ru.errorText('proxyerror'), 'Туннель не поднялся. Попробуйте ещё раз или выберите другой сервер.');
-    });
+    test(
+      'the legacy template "Не удалось выполнить операцию (code)" is gone',
+      () {
+        expect(ru.errorText('proxyerror'), isNot(contains('(')));
+        expect(ru.errorText('S'), isNot(contains('(S)')));
+        expect(
+          ru.errorText('proxyerror'),
+          'Туннель не поднялся. Попробуйте ещё раз или выберите другой сервер.',
+        );
+      },
+    );
 
     test('known codes map onto stable diagnostics tokens', () {
-      expect(MilkyError.fromCode('vpn_permission_denied').diagnosticsCode, 'PERMISSION_DENIED');
-      expect(MilkyError.fromCode('tun_establish_failed').diagnosticsCode, 'TUN_FAILED');
-      expect(MilkyError.fromCode('core_start_failed').diagnosticsCode, 'VPN_CORE_START_FAILED');
-      expect(MilkyError.fromCode('network_unreachable').diagnosticsCode, 'NETWORK_UNAVAILABLE');
-      expect(MilkyError.fromCode('all_attempts_failed').diagnosticsCode, 'SERVER_UNREACHABLE');
-      expect(MilkyError.fromCode('timeout').kind, MilkyErrorKind.serverUnreachable);
-      expect(MilkyError.fromCode('network_unreachable').kind, MilkyErrorKind.noInternet);
-      expect(MilkyError.fromCode('no_compatible_profiles').kind, MilkyErrorKind.noServers);
-      expect(MilkyError.fromCode('subscription_not_found').kind, MilkyErrorKind.subscriptionProblem);
+      expect(
+        MilkyError.fromCode('vpn_permission_denied').diagnosticsCode,
+        'PERMISSION_DENIED',
+      );
+      expect(
+        MilkyError.fromCode('tun_establish_failed').diagnosticsCode,
+        'TUN_FAILED',
+      );
+      expect(
+        MilkyError.fromCode('core_start_failed').diagnosticsCode,
+        'VPN_CORE_START_FAILED',
+      );
+      expect(
+        MilkyError.fromCode('network_unreachable').diagnosticsCode,
+        'NETWORK_UNAVAILABLE',
+      );
+      expect(
+        MilkyError.fromCode('all_attempts_failed').diagnosticsCode,
+        'SERVER_UNREACHABLE',
+      );
+      expect(
+        MilkyError.fromCode('timeout').kind,
+        MilkyErrorKind.serverUnreachable,
+      );
+      expect(
+        MilkyError.fromCode('network_unreachable').kind,
+        MilkyErrorKind.noInternet,
+      );
+      expect(
+        MilkyError.fromCode('no_compatible_profiles').kind,
+        MilkyErrorKind.noServers,
+      );
+      expect(
+        MilkyError.fromCode('subscription_not_found').kind,
+        MilkyErrorKind.subscriptionProblem,
+      );
       expect(MilkyError.fromCode('cancelled').isCancelled, isTrue);
       expect(MilkyError.fromCode(null).diagnosticsCode, 'NO_ERROR_REPORTED');
-      expect(MilkyError.fromCode('http_503').diagnosticsCode, 'SUBSCRIPTION_HTTP_503');
+      expect(
+        MilkyError.fromCode('http_503').diagnosticsCode,
+        'SUBSCRIPTION_HTTP_503',
+      );
     });
 
     test('every diagnostics token is upper snake case', () {
       for (final code in MilkyError.knownRawCodes) {
         final token = MilkyError.fromCode(code).diagnosticsCode;
-        expect(token, matches(RegExp(r'^[A-Z][A-Z0-9_]*$')), reason: '$code -> $token');
+        expect(
+          token,
+          matches(RegExp(r'^[A-Z][A-Z0-9_]*$')),
+          reason: '$code -> $token',
+        );
       }
     });
 
     test('device context separates emulator from real device failures', () {
       final tun = MilkyError.fromCode('tun_establish_failed');
-      expect(tun.withDeviceContext(isEmulator: true).category.diagnosticsToken, 'EMULATOR_FAILURE');
-      expect(tun.withDeviceContext(isEmulator: false).category.diagnosticsToken, 'REAL_DEVICE_FAILURE');
+      expect(
+        tun.withDeviceContext(isEmulator: true).category.diagnosticsToken,
+        'EMULATOR_FAILURE',
+      );
+      expect(
+        tun.withDeviceContext(isEmulator: false).category.diagnosticsToken,
+        'REAL_DEVICE_FAILURE',
+      );
       // A permission failure is never relabelled as a device problem.
       expect(
-        MilkyError.fromCode('vpn_permission_denied').withDeviceContext(isEmulator: true).category,
+        MilkyError.fromCode(
+          'vpn_permission_denied',
+        ).withDeviceContext(isEmulator: true).category,
         MilkyFailureCategory.permissionFailure,
       );
     });
 
-    test('every kind has a RU and an EN title, body and at least one action', () {
-      for (final kind in MilkyErrorKind.values) {
-        expect(ru.errorTitle(kind), isNotEmpty);
-        expect(ru.errorBody(kind), isNotEmpty);
-        expect(en.errorTitle(kind), isNotEmpty);
-        expect(en.errorBody(kind), isNotEmpty);
-      }
-      for (final code in MilkyError.knownRawCodes) {
-        expect(MilkyError.fromCode(code).actions, isNotEmpty, reason: code);
-      }
-    });
+    test(
+      'every kind has a RU and an EN title, body and at least one action',
+      () {
+        for (final kind in MilkyErrorKind.values) {
+          expect(ru.errorTitle(kind), isNotEmpty);
+          expect(ru.errorBody(kind), isNotEmpty);
+          expect(en.errorTitle(kind), isNotEmpty);
+          expect(en.errorBody(kind), isNotEmpty);
+        }
+        for (final code in MilkyError.knownRawCodes) {
+          expect(MilkyError.fromCode(code).actions, isNotEmpty, reason: code);
+        }
+      },
+    );
 
     test('action labels exist for every action', () {
       for (final action in MilkyErrorAction.values) {

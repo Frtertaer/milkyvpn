@@ -99,15 +99,15 @@ class MilkyColors extends ThemeExtension<MilkyColors> {
     strokeStrong: Color(0x33FFFFFF),
     text: Color(0xFFF2F5FF),
     textMuted: Color(0xFFA6B0CE),
-    textFaint: Color(0xFF727D9E),
-    accent: Color(0xFF7C97FF),
-    accentDeep: Color(0xFF4C6EF5),
-    accentSoft: Color(0x2E7C97FF),
+    textFaint: Color(0xFF929DBB),
+    accent: Color(0xFFB3ABF2),
+    accentDeep: Color(0xFF7866C2),
+    accentSoft: Color(0x26B3ABF2),
     auroraA: Color(0xFF3E6BFF),
     auroraB: Color(0xFF8B6BFF),
     auroraC: Color(0xFF37CFE6),
-    positive: Color(0xFF3BDCA0),
-    positiveSoft: Color(0x2E3BDCA0),
+    positive: Color(0xFF8EE5D6),
+    positiveSoft: Color(0x208EE5D6),
     warning: Color(0xFFF7C25B),
     danger: Color(0xFFFF7E7E),
     dangerSoft: Color(0x2EFF7E7E),
@@ -128,14 +128,14 @@ class MilkyColors extends ThemeExtension<MilkyColors> {
     strokeStrong: Color(0x24141A2B),
     text: Color(0xFF131A2B),
     textMuted: Color(0xFF59627A),
-    textFaint: Color(0xFF8B93A7),
-    accent: Color(0xFF3F63D8),
-    accentDeep: Color(0xFF2F4CB0),
-    accentSoft: Color(0x1F3F63D8),
+    textFaint: Color(0xFF68718A),
+    accent: Color(0xFF6854A9),
+    accentDeep: Color(0xFF5D499F),
+    accentSoft: Color(0x166854A9),
     auroraA: Color(0xFF6C93F5),
     auroraB: Color(0xFFB39CF7),
     auroraC: Color(0xFF79D8E4),
-    positive: Color(0xFF12996A),
+    positive: Color(0xFF177963),
     positiveSoft: Color(0x1F12996A),
     warning: Color(0xFFB87A12),
     danger: Color(0xFFD6454F),
@@ -240,5 +240,9 @@ class MilkyColors extends ThemeExtension<MilkyColors> {
 
 /// Convenience accessor: `final c = MilkyColors.of(context);`
 extension MilkyColorsX on BuildContext {
-  MilkyColors get milky => Theme.of(this).extension<MilkyColors>() ?? (Theme.of(this).brightness == Brightness.dark ? MilkyColors.dark : MilkyColors.light);
+  MilkyColors get milky =>
+      Theme.of(this).extension<MilkyColors>() ??
+      (Theme.of(this).brightness == Brightness.dark
+          ? MilkyColors.dark
+          : MilkyColors.light);
 }
