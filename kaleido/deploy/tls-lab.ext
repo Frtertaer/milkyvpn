@@ -1,0 +1,6 @@
+basicConstraints=critical,CA:FALSE
+keyUsage=critical,digitalSignature,keyEncipherment
+extendedKeyUsage=serverAuth
+subjectAltName=DNS:kaleido-lab
+subjectKeyIdentifier=hash
+authorityKeyIdentifier=keyid,issuer

@@ -1,0 +1,61 @@
+[Unit]
+Description=Kaleido KAL/1 TLS/TCP research carrier
+Wants=network-online.target
+After=network-online.target
+ConditionPathExists=/etc/kaleido/server.json
+StartLimitIntervalSec=60
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=kaleido
+Group=kaleido
+WorkingDirectory=/var/lib/kaleido
+UMask=0077
+
+ExecStartPre=/opt/kaleido/current/venv/bin/kaleido validate --config /etc/kaleido/server.json
+ExecStart=/opt/kaleido/current/venv/bin/kaleido server --config /etc/kaleido/server.json
+
+Restart=on-failure
+RestartSec=5
+RestartPreventExitStatus=2
+KillSignal=SIGINT
+SuccessExitStatus=130 SIGINT
+TimeoutStopSec=15
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kaleido
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectHostname=true
+ProtectClock=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+RemoveIPC=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+TasksMax=256
+LimitNOFILE=8192
+MemoryMax=512M
+OOMPolicy=stop
+
+[Install]
+WantedBy=multi-user.target

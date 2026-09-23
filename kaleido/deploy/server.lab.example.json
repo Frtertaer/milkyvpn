@@ -1,0 +1,43 @@
+{
+  "schema": "kaleido.runtime/v1",
+  "role": "server",
+  "listen": {
+    "host": "0.0.0.0",
+    "port": 18443
+  },
+  "tls": {
+    "certificate_file": "/etc/kaleido/pki/server-cert.pem",
+    "private_key_file": "/etc/kaleido/pki/server-tls-private.pem"
+  },
+  "protocol": {
+    "mode": "kal1",
+    "psk_file": "/etc/kaleido/keys/kaleido.psk",
+    "server_identity_private_file": "/etc/kaleido/keys/server-identity-private.pem"
+  },
+  "target_policy": {
+    "allow_public": true,
+    "allow_hosts": [],
+    "allow_ports": [80, 443],
+    "deny_loopback": true,
+    "deny_private": true,
+    "deny_link_local": true,
+    "deny_multicast": true,
+    "deny_reserved": true
+  },
+  "decoy": {
+    "status": 200,
+    "server": "nginx"
+  },
+  "timeouts": {
+    "handshake_seconds": 10,
+    "carrier_read_seconds": 30,
+    "inner_read_seconds": 60,
+    "inner_idle_seconds": 120,
+    "dial_seconds": 10,
+    "socks_handshake_seconds": 10
+  },
+  "limits": {
+    "outer_sessions": 256,
+    "socks_sessions": 128
+  }
+}

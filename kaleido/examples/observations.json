@@ -1,0 +1,19 @@
+[
+  {
+    "carrier": "tls-lab",
+    "carrier_class": "tls-stream",
+    "success": true,
+    "handshake_ms": 240,
+    "goodput_mbps": 18.5,
+    "battery_cost": 0.2,
+    "observed_at": 1000
+  },
+  {
+    "carrier": "quic-lab",
+    "carrier_class": "quic-datagram",
+    "success": false,
+    "battery_cost": 0.3,
+    "observed_at": 1000
+  }
+]
+

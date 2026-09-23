@@ -1,0 +1,33 @@
+{
+  "schema": "kaleido.runtime/v1",
+  "role": "client",
+  "server": {
+    "host": "vpn.example.net",
+    "port": 443,
+    "sni": "vpn.example.net"
+  },
+  "socks": {
+    "host": "127.0.0.1",
+    "port": 1080
+  },
+  "tls": {
+    "ca_file": "server-ca.pem"
+  },
+  "protocol": {
+    "mode": "kal1",
+    "psk_file": "kaleido.psk",
+    "server_identity_public_file": "server-identity-public.pem"
+  },
+  "socks_auth": {
+    "required": true,
+    "username": "kaleido",
+    "secret_file": "socks-password.bin"
+  },
+  "timeouts": {
+    "socks_handshake_seconds": 10
+  },
+  "limits": {
+    "outer_sessions": 256,
+    "socks_sessions": 128
+  }
+}

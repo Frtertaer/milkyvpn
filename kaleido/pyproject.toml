@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kaleido-protocol"
+version = "0.1.0"
+description = "Research prototype for an adaptive censorship-resilient tunnel"
+requires-python = ">=3.12"
+dependencies = ["cryptography>=45"]
+
+[project.optional-dependencies]
+dev = [
+  "bandit>=1.8",
+  "mypy>=1.15",
+  "pytest>=8.3",
+  "pytest-asyncio>=0.25",
+  "ruff>=0.11",
+]
+
+[project.scripts]
+kaleido = "kaleido.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "S", "UP", "B", "SIM"]
+ignore = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+packages = ["kaleido"]
+
+[tool.bandit]
+exclude_dirs = ["tests"]
+
