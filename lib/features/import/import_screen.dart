@@ -83,7 +83,11 @@ class _ImportScreenState extends State<ImportScreen> {
       if (go && mounted) Navigator.of(context).pop(true);
     } on SubscriptionFetchException catch (e) {
       if (!mounted) return;
-      setState(() => _error = t.errorText(e.errorClass));
+      setState(
+        () => _error = e.errorClass == 'url_not_allowed'
+            ? t.urlNotAllowed
+            : t.errorText(e.errorClass),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = t.errorText(const Redactor().errorClass(e)));

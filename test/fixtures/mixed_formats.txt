@@ -1,0 +1,10 @@
+vless://11111111-1111-4111-8111-111111111111@fi-reality.example.com:443?type=tcp&security=reality&sni=www.example.com&fp=chrome&pbk=FAKEPBKTESTAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=0a0b&flow=xtls-rprx-vision#FI%20Vless%20Reality
+vless://22222222-2222-4222-8222-222222222222@us-ws.example.com:443?type=ws&security=tls&sni=cdn.example.com&host=cdn.example.com&path=%2Fws#US%20Vless%20WS
+hysteria2://fakepass@fi-hy2.example.com:443?sni=fi-hy2.example.com#FI%20Hy2
+vmess://eyJ2IjogIjIiLCAicHMiOiAiRkkgVm1lc3MiLCAiYWRkIjogImZpLXZtZXNzLmV4YW1wbGUuY29tIiwgInBvcnQiOiAiNDQzIiwgImlkIjogIjMzMzMzMzMzLTMzMzMtNDMzMy04MzMzLTMzMzMzMzMzMzMzMyIsICJhaWQiOiAiMCIsICJzY3kiOiAiYXV0byIsICJuZXQiOiAid3MiLCAidHlwZSI6ICJub25lIiwgImhvc3QiOiAiY2RuLmV4YW1wbGUuY29tIiwgInBhdGgiOiAiL3ZtIiwgInRscyI6ICJ0bHMiLCAic25pIjogImNkbi5leGFtcGxlLmNvbSJ9
+trojan://pw%20abc@us-trojan.example.com:443?sni=tr.example.com&type=grpc&serviceName=trojan-grpc#US%20Trojan
+ss://YWVzLTI1Ni1nY206cHctYWJj@fi-ss.example.com:8388#FI%20SS
+kal2://4cce3cb266dce5f9330e906698fc503ea55f891e5ca84279086e4ae664430a79@us-kal2.example.com:443?sni=kal.example.com&pub=9f0dfb763d6fbdb2fa0f0b1f2fb6fd2f3d8e9ca681c523241c63434d41c76c8f&carrier=drift&path=/api/v2/stream#US%20KAL2
+ss://YWVzLTI1Ni1nY206cHctYWJj@us-ssp.example.com:8388?plugin=v2ray-plugin#US%20SS%20Plugin
+tuic://abc@us-tuic.example.com:443#US%20Tuic
+this-is-garbage
