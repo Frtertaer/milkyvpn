@@ -175,7 +175,7 @@ func Serve(cfg ServerConfig) error {
 	}
 	v.SetMux(mux)
 
-	logf("kal2: serving %s on %s", cfg.Domain, cfg.Listen)
+	logf("core: serving %s on %s", cfg.Domain, cfg.Listen)
 	return v.Serve(ln)
 }
 
@@ -266,7 +266,7 @@ func (c *Client) reconnectLoop() {
 			c.Sess = nil
 		}
 		c.mu.Unlock()
-		c.logf("kal2: session lost; redialing")
+		c.logf("core: session lost; redialing")
 		backoff := time.Second
 		for {
 			select {
@@ -285,10 +285,10 @@ func (c *Client) reconnectLoop() {
 					_ = s.Close() // concurrent swap won; keep it
 				}
 				c.mu.Unlock()
-				c.logf("kal2: session restored")
+				c.logf("core: session restored")
 				break
 			}
-			c.logf("kal2: redial failed: %v", err)
+			c.logf("core: redial failed: %v", err)
 			if backoff < 30*time.Second {
 				backoff *= 2
 			}
@@ -311,7 +311,7 @@ func (c *Client) ServeSocks(laddr string) (net.Listener, error) {
 func (c *Client) Ping(ctx context.Context) error {
 	s := c.Session()
 	if s == nil {
-		return fmt.Errorf("kal2: no live session")
+		return fmt.Errorf("core: no live session")
 	}
 	return core.PingSession(ctx, s)
 }

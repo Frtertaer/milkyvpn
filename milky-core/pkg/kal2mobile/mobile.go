@@ -6,7 +6,7 @@
 // configJSON keys (all strings):
 //
 //	{"addr":"ip:443[,ip2:443,...]", "sni":"kal.example.dev",
-//	 "carrier":"veil|drift", "driftPath":"/api/v2/stream",
+//	 "carrier":"veil|drift", "path":"/api/v2/stream",
 //	 "pub":"<hex>", "psk":"<hex>", "socks":"127.0.0.1:10808"}
 //
 // Point OS proxy / VPN routing at the returned SOCKS port.
@@ -30,7 +30,7 @@ type mobileConfig struct {
 	Addr      string `json:"addr"`
 	SNI       string `json:"sni"`
 	Carrier   string `json:"carrier"`
-	DriftPath string `json:"driftPath"`
+	DriftPath string `json:"path"`
 	Pub       string `json:"pub"`
 	PSK       string `json:"psk"`
 	Socks     string `json:"socks"`
@@ -110,7 +110,7 @@ func Start(configJSON string) (int, error) {
 	client = cli
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 	p, _ := strconv.Atoi(port)
-	logf("kal2mobile: up (%s)", ln.Addr())
+	logf("core: up (%s)", ln.Addr())
 	return p, nil
 }
 

@@ -112,15 +112,15 @@ type Error string
 func (e Error) Error() string { return string(e) }
 
 const (
-	ErrHandshake Error = "kal2: handshake failed"
-	ErrMagic     Error = "kal2: magic mismatch"
-	ErrVersion   Error = "kal2: unsupported version"
-	ErrPreauth   Error = "kal2: client pre-authentication failed"
-	ErrSignature Error = "kal2: server identity signature invalid"
-	ErrReplay    Error = "kal2: replay or out-of-order record"
-	ErrFraming   Error = "kal2: record framing error"
-	ErrTag       Error = "kal2: record authentication failed"
-	ErrClosed    Error = "kal2: session closed"
+	ErrHandshake Error = "session: handshake failed"
+	ErrMagic     Error = "session: magic mismatch"
+	ErrVersion   Error = "session: unsupported version"
+	ErrPreauth   Error = "session: client pre-authentication failed"
+	ErrSignature Error = "session: server identity signature invalid"
+	ErrReplay    Error = "session: replay or out-of-order record"
+	ErrFraming   Error = "session: record framing error"
+	ErrTag       Error = "session: record authentication failed"
+	ErrClosed    Error = "session: session closed"
 )
 
 // ---------------------------------------------------------------------------

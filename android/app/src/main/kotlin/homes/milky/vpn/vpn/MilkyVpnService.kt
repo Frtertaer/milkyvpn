@@ -19,8 +19,8 @@ import go.Seq
 import homes.milky.vpn.MainActivity
 import homes.milky.vpn.R
 import homes.milky.vpn.core.XrayConfigBuilder
-import homes.milky.vpn.kal2.Kal2Config
-import homes.milky.vpn.kal2.Kal2Core
+import homes.milky.vpn.bridge.Kal2Config
+import homes.milky.vpn.bridge.NativeBridge
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -192,7 +192,7 @@ class MilkyVpnService : VpnService() {
             var kal2SocksPort: Int? = null
             if (Kal2Config.isKal2(spec)) {
                 trace.begin("KAL2_SESSION_STARTING")
-                kal2SocksPort = Kal2Core.start(Kal2Config.toJson(spec).toString())
+                kal2SocksPort = NativeBridge.start(Kal2Config.toJson(spec).toString())
                 trace.success("KAL2_SESSION_STARTED", "carrier=${spec.network.lowercase()}")
             }
 
@@ -409,7 +409,7 @@ class MilkyVpnService : VpnService() {
         }
         controller = null
         try {
-            Kal2Core.stop() // idempotent
+            NativeBridge.stop() // idempotent
         } catch (t: Throwable) {
             SafeLog.w("kal2 stop", t)
         }

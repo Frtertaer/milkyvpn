@@ -17,16 +17,16 @@ import (
 
 // Domain-separation labels for HKDF. Unique per purpose.
 var (
-	labelBase          = []byte("kal2-in-v2/transcript")
-	labelClientRecord  = []byte("kal2-in-v2/record/client")
-	labelServerRecord  = []byte("kal2-in-v2/record/server")
-	labelServerSig     = []byte("kal2-in-v2/server-sig-input")
-	labelClientPSK     = []byte("kal2-in-v2/client-psk-input")
-	labelClientPreauth = []byte("kal2-in-v2/client-preauth")
-	labelHandshakeVer  = []byte("kal2-in-v2/handshake-verify")
-	labelFinished      = []byte("kal2-in-v2/finished")
-	labelNonceBase     = []byte("kal2-in-v2/nonce-base")
-	labelExporterBind  = []byte("kal2-in-v2/exporter-bind")
+	labelBase          = []byte("mxs-in-v2/transcript")
+	labelClientRecord  = []byte("mxs-in-v2/record/client")
+	labelServerRecord  = []byte("mxs-in-v2/record/server")
+	labelServerSig     = []byte("mxs-in-v2/server-sig-input")
+	labelClientPSK     = []byte("mxs-in-v2/client-psk-input")
+	labelClientPreauth = []byte("mxs-in-v2/client-preauth")
+	labelHandshakeVer  = []byte("mxs-in-v2/handshake-verify")
+	labelFinished      = []byte("mxs-in-v2/finished")
+	labelNonceBase     = []byte("mxs-in-v2/nonce-base")
+	labelExporterBind  = []byte("mxs-in-v2/exporter-bind")
 )
 
 // ChannelBinding is optional carrier-provided secret material (a TLS

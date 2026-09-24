@@ -416,7 +416,7 @@ func tlsExporter(c *tls.Conn) kal2.ChannelBinding {
 	}
 	st := c.ConnectionState()
 	if e, ok := any(st).(exporter); ok {
-		b, err := e.ExportKeyingMaterial("kal2-bind", nil, 32)
+		b, err := e.ExportKeyingMaterial("mxs-bind", nil, 32)
 		if err == nil {
 			return b
 		}

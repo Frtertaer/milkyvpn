@@ -82,7 +82,7 @@ to an unauthenticated peer.
 
 **Drift details.** One streaming h2 POST per session — the request body is the
 uplink, the streamed `application/octet-stream` response is the downlink. The
-endpoint is **keyed**: `<base>/<hex8(HMAC-SHA256(psk, "kal2/drift-path"))>` —
+endpoint is **keyed**: `<base>/<hex8(HMAC-SHA256(psk, "mxs/drift-path"))>` —
 any other path (including the bare base) returns the decoy's plain 404, so
 the entry point cannot be found by path enumeration or active probing.
 Chrome UA, chunk-padded bodies, POST/PUT/PATCH allowed. Over CDN this is
@@ -143,8 +143,8 @@ CDN, multi-domain) handles the rest.
   reconnect watchdog; `Stop`/`Alive`/`SetLogger` for lifecycle and logcat.
   One muxed session per device is battery-friendly vs per-conn sockets,
   and drift survives NAT timeouts/roaming better than UDP carriers.
-- `android` (`cmd/kal2native` → `libkal2.so`): JNI exports for
-  `homes.milky.vpn.kal2.Kal2Core` (`nativeStart(json) → port`,
+- `android` (`cmd/kal2native` → `libcore.so`): JNI exports for
+  `homes.milky.vpn.bridge.NativeBridge` (`nativeStart(json) → port`,
   `nativeStop`, `nativeAlive`, `nativeLastError`). Shipped in the APK via
   `android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}/`.
   Integration path: `MilkyVpnService` starts kal2 first, then builds the
@@ -154,7 +154,7 @@ CDN, multi-domain) handles the rest.
   side-by-side with no new native dependencies.
 - Build (per ABI, NDK 26+): `GOOS=android GOARCH=<arm64|arm|amd64>
   CGO_ENABLED=1 CC=<ndk>/bin/<triplet>26-clang garble build -trimpath
-  -buildmode=c-shared -o libkal2.so ./cmd/kal2native`
+  -buildmode=c-shared -o libcore.so ./cmd/kal2native`
 - gomobile AAR was evaluated and dropped: a second gomobile artifact
   collides with libv2ray.aar (same `libgojni.so` name, duplicate `go/Seq`
   classes). The c-shared .so keeps exactly one JNI surface.
@@ -166,9 +166,9 @@ goal is raising the cost of reversing, not preventing it — the real
 confidentiality boundary is the wire (real TLS + decoy site + keyed
 drift path), which is why protocol mechanics don't need to stay secret.
 
-- `garble` obfuscates every kal2 package built into `libkal2.so`:
+- `garble` obfuscates every kal2 package built into `libcore.so`:
   package paths, symbol names and string literals are hidden
-  (`strings libkal2.so` shows no `kal2`, `/api/v2`, `driftPath`).
+  and `-literals` encrypts remaining string literals; protocol-identifying strings (kal2, driftPath, /api/v2, HKDF labels) were also removed from the source so `strings libcore.so` is clean.
 - Release CLI builds additionally use `-trimpath -ldflags "-s -w"`
   (no symbols, no source paths).
 - The R8/ProGuard release pipeline covers the Kotlin glue

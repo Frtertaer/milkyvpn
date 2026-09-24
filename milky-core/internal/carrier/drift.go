@@ -24,12 +24,12 @@ import (
 const DefaultDriftPath = "/api/v2/stream"
 
 // driftPathToken derives the keyed path suffix for a user's drift endpoint:
-// hex(HMAC-SHA256(psk, "kal2/drift-path")[:8]). The endpoint is
+// hex(HMAC-SHA256(psk, "mxs/drift-path")[:8]). The endpoint is
 // <base>/<token> — anything else is indistinguishable from an unknown URL on
 // the decoy site, so the entry point can't be found by path enumeration.
 func driftPathToken(psk []byte) string {
 	mac := hmac.New(sha256.New, psk)
-	_, _ = mac.Write([]byte("kal2/drift-path"))
+	_, _ = mac.Write([]byte("mxs/drift-path"))
 	return hex.EncodeToString(mac.Sum(nil)[:8])
 }
 

@@ -406,7 +406,7 @@ func (s *Session) Open(host string, port uint16, timeout time.Duration) (*Stream
 		return nil, err
 	}
 	if !st.waitDial(timeout) {
-		return nil, fmt.Errorf("kal2: open timeout or refused")
+		return nil, fmt.Errorf("session: open timeout or refused")
 	}
 	if st.dialErr != nil {
 		return nil, st.dialErr
@@ -425,13 +425,13 @@ func (s *Session) Ping(payload []byte, timeout time.Duration) error {
 	case <-ch:
 		return nil
 	case <-time.After(timeout):
-		return fmt.Errorf("kal2: pong timeout")
+		return fmt.Errorf("session: pong timeout")
 	case <-s.closed:
 		return ErrClosed
 	}
 }
 
-var errStreamClosed = fmt.Errorf("kal2: stream closed")
+var errStreamClosed = fmt.Errorf("session: stream closed")
 
 // --- stream internals --------------------------------------------------------
 
@@ -526,7 +526,7 @@ func (st *stream) waitDial(timeout time.Duration) bool {
 		if len(code) == 1 && code[0] == 0x00 {
 			return true
 		}
-		st.dialErr = fmt.Errorf("kal2: remote dial failed: %v", code)
+		st.dialErr = fmt.Errorf("session: remote dial failed: %v", code)
 		return true
 	case <-time.After(timeout):
 		return false

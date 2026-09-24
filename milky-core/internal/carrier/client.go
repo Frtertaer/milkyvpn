@@ -152,7 +152,7 @@ func utlsExporter(c *utls.UConn) kal2.ChannelBinding {
 		ExportKeyingMaterial(label string, context []byte, length int) ([]byte, error)
 	}
 	if e, ok := any(st).(exporter); ok {
-		if b, err := e.ExportKeyingMaterial("kal2-bind", nil, 32); err == nil {
+		if b, err := e.ExportKeyingMaterial("mxs-bind", nil, 32); err == nil {
 			return b
 		}
 	}
