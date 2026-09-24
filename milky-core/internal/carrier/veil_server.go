@@ -66,10 +66,49 @@ type VeilListener struct {
 	ln     net.Listener
 	replay *replayCache
 
-	mu     sync.Mutex
-	closed bool
-	conns  map[net.Conn]struct{}
-	mux    http.Handler
+	mu        sync.Mutex
+	closed    bool
+	conns     map[net.Conn]struct{}
+	connsByIP map[string]int
+	fails     map[string]int // scanner tarpit: repeated probe-profile failures
+	mux       http.Handler
+}
+
+// maxConnsPerIP bounds concurrent pre-adoption connections per source —
+// scanners fan out; real clients use one or two.
+const maxConnsPerIP = 16
+
+// remoteIP returns the bare source address of a conn.
+func remoteIP(c net.Conn) string {
+	host, _, err := net.SplitHostPort(c.RemoteAddr().String())
+	if err != nil {
+		return c.RemoteAddr().String()
+	}
+	return host
+}
+
+// penalize counts a probe-profile failure for the source and sleeps before
+// the caller closes: repeated scanning gets slower each time while ordinary
+// cover traffic (real TLS that reaches the mux) never hits these paths.
+func (v *VeilListener) penalize(ip string) {
+	v.mu.Lock()
+	n := v.fails[ip] + 1
+	v.fails[ip] = n
+	v.mu.Unlock()
+	if n > 1 {
+		d := time.Duration(n-1) * 700 * time.Millisecond
+		if d > 5*time.Second {
+			d = 5 * time.Second
+		}
+		time.Sleep(d)
+	}
+}
+
+// clearFails drops the source's penalty score once a session authenticates.
+func (v *VeilListener) clearFails(ip string) {
+	v.mu.Lock()
+	delete(v.fails, ip)
+	v.mu.Unlock()
 }
 
 // NewVeilListener builds a listener for cfg without serving. The mux may be
@@ -77,10 +116,12 @@ type VeilListener struct {
 // back into the listener).
 func NewVeilListener(cfg VeilConfig) *VeilListener {
 	return &VeilListener{
-		cfg:    cfg,
-		replay: newReplayCache(10*time.Minute, 8192),
-		conns:  map[net.Conn]struct{}{},
-		mux:    cfg.Mux,
+		cfg:       cfg,
+		replay:    newReplayCache(10*time.Minute, 8192),
+		conns:     map[net.Conn]struct{}{},
+		connsByIP: map[string]int{},
+		fails:     map[string]int{},
+		mux:       cfg.Mux,
 	}
 }
 
@@ -105,12 +146,22 @@ func (v *VeilListener) Serve(ln net.Listener) error {
 			_ = c.Close()
 			return errors.New("listener closed")
 		}
+		ip := remoteIP(c)
+		if v.connsByIP[ip] >= maxConnsPerIP {
+			v.mu.Unlock()
+			_ = c.Close()
+			continue
+		}
 		v.conns[c] = struct{}{}
+		v.connsByIP[ip]++
 		v.mu.Unlock()
 		go func() {
 			adopted := v.handle(c)
 			v.mu.Lock()
 			delete(v.conns, c)
+			if v.connsByIP[ip]--; v.connsByIP[ip] <= 0 {
+				delete(v.connsByIP, ip)
+			}
 			v.mu.Unlock()
 			if !adopted {
 				_ = c.Close()
@@ -128,9 +179,11 @@ func (v *VeilListener) handle(c net.Conn) bool {
 	}
 	_ = c.SetDeadline(time.Now().Add(to))
 
+	ip := remoteIP(c)
 	peeked, sni, err := PeekClientHelloSNI(c)
 	if err != nil {
 		v.cfg.logf("veil: non-TLS client %s: %v", c.RemoteAddr(), err)
+		v.penalize(ip)
 		return false
 	}
 
@@ -141,7 +194,8 @@ func (v *VeilListener) handle(c net.Conn) bool {
 		v.spliceUpstream(c, peeked, v.cfg.StealAddr)
 		return false
 	case sni != "" && v.cfg.StealAddr == "":
-		// Foreign SNI without a steal target: close quietly.
+		// Foreign SNI without a steal target: penalize + close quietly.
+		v.penalize(ip)
 		return false
 	default:
 		// Empty SNI: terminate too (many real clients do this; the decoy mux
@@ -160,6 +214,7 @@ func (v *VeilListener) handle(c net.Conn) bool {
 	tconn := tls.Server(WrapPrefix(c, peeked), tlsCfg)
 	if err := tconn.Handshake(); err != nil {
 		v.cfg.logf("veil: TLS handshake fail %s: %v", c.RemoteAddr(), err)
+		v.penalize(ip)
 		return false
 	}
 	_ = tconn.SetDeadline(time.Time{})
@@ -170,6 +225,9 @@ func (v *VeilListener) handle(c net.Conn) bool {
 	magic := make([]byte, len(kal2.Magic))
 	_ = bc.SetReadDeadline(time.Now().Add(v.firstFlightDeadline()))
 	if _, err := io.ReadFull(bc, magic); err != nil {
+		// TLS completed but the peer produced no request/first flight — the
+		// masscan profile, not a browser.
+		v.penalize(ip)
 		return false
 	}
 	if !bytesEqual(magic, kal2.Magic) {
@@ -253,10 +311,22 @@ func (v *VeilListener) establishKAL(bc BoundConn, eph, psk, flightPrefix []byte)
 	}
 	_ = bc.SetReadDeadline(time.Time{})
 	sess.Attach(bc)
+	v.clearFails(remoteIPConn(bc))
 	if v.cfg.OnSession != nil {
 		v.cfg.OnSession(sess)
 	}
 	return nil
+}
+
+// remoteIPConn unwraps remote addr through the BoundConn wrappers.
+func remoteIPConn(bc BoundConn) string {
+	if t, ok := bc.(*tlsBoundConn); ok {
+		return remoteIP(t.Conn)
+	}
+	if p, ok := bc.(*prefixBoundConn); ok {
+		return remoteIPConn(p.BoundConn)
+	}
+	return ""
 }
 
 func (v *VeilListener) firstFlightDeadline() time.Duration {

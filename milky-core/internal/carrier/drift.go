@@ -2,11 +2,16 @@ package carrier
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,15 +23,34 @@ import (
 // DriftPath is the secret URL path for the HTTP-shaped carrier (config).
 const DefaultDriftPath = "/api/v2/stream"
 
+// driftPathToken derives the keyed path suffix for a user's drift endpoint:
+// hex(HMAC-SHA256(psk, "kal2/drift-path")[:8]). The endpoint is
+// <base>/<token> — anything else is indistinguishable from an unknown URL on
+// the decoy site, so the entry point can't be found by path enumeration.
+func driftPathToken(psk []byte) string {
+	mac := hmac.New(sha256.New, psk)
+	_, _ = mac.Write([]byte("kal2/drift-path"))
+	return hex.EncodeToString(mac.Sum(nil)[:8])
+}
+
 // DriftHandler returns an http.Handler that authenticates a KAL/2 session
 // carried inside the request body stream. It is mounted by the server mux at
-// the configured secret path; all other paths fall through to the decoy.
+// <base> and <base>/; only requests to the HMAC-keyed path proceed — every
+// other request gets the decoy's plain 404, byte-identical to an unknown URL.
 // The handshake bytes flow inside the POST body (client→server) and the
 // streamed response (server→client): to proxies and DPI it is an ordinary
 // long-running API stream.
-func (v *VeilListener) DriftHandler() http.Handler {
+func (v *VeilListener) DriftHandler(base string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch {
+		ok := false
+		for _, u := range v.cfg.Users {
+			want := base + "/" + driftPathToken(u.PSK)
+			if subtle.ConstantTimeCompare([]byte(r.URL.Path), []byte(want)) == 1 {
+				ok = true
+				break
+			}
+		}
+		if !ok || (r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch) {
 			http.NotFound(w, r)
 			return
 		}
@@ -188,7 +212,7 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 	}
 
 	pr, pw := io.Pipe()
-	url := "https://" + cfg.SNI + path
+	url := "https://" + cfg.SNI + strings.TrimSuffix(path, "/") + "/" + driftPathToken(cfg.PSK)
 	// The request IS the session carrier: its lifetime must be the session's,
 	// not the dial deadline's — ctx only bounds connect+handshake below (veil
 	// parity: there the ctx is dead weight once Attach runs).

@@ -143,7 +143,8 @@ func Serve(cfg ServerConfig) error {
 	v := carrier.NewVeilListener(vc)
 
 	mux := http.NewServeMux()
-	mux.Handle(driftPath, v.DriftHandler())
+	mux.Handle(driftPath, v.DriftHandler(driftPath))
+	mux.Handle(driftPath+"/", v.DriftHandler(driftPath))
 	if cfg.DecoyDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(cfg.DecoyDir)))
 	} else {

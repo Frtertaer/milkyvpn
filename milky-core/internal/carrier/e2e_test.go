@@ -122,7 +122,8 @@ func newTestServer(t *testing.T) *testServer {
 		},
 	})
 	mux := http.NewServeMux()
-	mux.Handle(DefaultDriftPath, v.DriftHandler())
+	mux.Handle(DefaultDriftPath, v.DriftHandler(DefaultDriftPath))
+	mux.Handle(DefaultDriftPath+"/", v.DriftHandler(DefaultDriftPath))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("DECOY-OK"))
 	}))
@@ -213,6 +214,38 @@ func TestDriftSessionOutlivesDialCtx(t *testing.T) {
 	defer sess.Close()
 	time.Sleep(1300 * time.Millisecond) // past the dial deadline
 	streamEchoTest(t, sess)
+}
+
+// The drift entry point is keyed per user: requests to the bare secret path
+// (or any wrong suffix) must look like an unknown URL on the decoy site.
+func TestDriftKeyedPath(t *testing.T) {
+	ts := newTestServer(t)
+	post := func(path string) int {
+		raw, err := net.DialTimeout("tcp", ts.ln.Addr().String(), 5*time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer raw.Close()
+		tc := tls.Client(raw, &tls.Config{InsecureSkipVerify: true, ServerName: "kal.test", NextProtos: []string{"http/1.1"}})
+		if err := tc.Handshake(); err != nil {
+			t.Fatal(err)
+		}
+		fmt.Fprintf(tc, "POST %s HTTP/1.1\r\nHost: kal.test\r\nContent-Length: 5\r\nConnection: close\r\n\r\nxxxxx", path)
+		_ = raw.SetReadDeadline(time.Now().Add(5 * time.Second))
+		out, err := io.ReadAll(tc)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var code int
+		fmt.Sscanf(string(out), "HTTP/1.1 %d", &code)
+		return code
+	}
+	if c := post(DefaultDriftPath); c != http.StatusNotFound {
+		t.Fatalf("unkeyed drift path: want 404, got %d", c)
+	}
+	if c := post(DefaultDriftPath + "/0000000000000000"); c != http.StatusNotFound {
+		t.Fatalf("wrong-token drift path: want 404, got %d", c)
+	}
 }
 
 func TestDecoyHTTP(t *testing.T) {

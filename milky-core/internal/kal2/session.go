@@ -145,51 +145,73 @@ func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
 	}
 }
 
-// writeLoop is the single serialized emitter: drains the control lane first,
-// then DATA, so opens/acks/rsts/pongs never queue behind bulk transfer.
+// writeBatchBytes bounds the frames coalesced into one carrier write: larger
+// writes mean larger TLS records — fewer segments (throughput) and a packet
+// rate closer to ordinary bulk HTTP rather than a chattery tunnel.
+const writeBatchBytes = 1 << 14
+
+// writeLoop is the single serialized emitter. It blocks for the first queued
+// record, then greedily drains whatever else is queued — control lane first,
+// then DATA — into one carrier write, so opens/acks/rsts/pongs never queue
+// behind bulk transfer and busy links emit few large writes.
 func (s *Session) writeLoop() {
 	for {
+		var first outRec
 		select {
-		case r := <-s.ctrlCh:
-			if !s.emit(r) {
-				return
-			}
-			continue
-		default:
-		}
-		select {
-		case r := <-s.ctrlCh:
-			if !s.emit(r) {
-				return
-			}
-		case r := <-s.dataCh:
-			if !s.emit(r) {
-				return
-			}
+		case first = <-s.ctrlCh:
+		case first = <-s.dataCh:
 		case <-s.closed:
+			return
+		}
+		buf := s.appendFrame(nil, first)
+	batch:
+		for len(buf) < writeBatchBytes {
+			select {
+			case r := <-s.ctrlCh:
+				buf = s.appendFrame(buf, r)
+				continue
+			default:
+			}
+			select {
+			case r := <-s.ctrlCh:
+				buf = s.appendFrame(buf, r)
+			case r := <-s.dataCh:
+				buf = s.appendFrame(buf, r)
+			default:
+				break batch
+			}
+		}
+		if !s.flushBuf(buf) {
 			return
 		}
 	}
 }
 
-// emit encrypts and writes one record. Runs only on the writer goroutine.
-func (s *Session) emit(r outRec) bool {
+// appendFrame encrypts one record into buf. Runs only on the writer goroutine;
+// an undeliverable payload is dropped (the session continues).
+func (s *Session) appendFrame(buf []byte, r outRec) []byte {
 	padded, err := Pad(r.p)
 	if err != nil {
-		return true // undeliverable payload: drop, keep session
+		return buf
 	}
 	seq := s.sendSeq
 	header := encodeHeader(r.t, seq, r.id, len(padded)+aeadTagSize)
 	ct := s.sendAEAD.Seal(nil, s.nonce(seq), padded, header)
-	frame := append(header, ct...)
-	if _, err := s.rw.Write(frame); err != nil {
+	buf = append(buf, header...)
+	buf = append(buf, ct...)
+	s.sendSeq++
+	return buf
+}
+
+// flushBuf writes one coalesced batch; failure marks the session dead.
+func (s *Session) flushBuf(buf []byte) bool {
+	if _, err := s.rw.Write(buf); err != nil {
 		s.smu.Lock()
 		s.writeErr = err
 		s.smu.Unlock()
 		s.fail(err)
 		return false
 	}
-	s.sendSeq++
 	return true
 }
 

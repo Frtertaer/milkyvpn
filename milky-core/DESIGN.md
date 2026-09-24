@@ -53,10 +53,12 @@ New in v2:
   carry many TCP streams over one session. Needed for a real client core.
   Scheduling: a two-lane emitter sends control records (OPEN/ACK/CLOSE/RST/
   PING/PONG) ahead of queued DATA so stream control never starves behind bulk
-  transfer; DATA writers block on a bounded lane for backpressure. On receive,
-  each stream owns a bounded queue drained by its own pump — a consumer that
-  stalls fills its queue and is reset (peer gets RST) instead of wedging the
-  session demux.
+  transfer; DATA writers block on a bounded lane for backpressure. The emitter
+  coalesces queued records into a single carrier write (≤16 KiB) — larger TLS
+  records mean higher throughput and a packet rate resembling ordinary bulk
+  HTTP rather than a chattery tunnel. On receive, each stream owns a bounded
+  queue drained by its own pump — a consumer that stalls fills its queue and
+  is reset (peer gets RST) instead of wedging the session demux.
 - **Variable first-flight padding**: client flight length is randomized so no
   fixed-size signature exists.
 - **Record types**: OPEN, DATA, CLOSE, RST, PING, PONG, MIGRATE(reserved),
@@ -78,9 +80,37 @@ HTTPS site (or the real origin). Failed inner pre-auth likewise splices the
 post-handshake stream to a local decoy site — no KAL bytes are ever emitted
 to an unauthenticated peer.
 
-**Drift details.** Upload `POST /<path>?seq=N` bodies, download `GET /<path>?seq=N`
-long-poll; benign param names (config), Chrome UA, X/Z-style padding, rotates
-POST/PUT/PATCH, h1/h2 negotiated. Over CDN this is ordinary API traffic.
+**Drift details.** One streaming h2 POST per session — the request body is the
+uplink, the streamed `application/octet-stream` response is the downlink. The
+endpoint is **keyed**: `<base>/<hex8(HMAC-SHA256(psk, "kal2/drift-path"))>` —
+any other path (including the bare base) returns the decoy's plain 404, so
+the entry point cannot be found by path enumeration or active probing.
+Chrome UA, chunk-padded bodies, POST/PUT/PATCH allowed. Over CDN this is
+ordinary long-poll API traffic.
+
+## Active-scan resistance
+
+Defense layers against probing/scanning of the listener:
+
+- **SNI splice + decoy-through**: foreign SNI is spliced to a real upstream
+  (REALITY-style); our-SNI traffic with failed inner auth is handed to the
+  decoy site — a scanner only ever sees a normal HTTPS blog.
+- **Keyed drift endpoint** (above): enumeration sees nothing but 404s.
+- **Tarpit**: probe-profile failures (non-TLS conn, TLS handshake failure,
+  foreign SNI with no steal target, post-TLS silence) increment a per-IP
+  penalty; each retry gets a longer delay before close (≤5 s). Authenticated
+  sessions reset the score.
+- **Per-IP connection cap** (16 pre-adoption conns): scan floods are dropped
+  while real clients need 1–2 conns.
+- **Records inside TLS**: inner protocol bytes are AEAD ciphertext — DPI sees
+  only the TLS record layer of an ordinary site; padding keeps record sizes
+  bucket-quantized, writes are coalesced (above).
+- **Release builds stripped**: build server/client/relay with
+  `-trimpath -ldflags "-s -w"` — no symbols, no paths, harder to reverse.
+
+Honest boundary: a determined censor can still block by IP/domain — the goal
+is that scanning finds nothing *about* the protocol, and IP agility (relay,
+CDN, multi-domain) handles the rest.
 
 ## Application core shape
 
