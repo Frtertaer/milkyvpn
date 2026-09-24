@@ -25,3 +25,4 @@ key.properties
 
 # Go build artifacts
 milky-core/dist/
+milky-core/.h
