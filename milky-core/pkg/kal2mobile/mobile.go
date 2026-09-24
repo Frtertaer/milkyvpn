@@ -6,7 +6,7 @@
 // configJSON keys (all strings):
 //
 //	{"addr":"ip:443[,ip2:443,...]", "sni":"kal.example.dev",
-//	 "carrier":"veil|drift", "path":"/api/v2/stream",
+//	 "carrier":"auto|veil|drift", "path":"/api/v2/stream",
 //	 "pub":"<hex>", "psk":"<hex>", "socks":"127.0.0.1:10808"}
 //
 // Point OS proxy / VPN routing at the returned SOCKS port.

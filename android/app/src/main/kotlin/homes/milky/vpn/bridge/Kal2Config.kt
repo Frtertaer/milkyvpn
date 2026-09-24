@@ -11,8 +11,13 @@ object Kal2Config {
     fun isKal2(p: ProfileSpec): Boolean = p.protocol.equals("kal2", ignoreCase = true)
 
     fun toJson(p: ProfileSpec): JSONObject {
-        // A 'relay' link still speaks a normal last-hop carrier (veil by default).
-        val carrier = if (p.network.equals("drift", ignoreCase = true)) "drift" else "veil"
+        // "auto" hedges veil+drift in parallel inside the native core — default
+        // for plain kal2:// links; an explicit carrier is honored.
+        val carrier = when (p.network.lowercase()) {
+            "drift" -> "drift"
+            "veil" -> "veil"
+            else -> "auto"
+        }
         return JSONObject()
             .put("addr", "${p.address}:${p.port}")
             .put("sni", p.sni ?: "")

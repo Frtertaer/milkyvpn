@@ -34,7 +34,7 @@ func main() {
 	sni := flag.String("sni", "", "TLS SNI")
 	pub := flag.String("pub", "", "server ed25519 pub (hex)")
 	psk := flag.String("psk", "", "user PSK (hex|b64)")
-	carrier := flag.String("carrier", "veil", "veil|drift")
+	carrier := flag.String("carrier", "auto", "auto|veil|drift")
 	driftPath := flag.String("drift", "", "drift path")
 	socks := flag.String("socks", "127.0.0.1:10808", "local socks listen")
 	fetch := flag.String("fetch", "", "fetch URL through tunnel and exit")

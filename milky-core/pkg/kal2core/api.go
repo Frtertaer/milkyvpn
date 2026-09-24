@@ -12,6 +12,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -55,7 +56,7 @@ type ClientConfig struct {
 	SNI       string   // TLS SNI (server domain)
 	ServerPub []byte   // server Ed25519 public key (32B)
 	PSK       []byte   // per-user PSK (32B)
-	Carrier   string   // "veil" (default) or "drift"
+	Carrier   string   // "veil" (default), "drift", "auto" (hedged), or "a,b" list
 	DriftPath string   // secret path when Carrier=drift
 	// DialContext overrides the base TCP dial (e.g. via HTTP CONNECT proxy).
 	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -200,15 +201,89 @@ func endpoints(cfg ClientConfig) []string {
 	return []string{cfg.Addr}
 }
 
+// carriers expands the Carrier field into the concrete carriers to try.
+// "auto" (or empty) hedges across veil and drift: both are dialed in
+// parallel and the first session that completes wins — during throttling
+// windows one carrier usually still squeezes through (observed live: veil
+// dials timed out while drift completed).
+func carriers(cfg ClientConfig) []string {
+	c := strings.TrimSpace(cfg.Carrier)
+	if c == "" || c == "auto" {
+		return []string{"veil", "drift"}
+	}
+	parts := strings.Split(c, ",")
+	out := parts[:0]
+	for _, p := range parts {
+		if t := strings.TrimSpace(p); t != "" {
+			out = append(out, t)
+		}
+	}
+	if len(out) == 0 {
+		return []string{"veil"}
+	}
+	return out
+}
+
+// dialHedged races the candidate carriers for one endpoint and returns the
+// first successful session; losing sessions are closed when they finish.
+func dialHedged(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+	cs := carriers(cfg)
+	if len(cs) == 1 {
+		c2 := cfg
+		c2.Carrier = cs[0]
+		return dialOneFn(ctx, c2)
+	}
+	type result struct {
+		s   *kal2.Session
+		err error
+	}
+	ch := make(chan result, len(cs))
+	sub, cancel := context.WithCancel(ctx)
+	for _, name := range cs {
+		go func(name string) {
+			c2 := cfg
+			c2.Carrier = name
+			s, err := dialOneFn(sub, c2)
+			ch <- result{s, err}
+		}(name)
+	}
+	var lastErr error
+	pending := len(cs)
+	for pending > 0 {
+		select {
+		case r := <-ch:
+			pending--
+			if r.err == nil {
+				cancel()
+				// Drain late completions so a slow winner's session is closed.
+				go func() {
+					for i := 0; i < pending; i++ {
+						if r := <-ch; r.s != nil {
+							_ = r.s.Close()
+						}
+					}
+				}()
+				return r.s, nil
+			}
+			lastErr = r.err
+		case <-ctx.Done():
+			cancel()
+			return nil, ctx.Err()
+		}
+	}
+	cancel()
+	return nil, lastErr
+}
+
 // dialAny walks the endpoint list starting at index start, returning the
-// first session that completes the handshake.
+// first session that completes the handshake (hedged across carriers).
 func dialAny(ctx context.Context, cfg ClientConfig, start int) (*kal2.Session, error) {
 	addrs := endpoints(cfg)
 	var lastErr error
 	for i := range addrs {
 		c2 := cfg
 		c2.Addr = addrs[(start+i)%len(addrs)]
-		s, err := dialOne(ctx, c2)
+		s, err := dialHedged(ctx, c2)
 		if err == nil {
 			return s, nil
 		}
@@ -219,6 +294,9 @@ func dialAny(ctx context.Context, cfg ClientConfig, start int) (*kal2.Session, e
 	}
 	return nil, lastErr
 }
+
+// dialOneFn is the per-carrier dialer (a var for tests).
+var dialOneFn = dialOne
 
 func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 	cc := carrier.ClientConfig{
