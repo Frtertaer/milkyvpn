@@ -228,7 +228,7 @@ class VpnProfile {
         // SIP002 plugins (v2ray-plugin, obfs-local) have no engine equivalent.
         return plugin == null || plugin!.isEmpty;
       case ProfileKind.kal2:
-        // Executable where the native core is present (Android: libkal2.so in
+        // Executable where the native core is present (Android: libcore.so in
         // the APK); requires the server public key alongside the PSK.
         return publicKey != null && publicKey!.isNotEmpty;
       case ProfileKind.other:
