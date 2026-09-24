@@ -136,12 +136,48 @@ CDN, multi-domain) handles the rest.
   on carrier loss (RST, idle kill, roaming) with 1s→30s backoff + jitter,
   and SOCKS resolves the session per-CONNECT, so requests in the gap are
   refused fast while post-redial opens see a live session.
-- `mobile`: gomobile API `Start(configJSON) → {socksPort, error}` for the
-  Flutter app; Xray keeps serving legacy protocols side-by-side. One muxed
-  session per device is battery-friendly vs per-conn sockets, and drift
-  survives NAT timeouts/roaming better than UDP carriers.
 - `subparse`: `kal2://` share link + generic subscription decoding
   (base64 line lists, JSON) consumed by the app parser.
+- `mobile` (`pkg/kal2mobile`): `Start(configJSON) → {socksPort, error}` —
+  dials a session, serves SOCKS5 on a fixed loopback port, enables the
+  reconnect watchdog; `Stop`/`Alive`/`SetLogger` for lifecycle and logcat.
+  One muxed session per device is battery-friendly vs per-conn sockets,
+  and drift survives NAT timeouts/roaming better than UDP carriers.
+- `android` (`cmd/kal2native` → `libkal2.so`): JNI exports for
+  `homes.milky.vpn.kal2.Kal2Core` (`nativeStart(json) → port`,
+  `nativeStop`, `nativeAlive`, `nativeLastError`). Shipped in the APK via
+  `android/app/src/main/jniLibs/{arm64-v8a,armeabi-v7a,x86_64}/`.
+  Integration path: `MilkyVpnService` starts kal2 first, then builds the
+  Xray config with its `proxy` outbound pointing at
+  `socks://127.0.0.1:<kal2Port>` — the existing TUN stack bridges device
+  traffic onto the kal2 session, so legacy protocols keep working
+  side-by-side with no new native dependencies.
+- Build (per ABI, NDK 26+): `GOOS=android GOARCH=<arm64|arm|amd64>
+  CGO_ENABLED=1 CC=<ndk>/bin/<triplet>26-clang garble build -trimpath
+  -buildmode=c-shared -o libkal2.so ./cmd/kal2native`
+- gomobile AAR was evaluated and dropped: a second gomobile artifact
+  collides with libv2ray.aar (same `libgojni.so` name, duplicate `go/Seq`
+  classes). The c-shared .so keeps exactly one JNI surface.
+
+## Binary protection
+
+Client binaries are shipped to hostile analysts by definition, so the
+goal is raising the cost of reversing, not preventing it — the real
+confidentiality boundary is the wire (real TLS + decoy site + keyed
+drift path), which is why protocol mechanics don't need to stay secret.
+
+- `garble` obfuscates every kal2 package built into `libkal2.so`:
+  package paths, symbol names and string literals are hidden
+  (`strings libkal2.so` shows no `kal2`, `/api/v2`, `driftPath`).
+- Release CLI builds additionally use `-trimpath -ldflags "-s -w"`
+  (no symbols, no source paths).
+- The R8/ProGuard release pipeline covers the Kotlin glue
+  (`homes.milky.vpn.**` keep rules already in `proguard-rules.pro`).
+
+What this does NOT do: a determined analyst with the APK can still
+single-step JNI calls and recover protocol shape. Honest boundary —
+anyone promising "cannot be reverse-engineered" for a shipped client is
+selling marketing, not engineering.
 
 ## Out of scope v1
 

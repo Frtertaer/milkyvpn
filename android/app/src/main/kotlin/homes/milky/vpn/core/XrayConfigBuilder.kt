@@ -26,7 +26,8 @@ object XrayConfigBuilder {
     const val TUN_DNS_2 = "8.8.8.8"
 
     /** Transports that are genuinely executable by this engine. */
-    val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2", "vmess", "trojan", "ss", "shadowsocks")
+    val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2", "vmess", "trojan", "ss", "shadowsocks", "kal2")
+    val SUPPORTED_KAL2_CARRIERS = setOf("veil", "drift", "relay")
     val SUPPORTED_VLESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
     val SUPPORTED_VLESS_SECURITY = setOf("reality", "tls", "none")
     val SUPPORTED_VMESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
@@ -136,6 +137,11 @@ object XrayConfigBuilder {
         if (p.port !in 1..65535) throw UnsupportedProfileException("port")
         if (p.secret.isBlank()) throw UnsupportedProfileException("credential")
         when (p.protocol) {
+            "kal2" -> {
+                if (p.publicKey.isNullOrBlank()) throw UnsupportedProfileException("kal2.pub")
+                if (p.network.lowercase() !in SUPPORTED_KAL2_CARRIERS)
+                    throw UnsupportedProfileException("kal2.carrier")
+            }
             "vless" -> {
                 val net = normalizeNetwork(p.network)
                 if (net !in SUPPORTED_VLESS_NETWORKS) throw UnsupportedProfileException("network")
@@ -170,14 +176,20 @@ object XrayConfigBuilder {
 
     /**
      * @param tunEnabled when false, only a local SOCKS inbound is created (used by MeasureOutboundDelay).
+     * @param kal2SocksPort loopback SOCKS port of the already-running KAL/2 client; required
+     *        when [p.protocol] is "kal2" — the proxy outbound then points at that local bridge
+     *        instead of speaking to the server directly.
      */
     fun build(
         p: ProfileSpec,
         tunEnabled: Boolean = true,
         socksPort: Int = 10808,
         resolvedServerIps: List<String> = emptyList(),
+        kal2SocksPort: Int? = null,
     ): JSONObject {
         validate(p)
+        if (p.protocol == "kal2" && kal2SocksPort == null)
+            throw UnsupportedProfileException("kal2.port")
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning").put("access", "none"))
 
@@ -209,8 +221,8 @@ object XrayConfigBuilder {
 
         // --- outbounds ---
         val outbounds = JSONArray()
-        val proxy = buildProxyOutbound(p)
-        if (resolvedServerIps.isNotEmpty() && !isIpLiteral(p.address)) {
+        val proxy = buildProxyOutbound(p, kal2SocksPort)
+        if (resolvedServerIps.isNotEmpty() && !isIpLiteral(p.address) && proxy.has("streamSettings")) {
             proxy.getJSONObject("streamSettings")
                 .put("sockopt", JSONObject().put("domainStrategy", "UseIP"))
         }
@@ -278,10 +290,23 @@ object XrayConfigBuilder {
         return root
     }
 
-    private fun buildProxyOutbound(p: ProfileSpec): JSONObject {
+    private fun buildProxyOutbound(p: ProfileSpec, kal2SocksPort: Int? = null): JSONObject {
         val ob = JSONObject().put("tag", "proxy")
         val stream = JSONObject()
         when (p.protocol) {
+            "kal2" -> {
+                // The KAL/2 native client (libkal2.so) owns the tunnel session and serves
+                // plain SOCKS5 on loopback; Xray's TUN stack is bridged onto it.
+                ob.put("protocol", "socks")
+                ob.put(
+                    "settings", JSONObject().put(
+                        "servers", JSONArray().put(
+                            JSONObject().put("address", "127.0.0.1").put("port", kal2SocksPort)
+                        )
+                    )
+                )
+                return ob // no streamSettings on a socks outbound
+            }
             "vless" -> {
                 ob.put("protocol", "vless")
                 val user = JSONObject().put("id", p.secret).put("encryption", "none").put("level", 8)

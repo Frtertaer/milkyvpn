@@ -206,8 +206,8 @@ void main() {
         '9f0dfb763d6fbdb2fa0f0b1f2fb6fd2f3d8e9ca681c523241c63434d41c76c8f',
       );
       expect(p.path, '/api/v2/stream');
-      // Native kal2 engine is not wired yet: parsed but not executable.
-      expect(p.isStaticCompatible, isFalse);
+      // kal2 native engine (libkal2.so) is bundled on Android: executable.
+      expect(p.isStaticCompatible, isTrue);
       // bad carrier rejected
       expect(
         parser.parseLine('kal2://psk@h.example:443?carrier=bogus'),
