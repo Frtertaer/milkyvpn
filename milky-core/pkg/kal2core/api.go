@@ -9,8 +9,11 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
+	"math/rand/v2"
 	"net"
 	"net/http"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/carrier"
@@ -47,20 +50,37 @@ type User struct {
 
 // ClientConfig configures dialing a kal2 server.
 type ClientConfig struct {
-	Addr      string // host:port of server or relay
-	SNI       string // TLS SNI (server domain)
-	ServerPub []byte // server Ed25519 public key (32B)
-	PSK       []byte // per-user PSK (32B)
-	Carrier   string // "veil" (default) or "drift"
-	DriftPath string // secret path when Carrier=drift
+	Addr      string   // host:port of server or relay
+	Addrs     []string // endpoint list — tried in rotating order; overrides Addr
+	SNI       string   // TLS SNI (server domain)
+	ServerPub []byte   // server Ed25519 public key (32B)
+	PSK       []byte   // per-user PSK (32B)
+	Carrier   string   // "veil" (default) or "drift"
+	DriftPath string   // secret path when Carrier=drift
 	// DialContext overrides the base TCP dial (e.g. via HTTP CONNECT proxy).
 	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
 	HandshakeTimeout time.Duration
+	Logf             func(string, ...any)
 }
 
-// Client is an established kal2 tunnel end.
+// Client is an established kal2 tunnel end. When EnableReconnect is running,
+// Sess is swapped on each redial — read it through Session().
 type Client struct {
 	Sess *kal2.Session
+
+	cfg      ClientConfig
+	logf     func(string, ...any)
+	mu       sync.Mutex
+	stop     chan struct{}
+	stopOnce sync.Once
+	rrIdx    atomic.Int32
+}
+
+// Session returns the current session, or nil between loss and redial.
+func (c *Client) Session() *kal2.Session {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.Sess
 }
 
 // DecodeKey accepts hex or base64 key material.
@@ -159,8 +179,48 @@ func Serve(cfg ServerConfig) error {
 	return v.Serve(ln)
 }
 
-// Dial establishes a kal2 session using the configured carrier.
+// Dial establishes a kal2 session using the configured carrier, trying each
+// endpoint in Addrs (or Addr) in order.
 func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
+	sess, err := dialAny(ctx, cfg, 0)
+	if err != nil {
+		return nil, err
+	}
+	logf := cfg.Logf
+	if logf == nil {
+		logf = func(string, ...any) {}
+	}
+	return &Client{Sess: sess, cfg: cfg, logf: logf, stop: make(chan struct{})}, nil
+}
+
+func endpoints(cfg ClientConfig) []string {
+	if len(cfg.Addrs) > 0 {
+		return cfg.Addrs
+	}
+	return []string{cfg.Addr}
+}
+
+// dialAny walks the endpoint list starting at index start, returning the
+// first session that completes the handshake.
+func dialAny(ctx context.Context, cfg ClientConfig, start int) (*kal2.Session, error) {
+	addrs := endpoints(cfg)
+	var lastErr error
+	for i := range addrs {
+		c2 := cfg
+		c2.Addr = addrs[(start+i)%len(addrs)]
+		s, err := dialOne(ctx, c2)
+		if err == nil {
+			return s, nil
+		}
+		lastErr = err
+		if ctx.Err() != nil {
+			return nil, ctx.Err()
+		}
+	}
+	return nil, lastErr
+}
+
+func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 	cc := carrier.ClientConfig{
 		Addr:             cfg.Addr,
 		SNI:              cfg.SNI,
@@ -172,38 +232,103 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	switch cfg.Carrier {
 	case "", "veil":
 		s, _, err := carrier.DialVeil(ctx, cc)
-		if err != nil {
-			return nil, err
-		}
-		return &Client{Sess: s}, nil
+		return s, err
 	case "drift":
 		s, _, err := carrier.DialDrift(ctx, cc, cfg.DriftPath)
-		if err != nil {
-			return nil, err
-		}
-		return &Client{Sess: s}, nil
+		return s, err
 	default:
 		return nil, fmt.Errorf("unknown carrier %q", cfg.Carrier)
 	}
 }
 
-// ServeSocks exposes a local SOCKS5 proxy that forwards through the session.
+// EnableReconnect starts the session watchdog: when the carrier connection
+// dies (TSPU reset, idle kill, mobile roaming), the client re-dials over the
+// endpoint list with backoff+jitter and swaps in the new session; SOCKS
+// connections opened during the gap are refused fast, ones after see a live
+// session again.
+func (c *Client) EnableReconnect() {
+	go c.reconnectLoop()
+}
+
+func (c *Client) reconnectLoop() {
+	for {
+		sess := c.Session()
+		if sess == nil {
+			return
+		}
+		select {
+		case <-sess.WaitClosed():
+		case <-c.stop:
+			return
+		}
+		c.mu.Lock()
+		if c.Sess == sess {
+			c.Sess = nil
+		}
+		c.mu.Unlock()
+		c.logf("kal2: session lost; redialing")
+		backoff := time.Second
+		for {
+			select {
+			case <-c.stop:
+				return
+			case <-time.After(backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))):
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)))
+			cancel()
+			if err == nil {
+				c.mu.Lock()
+				if c.Sess == nil {
+					c.Sess = s
+				} else {
+					_ = s.Close() // concurrent swap won; keep it
+				}
+				c.mu.Unlock()
+				c.logf("kal2: session restored")
+				break
+			}
+			c.logf("kal2: redial failed: %v", err)
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+		}
+	}
+}
+
+// ServeSocks exposes a local SOCKS5 proxy that forwards through whichever
+// session is live — survives reconnects.
 func (c *Client) ServeSocks(laddr string) (net.Listener, error) {
 	ln, err := net.Listen("tcp", laddr)
 	if err != nil {
 		return nil, err
 	}
-	go func() { _ = core.ServeSOCKS5(c.Sess, ln) }()
+	go func() { _ = core.ServeSOCKS5(c.Session, ln) }()
 	return ln, nil
 }
 
 // Ping checks liveness.
 func (c *Client) Ping(ctx context.Context) error {
-	return core.PingSession(ctx, c.Sess)
+	s := c.Session()
+	if s == nil {
+		return fmt.Errorf("kal2: no live session")
+	}
+	return core.PingSession(ctx, s)
 }
 
-// Close ends the session.
-func (c *Client) Close() error { return c.Sess.Close() }
+// Close ends the session and stops the reconnect watchdog.
+func (c *Client) Close() error {
+	var err error
+	c.stopOnce.Do(func() {
+		if c.stop != nil {
+			close(c.stop)
+		}
+		if s := c.Session(); s != nil {
+			err = s.Close()
+		}
+	})
+	return err
+}
 
 func toCarrierUsers(in []User) []carrier.User {
 	out := make([]carrier.User, len(in))

@@ -88,6 +88,18 @@ the entry point cannot be found by path enumeration or active probing.
 Chrome UA, chunk-padded bodies, POST/PUT/PATCH allowed. Over CDN this is
 ordinary long-poll API traffic.
 
+**Fronting.** Because drift is plain h2-over-TLS, it can sit behind any
+h2-capable CDN (e.g. Cloudflare): point the domain at the CDN, then dial the
+edge (`-addr <edge-ip> -sni <domain>`). DPI sees traffic to a whitelisted CDN
+IP; the keyed path still authenticates, and the session is bound by the inner
+flight, not the outer channel (drift exporter binding is nil by design).
+Veil cannot be CDN-fronted — TLS terminates at the edge.
+
+**DNS independence.** The client dials IP literals + SNI; DNS never
+participates in the tunnel path, and proxied names resolve at the egress.
+DoT/DoH shutdowns and resolver poisoning cannot reach it — subscriptions are
+the only component that uses system DNS (fetchable via IP or alternate host).
+
 ## Active-scan resistance
 
 Defense layers against probing/scanning of the listener:
@@ -115,11 +127,19 @@ CDN, multi-domain) handles the rest.
 ## Application core shape
 
 - `kal2-server`: multi-carrier listener (veil+drift+relay modes), user
-  registry (id→PSK), egress allow/deny policy, systemd unit.
-- `kal2-client`: local SOCKS5 entry (loopback), one muxed session,
-  endpoint list with failover scoring, optional chain via relay.
+  registry (id→PSK), egress allow/deny policy, systemd unit. Egress hosts
+  should run BBR+fq (`net.ipv4.tcp_congestion_control=bbr`,
+  `net.core.default_qdisc=fq`); splice paths use 64 KiB copy buffers.
+- `kal2-client`: local SOCKS5 entry (loopback), one muxed session. `-addr`
+  takes a comma-separated endpoint list (direct IP, domestic relay, CDN
+  edge); dial and redial rotate through it. The reconnect watchdog re-dials
+  on carrier loss (RST, idle kill, roaming) with 1s→30s backoff + jitter,
+  and SOCKS resolves the session per-CONNECT, so requests in the gap are
+  refused fast while post-redial opens see a live session.
 - `mobile`: gomobile API `Start(configJSON) → {socksPort, error}` for the
-  Flutter app; Xray keeps serving legacy protocols side-by-side.
+  Flutter app; Xray keeps serving legacy protocols side-by-side. One muxed
+  session per device is battery-friendly vs per-conn sockets, and drift
+  survives NAT timeouts/roaming better than UDP carriers.
 - `subparse`: `kal2://` share link + generic subscription decoding
   (base64 line lists, JSON) consumed by the app parser.
 

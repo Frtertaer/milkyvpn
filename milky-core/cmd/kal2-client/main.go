@@ -5,6 +5,10 @@
 //	kal2-client -addr kal.example.dev:443 -sni kal.example.dev \
 //	  -pub <hex> -psk <hex|b64> [-carrier drift] [-socks 127.0.0.1:10808] \
 //	  [-fetch https://ifconfig.me]
+//
+// -addr accepts a comma-separated endpoint list (e.g. direct IP, domestic
+// relay, CDN edge): dial tries them in rotating order and the reconnect
+// watchdog rotates through them after a drop.
 package main
 
 import (
@@ -26,7 +30,7 @@ import (
 )
 
 func main() {
-	addr := flag.String("addr", "", "server host:port")
+	addr := flag.String("addr", "", "server host:port (comma list for failover)")
 	sni := flag.String("sni", "", "TLS SNI")
 	pub := flag.String("pub", "", "server ed25519 pub (hex)")
 	psk := flag.String("psk", "", "user PSK (hex|b64)")
@@ -49,16 +53,27 @@ func main() {
 		log.Fatal("need -addr")
 	}
 	if *sni == "" {
-		*sni, _, _ = net.SplitHostPort(*addr)
+		*sni, _, _ = net.SplitHostPort(strings.TrimSpace(strings.Split(*addr, ",")[0]))
 	}
 
+	var addrs []string
+	for _, a := range strings.Split(*addr, ",") {
+		if a = strings.TrimSpace(a); a != "" {
+			addrs = append(addrs, a)
+		}
+	}
+	if len(addrs) == 0 {
+		log.Fatal("need -addr")
+	}
 	cfg := kal2core.ClientConfig{
-		Addr:      *addr,
+		Addr:      addrs[0],
+		Addrs:     addrs,
 		SNI:       *sni,
 		ServerPub: serverPub,
 		PSK:       userPSK,
 		Carrier:   *carrier,
 		DriftPath: *driftPath,
+		Logf:      log.Printf,
 	}
 	if *proxyURL != "" {
 		d, err := httpConnectDialer(*proxyURL)
@@ -92,7 +107,8 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	log.Printf("kal2: socks5 on %s", ln.Addr())
+	cli.EnableReconnect()
+	log.Printf("kal2: socks5 on %s (reconnect watchdog on)", ln.Addr())
 	select {}
 }
 

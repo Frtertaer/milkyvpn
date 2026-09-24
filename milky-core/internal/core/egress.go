@@ -44,8 +44,8 @@ func ServeEgress(sess *kal2.Session, dialer *net.Dialer, logf func(string, ...an
 			}
 			defer up.Close()
 			errCh := make(chan struct{}, 2)
-			go func() { _, _ = io.Copy(up, st); errCh <- struct{}{} }()
-			go func() { _, _ = io.Copy(st, up); errCh <- struct{}{} }()
+			go func() { _, _ = io.CopyBuffer(up, st, make([]byte, 1<<16)); errCh <- struct{}{} }()
+			go func() { _, _ = io.CopyBuffer(st, up, make([]byte, 1<<16)); errCh <- struct{}{} }()
 			<-errCh
 		}()
 	}

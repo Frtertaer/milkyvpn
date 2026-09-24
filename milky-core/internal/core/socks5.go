@@ -12,19 +12,20 @@ import (
 )
 
 // ServeSOCKS5 runs a minimal SOCKS5 (CONNECT, no-auth) listener on ln; every
-// CONNECT is opened through sess. This is the local ingress the app exposes
-// to the OS or per-app proxy settings.
-func ServeSOCKS5(sess *kal2.Session, ln net.Listener) error {
+// CONNECT is opened through the session returned by sessFn — resolved per
+// connection so reconnects swap in a live session instead of leaving a dead
+// one bound forever.
+func ServeSOCKS5(sessFn func() *kal2.Session, ln net.Listener) error {
 	for {
 		c, err := ln.Accept()
 		if err != nil {
 			return err
 		}
-		go handleSocks(c, sess)
+		go handleSocks(c, sessFn)
 	}
 }
 
-func handleSocks(c net.Conn, sess *kal2.Session) {
+func handleSocks(c net.Conn, sessFn func() *kal2.Session) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(15 * time.Second))
 	if err := socksHandshake(c); err != nil {
@@ -32,6 +33,11 @@ func handleSocks(c net.Conn, sess *kal2.Session) {
 	}
 	host, port, err := socksRequest(c)
 	if err != nil {
+		return
+	}
+	sess := sessFn()
+	if sess == nil {
+		socksReply(c, 0x05)
 		return
 	}
 	st, err := sess.Open(host, port, 15*time.Second)
@@ -45,8 +51,8 @@ func handleSocks(c net.Conn, sess *kal2.Session) {
 	}
 	_ = c.SetDeadline(time.Time{})
 	errCh := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(st, c); errCh <- struct{}{} }()
-	go func() { _, _ = io.Copy(c, st); errCh <- struct{}{} }()
+	go func() { _, _ = io.CopyBuffer(st, c, make([]byte, 1<<16)); errCh <- struct{}{} }()
+	go func() { _, _ = io.CopyBuffer(c, st, make([]byte, 1<<16)); errCh <- struct{}{} }()
 	<-errCh
 	st.Close()
 }
