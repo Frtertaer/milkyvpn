@@ -193,6 +193,28 @@ func TestDriftEndToEnd(t *testing.T) {
 	streamEchoTest(t, sess)
 }
 
+// The dial ctx must not bound the established session: the kal2-client passes
+// a short timeout ctx, and the h2 request IS the drift carrier — binding it
+// to ctx killed every session ~25s after dial (observed in the 24h RU soak).
+func TestDriftSessionOutlivesDialCtx(t *testing.T) {
+	ts := newTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 800*time.Millisecond)
+	defer cancel()
+	sess, _, err := DialDrift(ctx, ClientConfig{
+		Addr:               ts.ln.Addr().String(),
+		SNI:                "kal.test",
+		ServerPub:          ts.pub,
+		PSK:                ts.psk,
+		InsecureSkipVerify: true,
+	}, "")
+	if err != nil {
+		t.Fatalf("dial drift: %v", err)
+	}
+	defer sess.Close()
+	time.Sleep(1300 * time.Millisecond) // past the dial deadline
+	streamEchoTest(t, sess)
+}
+
 func TestDecoyHTTP(t *testing.T) {
 	ts := newTestServer(t)
 	raw, err := net.DialTimeout("tcp", ts.ln.Addr().String(), 5*time.Second)

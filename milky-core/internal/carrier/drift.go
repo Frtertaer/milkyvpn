@@ -189,7 +189,10 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 
 	pr, pw := io.Pipe()
 	url := "https://" + cfg.SNI + path
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, pr)
+	// The request IS the session carrier: its lifetime must be the session's,
+	// not the dial deadline's — ctx only bounds connect+handshake below (veil
+	// parity: there the ctx is dead weight once Attach runs).
+	req, err := http.NewRequestWithContext(context.WithoutCancel(ctx), http.MethodPost, url, pr)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -231,9 +234,11 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 		_ = pw.Close()
 		return nil, nil, fmt.Errorf("drift round trip: %w", err)
 	case <-ctx.Done():
+		_ = pr.Close()
 		_ = pw.Close()
 		return nil, nil, ctx.Err()
 	case <-time.After(to):
+		_ = pr.Close()
 		_ = pw.Close()
 		return nil, nil, fmt.Errorf("drift response timeout")
 	}
