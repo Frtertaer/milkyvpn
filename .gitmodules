@@ -1,6 +1,8 @@
 [submodule "happ"]
 	path = happ
 	url = https://github.com/Happ-proxy/happ-desktop.git
+	update = none
 [submodule "hiddify-app"]
 	path = hiddify-app
 	url = https://github.com/hiddify/hiddify-app.git
+	update = none
