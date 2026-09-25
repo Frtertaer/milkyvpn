@@ -344,6 +344,14 @@ func relayUDP(st *kal2.Stream, dialer *net.Dialer, cfg *EgressConfig, logf func(
 }
 
 // parseUDPHeader decodes [ATYP][addr][port][payload] into a UDPAddr + payload.
+// ParseUDPHeader is the exported wrapper for the TUN UDP forwarder.
+func ParseUDPHeader(b []byte) (*net.UDPAddr, []byte, error) { return parseUDPHeader(b) }
+
+// AppendUDPHeader is the exported wrapper for the TUN UDP forwarder.
+func AppendUDPHeader(dst []byte, addr net.Addr, payload []byte) []byte {
+	return appendUDPHeader(dst, addr, payload)
+}
+
 func parseUDPHeader(b []byte) (*net.UDPAddr, []byte, error) {
 	if len(b) < 4 {
 		return nil, nil, fmt.Errorf("short udp header")
