@@ -40,12 +40,17 @@ jobs:
             -o ../build/windows/x64/runner/Release/kal2/kal2-client.exe \
             ./cmd/kal2-client
 
-      - name: Build MilkyVPN-Setup.exe (iexpress)
+      - name: Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build MilkyVPN-Setup.exe (Inno)
         shell: pwsh
+        working-directory: installer
         run: |
-          & packaging\windows-installer\build-setup.ps1 `
-            -PayloadDir (Resolve-Path 'build\windows\x64\runner\Release') `
-            -OutDir (Resolve-Path '.')
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          & $iscc /Q windows.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC exited $LASTEXITCODE" }
+          Copy-Item '..\build\installer\MilkyVPN-Setup.exe' '..\MilkyVPN-Setup.exe'
 
       - name: Release
         uses: softprops/action-gh-release@v2
