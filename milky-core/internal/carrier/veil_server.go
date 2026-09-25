@@ -26,7 +26,7 @@ type User struct {
 
 // VeilConfig configures the real-TLS camouflaged listener.
 type VeilConfig struct {
-	// Domain is our own SNI served by Cert (e.g. kal.mergescribe.dev).
+	// Domain is our own SNI served by Cert (e.g. kal.example.com).
 	Domain string
 	// Cert is a real, publicly trusted certificate for Domain. Ignored when
 	// GetCertificate is set.
