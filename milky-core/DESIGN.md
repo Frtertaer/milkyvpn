@@ -1,9 +1,10 @@
-# Milky Core — KAL/2 protocol
+# Mirage core — KAL/2 protocol
 
 KAL/2 is the second wire version of the Kaleido research session, redesigned
 around what actually survives Russian filtering in 2026. The Python KAL/1
-prototype in `kaleido/` remains the lab reference; `milky-core` is the Go
-implementation intended for servers and for mobile embedding (gomobile AAR).
+prototype in `kaleido/` remains the lab reference; **Mirage core** (this module,
+`milky-core`) is the Go implementation intended for servers and for mobile
+embedding (gomobile AAR). See `CONSUMING.md` for the embedder's guide.
 
 ## Field research summary (Sept 2026)
 
