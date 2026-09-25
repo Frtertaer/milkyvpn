@@ -20,7 +20,8 @@ import homes.milky.vpn.MainActivity
 import homes.milky.vpn.R
 import homes.milky.vpn.core.XrayConfigBuilder
 import homes.milky.vpn.bridge.Kal2Config
-import homes.milky.vpn.bridge.NativeBridge
+import homes.milky.vpn.kal2.Kal2Service
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -84,7 +85,10 @@ class MilkyVpnService : VpnService() {
         }
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO +
+            CoroutineExceptionHandler { _, t -> SafeLog.w("service coroutine error", t) }
+    )
     private val mutex = Mutex()
     private val attempts = ConnectionAttemptGate()
     private var tunFd: ParcelFileDescriptor? = null
@@ -192,7 +196,7 @@ class MilkyVpnService : VpnService() {
             var kal2SocksPort: Int? = null
             if (Kal2Config.isKal2(spec)) {
                 trace.begin("KAL2_SESSION_STARTING")
-                kal2SocksPort = NativeBridge.start(Kal2Config.toJson(spec).toString())
+                kal2SocksPort = Kal2Service.startSession(this, Kal2Config.toJson(spec).toString())
                 trace.success("KAL2_SESSION_STARTED", "carrier=${spec.network.lowercase()}")
             }
 
@@ -409,7 +413,7 @@ class MilkyVpnService : VpnService() {
         }
         controller = null
         try {
-            NativeBridge.stop() // idempotent
+            Kal2Service.stopSession(this) // idempotent
         } catch (t: Throwable) {
             SafeLog.w("kal2 stop", t)
         }

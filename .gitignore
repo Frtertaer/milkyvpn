@@ -1,0 +1,28 @@
+# Flutter / Dart
+.dart_tool/
+.packages
+build/
+.flutter-plugins
+.flutter-plugins-dependencies
+*.iml
+.idea/
+.vscode/
+
+# Android
+android/.gradle/
+android/build/
+android/app/build/
+android/local.properties
+android/.kotlin/
+
+# Signing — NEVER commit production keys
+key.properties
+*.jks
+*.keystore
+
+# Logs
+*.log
+
+# Go build artifacts
+milky-core/dist/
+milky-core/.h

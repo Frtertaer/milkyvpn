@@ -6,7 +6,8 @@ import org.json.JSONObject
 /** Maps a parsed kal2:// profile to the JSON config the native core takes. */
 object Kal2Config {
     /** Loopback SOCKS endpoint the native client binds; must not collide with the app's own 10808. */
-    const val LOCAL_SOCKS = "127.0.0.1:11808"
+    const val LOCAL_SOCKS_PORT = 11808
+    const val LOCAL_SOCKS = "127.0.0.1:$LOCAL_SOCKS_PORT"
 
     fun isKal2(p: ProfileSpec): Boolean = p.protocol.equals("kal2", ignoreCase = true)
 
