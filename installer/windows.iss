@@ -37,3 +37,15 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Run]
 Filename: "{app}\{#MyAppExe}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: postinstall nowait skipifsilent
+
+[Code]
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+var
+  ResultCode: Integer;
+begin
+  Exec('powershell.exe', '-NoProfile -WindowStyle Hidden -Command "try { $c = New-Object System.Net.Sockets.TcpClient(''127.0.0.1'',11909); $w = New-Object System.IO.StreamWriter($c.GetStream()); $w.WriteLine(''stop''); $w.Flush(); Start-Sleep -Seconds 2; $c.Close() } catch {}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill.exe', '/F /IM kal2-client.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('taskkill.exe', '/F /IM milkyvpn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Sleep(1500);
+  Result := '';
+end;
