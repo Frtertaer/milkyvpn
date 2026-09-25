@@ -214,12 +214,12 @@ void main() {
 
       final result = parser.parse(body);
       expect(result.receivedEntryCount, 17);
-      expect(result.parsedProfileCount, 17);
-      expect(result.postDedupeProfileCount, 17);
+      expect(result.parsedProfileCount, 16);
+      expect(result.postDedupeProfileCount, 16);
       expect(result.droppedDuplicateCount, 0);
-      expect(result.malformedEntryCount, 0);
-      // 10 fixture + vmess + trojan + ss; ssr, grpc-vless, reality-no-pbk,
-      // ws+reality remain non-executable.
+      expect(result.malformedEntryCount, 1);
+      // 10 fixture + vmess + trojan + ss; the malformed ssr, grpc-vless,
+      // reality-no-pbk, ws+reality remain non-executable.
       expect(result.compatibleProfileCount, 13);
     });
   });

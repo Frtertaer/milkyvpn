@@ -950,10 +950,7 @@ class SubscriptionParser {
   /// sing-box outbound `{type, server, server_port, ...}` plus the v2ray JSON
   /// `{protocol, settings.vnext[0], streamSettings}` shape.
   VpnProfile? _profileFromOutbound(Map<String, dynamic> m) {
-    String? s(String k) {
-      final v = m[k];
-      return v == null ? null : v.toString();
-    }
+    String? s(String k) => m[k]?.toString();
 
     Map<String, dynamic>? sub(String k) {
       final v = m[k];
