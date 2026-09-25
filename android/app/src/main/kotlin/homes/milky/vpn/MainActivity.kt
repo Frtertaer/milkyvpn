@@ -111,7 +111,12 @@ class MainActivity : FlutterActivity() {
                                 result.error("busy", "prepare already in progress", null)
                             } else {
                                 pendingPrepareResult = result
-                                startActivityForResult(intent, REQ_VPN_PREPARE)
+                                try {
+                                    startActivityForResult(intent, REQ_VPN_PREPARE)
+                                } catch (e: Throwable) {
+                                    pendingPrepareResult = null
+                                    throw e
+                                }
                             }
                         }
                     }

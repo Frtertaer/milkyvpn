@@ -233,6 +233,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         '${device.platformLabel} ${device.osLabel}',
         'Core: $_core',
         'State: ${vpn.state.name}',
+        'Busy: ${vpn.isBusy ? 'yes' : 'no'}',
         'Profile: ${vpn.activeRemark ?? '-'}',
         'Last error: ${err?.diagnosticsCode ?? '-'}',
         'Category: ${err?.category.diagnosticsToken ?? MilkyFailureCategory.none.diagnosticsToken}',

@@ -193,6 +193,19 @@ class MilkyError {
       );
     }
 
+    // Platform-call timeouts from the bridge: `bridge_timeout:prepare`, …
+    final bridgeTimeout = RegExp(
+      r'^bridge_timeout:(.+)$',
+    ).firstMatch(raw.toLowerCase());
+    if (bridgeTimeout != null) {
+      return MilkyError(
+        kind: MilkyErrorKind.tunnelFailed,
+        diagnosticsCode: 'BRIDGE_TIMEOUT_${bridgeTimeout.group(1)!.toUpperCase()}',
+        category: MilkyFailureCategory.realDeviceFailure,
+        rawCode: raw,
+      );
+    }
+
     // Anything else is an implementation detail: a Go proxy error, an obfuscated class
     // name, a platform exception code. Never surface it — bucket it as a core failure.
     return MilkyError(
