@@ -188,12 +188,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     MilkyError? err,
   ) {
     return [
-      (
-        'Android',
-        device.osVersion.isEmpty
-            ? '?'
-            : '${device.osVersion} (API ${device.sdkInt})',
-      ),
+      (device.platformLabel, device.osLabel),
       (t.diagCore, _core),
       (t.diagState, vpn.state.name),
       (t.diagProfile, const Redactor().redact(vpn.activeRemark ?? t.diagNone)),
@@ -235,7 +230,7 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
     return r.redact(
       [
         'MilkyVPN $kAppVersion',
-        'Android ${device.osVersion.isEmpty ? '?' : device.osVersion} (API ${device.sdkInt})',
+        '${device.platformLabel} ${device.osLabel}',
         'Core: $_core',
         'State: ${vpn.state.name}',
         'Profile: ${vpn.activeRemark ?? '-'}',

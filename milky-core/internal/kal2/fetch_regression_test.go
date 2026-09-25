@@ -83,7 +83,7 @@ func TestStreamDataBeforeClose(t *testing.T) {
 		t.Fatalf("open: %v", err)
 	}
 	sst := <-accepted
-	want := []byte("23.133.88.167")
+	want := []byte("203.0.113.99")
 	if _, err := sst.Write(want); err != nil {
 		t.Fatalf("server write: %v", err)
 	}

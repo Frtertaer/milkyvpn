@@ -182,6 +182,17 @@ class MilkyError {
       );
     }
 
+    // Desktop bridge exit codes: `core_exit_1`, `core_exit_3221225781`, …
+    final coreExit = RegExp(r'^core_exit_(.+)$').firstMatch(raw.toLowerCase());
+    if (coreExit != null) {
+      return MilkyError(
+        kind: MilkyErrorKind.tunnelFailed,
+        diagnosticsCode: 'CORE_EXIT_${coreExit.group(1)}',
+        category: MilkyFailureCategory.coreFailure,
+        rawCode: raw,
+      );
+    }
+
     // Anything else is an implementation detail: a Go proxy error, an obfuscated class
     // name, a platform exception code. Never surface it — bucket it as a core failure.
     return MilkyError(
@@ -385,6 +396,27 @@ class MilkyError {
       MilkyErrorKind.unknown,
       'UNKNOWN_CONNECTION_ERROR',
       MilkyFailureCategory.none,
+    ),
+    // Desktop bridge codes (windows_vpn_bridge).
+    'connect_timeout': (
+      MilkyErrorKind.serverUnreachable,
+      'SERVER_UNREACHABLE',
+      MilkyFailureCategory.coreFailure,
+    ),
+    'core_start': (
+      MilkyErrorKind.tunnelFailed,
+      'VPN_CORE_START_FAILED',
+      MilkyFailureCategory.coreFailure,
+    ),
+    'core_exit': (
+      MilkyErrorKind.tunnelFailed,
+      'CORE_EXIT',
+      MilkyFailureCategory.coreFailure,
+    ),
+    'core_missing': (
+      MilkyErrorKind.tunnelFailed,
+      'CONFIG_ASSET_MISSING',
+      MilkyFailureCategory.configFailure,
     ),
 
     // --- user ------------------------------------------------------------

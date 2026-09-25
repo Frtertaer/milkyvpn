@@ -391,17 +391,17 @@ proxies:
 
     test('kal2 share link parses carrier and credentials', () {
       final p = parser.parseLine(
-        'kal2://4cce3cb266dce5f9330e906698fc503ea55f891e5ca84279086e4ae664430a79@23.133.88.167:443'
-        '?sni=kal.mergescribe.dev&pub=9f0dfb763d6fbdb2fa0f0b1f2fb6fd2f3d8e9ca681c523241c63434d41c76c8f'
+        'kal2://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@203.0.113.10:443'
+        '?sni=kal.example.com&pub=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210'
         '&carrier=drift&path=/api/v2/stream#US%20KAL2',
       )!;
       expect(p.protocol, 'kal2');
       expect(p.kind, ProfileKind.kal2);
       expect(p.network, 'drift');
-      expect(p.sni, 'kal.mergescribe.dev');
+      expect(p.sni, 'kal.example.com');
       expect(
         p.publicKey,
-        '9f0dfb763d6fbdb2fa0f0b1f2fb6fd2f3d8e9ca681c523241c63434d41c76c8f',
+        'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
       );
       expect(p.path, '/api/v2/stream');
       // kal2 native engine (libkal2.so) is bundled on Android: executable.
