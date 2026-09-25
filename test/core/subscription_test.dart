@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:milkyvpn/core/security/redactor.dart';
 import 'package:milkyvpn/core/security/subscription_url_policy.dart';
 import 'package:milkyvpn/core/storage/secure_store.dart';
+import 'package:milkyvpn/core/subscription/subscription_exporter.dart';
 import 'package:milkyvpn/core/subscription/subscription_parser.dart';
 import 'package:milkyvpn/core/subscription/subscription_repository.dart';
 import 'package:milkyvpn/core/subscription/vpn_profile.dart';
@@ -100,14 +101,211 @@ void main() {
 
     test('unsupported schemes counted but marked other', () {
       for (final line in [
-        'ssr://abc@h.example:443#x',
-        'tuic://abc@h.example:443#x',
-        'wireguard://abc@h.example:443#x',
         'socks://abc@h.example:443#x',
+        'http://abc@h.example:443#x',
+        'https://abc@h.example:443#x',
       ]) {
         final p = parser.parseLine(line);
         expect(p?.kind, ProfileKind.other, reason: line);
       }
+    });
+
+    test('ssr link parses method and packed obfs triplet', () {
+      String b64u(String s) => base64
+          .encode(utf8.encode(s))
+          .replaceAll('+', '-')
+          .replaceAll('/', '_')
+          .replaceAll('=', '');
+      final body =
+          'h.example:8388:auth_sha1_v4:aes-256-cfb:tls1.2_ticket_auth:${b64u('pass')}'
+          '/?obfsparam=${b64u('ob')}&protoparam=${b64u('pp')}&remarks=${b64u('SS-R')}';
+      final p = parser.parseLine('ssr://${b64u(body)}');
+      expect(p?.protocol, 'ssr');
+      expect(p?.cipher, 'aes-256-cfb');
+      expect(p?.secret, 'pass');
+      expect(p?.remark, 'SS-R');
+      expect(p?.plugin, 'ssr:auth_sha1_v4:tls1.2_ticket_auth:ob:pp');
+    });
+
+    test('tuic link parses uuid:password and transport extras', () {
+      const uuid = '00000001-0000-4000-8000-000000000001';
+      final p = parser.parseLine(
+        'tuic://$uuid:pw@h.example:443?congestion_control=bbr&udp_relay_mode=native&sni=t.example&alpn=h3#T',
+      );
+      expect(p?.protocol, 'tuic');
+      expect(p?.secret, '$uuid:pw');
+      expect(p?.sni, 't.example');
+      expect(p?.alpn, 'h3');
+      expect(p?.plugin, contains('congestion_control=bbr'));
+      expect(p?.plugin, contains('udp_relay_mode=native'));
+    });
+
+    test('wireguard link parses peer key and packed extras', () {
+      final p = parser.parseLine(
+        'wireguard://privkey@h.example:51820?publickey=peerkey&presharedkey=psk&address=10.0.0.2%2F24&mtu=1420#W',
+      );
+      expect(p?.protocol, 'wireguard');
+      expect(p?.secret, 'privkey');
+      expect(p?.publicKey, 'peerkey');
+      expect(p?.plugin, contains('pre_shared_key=psk'));
+      expect(p?.plugin, contains('local_address=10.0.0.2/24'));
+      expect(p?.plugin, contains('mtu=1420'));
+    });
+
+    test('sing-box JSON outbounds parse', () {
+      final body = jsonEncode({
+        'outbounds': [
+          {
+            'type': 'vless',
+            'tag': 'fin',
+            'server': '1.2.3.4',
+            'server_port': 443,
+            'uuid': '00000001-0000-4000-8000-000000000001',
+            'flow': 'xtls-rprx-vision',
+            'tls': {
+              'enabled': true,
+              'server_name': 'www.example.com',
+              'reality': {
+                'enabled': true,
+                'public_key': 'PUB',
+                'short_id': 'ab',
+              },
+            },
+          },
+          {
+            'type': 'shadowsocks',
+            'tag': 's',
+            'server': 'h.example',
+            'server_port': 8388,
+            'method': 'aes-256-gcm',
+            'password': 'pw',
+          },
+        ],
+      });
+      final r = parser.parse(body);
+      expect(r.profiles.length, 2);
+      expect(r.profiles[0].kind, ProfileKind.vlessRealityTcp);
+      expect(r.profiles[0].publicKey, 'PUB');
+      expect(r.profiles[0].remark, 'fin');
+      expect(r.profiles[1].protocol, 'ss');
+      expect(r.profiles[1].cipher, 'aes-256-gcm');
+    });
+
+    test('v2ray JSON outbound parses via vnext + streamSettings', () {
+      final body = jsonEncode({
+        'outbounds': [
+          {
+            'protocol': 'vmess',
+            'settings': {
+              'vnext': [
+                {
+                  'address': 'v.example',
+                  'port': 443,
+                  'users': [
+                    {'id': '00000001-0000-4000-8000-000000000001', 'alterId': 0},
+                  ],
+                },
+              ],
+            },
+            'streamSettings': {
+              'network': 'ws',
+              'security': 'tls',
+              'tlsSettings': {'serverName': 'cdn.example'},
+              'wsSettings': {
+                'path': '/ws',
+                'headers': {'Host': 'h.example'},
+              },
+            },
+          },
+        ],
+      });
+      final r = parser.parse(body);
+      expect(r.profiles.length, 1);
+      expect(r.profiles.single.protocol, 'vmess');
+      expect(r.profiles.single.network, 'ws');
+      expect(r.profiles.single.sni, 'cdn.example');
+      expect(r.profiles.single.host, 'h.example');
+      expect(r.profiles.single.path, '/ws');
+    });
+
+    test('clash YAML proxies parse', () {
+      const body = '''
+proxies:
+  - name: "clash-ss"
+    type: ss
+    server: h.example
+    port: 8388
+    cipher: aes-256-gcm
+    password: pw
+  - name: clash-hy2
+    type: hysteria2
+    server: hy.example
+    port: 443
+    password: hpw
+    sni: hy.example
+    obfs-password: ob
+''';
+      final r = parser.parse(body);
+      expect(r.profiles.length, 2);
+      expect(r.profiles[0].protocol, 'ss');
+      expect(r.profiles[0].remark, 'clash-ss');
+      expect(r.profiles[1].kind, ProfileKind.hysteria2);
+      expect(r.profiles[1].obfsPassword, 'ob');
+    });
+
+    test('export round-trip preserves identity for link protocols', () {
+      const links = [
+        'vless://00000001-0000-4000-8000-000000000001@h.example:443?security=reality&sni=www.example.com&fp=chrome&pbk=PUB&sid=ab&flow=xtls-rprx-vision&type=tcp#R',
+        'hy2://pw@hy.example:8443?sni=hy.example&obfs=salamander&obfs-password=ob#H',
+        'trojan://pw@t.example:443?sni=t.example&type=ws&host=h.example&path=%2Fws#T',
+        'kal2://psk@k.example:443?sni=k.example&pub=PUBK&carrier=veil&path=%2Fp#K',
+      ];
+      for (final link in links) {
+        final first = parser.parseLine(link);
+        expect(first, isNotNull, reason: link);
+        final exported = const SubscriptionExporter().toShareLink(first!);
+        expect(exported, isNotNull, reason: link);
+        final reparsed = parser.parseLine(exported!);
+        expect(reparsed, isNotNull, reason: exported);
+        expect(reparsed!.id, first.id, reason: exported);
+        expect(reparsed.protocol, first.protocol);
+        expect(reparsed.address, first.address);
+        expect(reparsed.port, first.port);
+        expect(reparsed.secret, first.secret);
+      }
+    });
+
+    test('export round-trip for vmess + ssr', () {
+      const vmess =
+          'vmess://eyJ2IjoiMiIsInBzIjoiTSIsImFkZCI6Im0uZXhhbXBsZSIsInBvcnQiOiI0NDMiLCJpZCI6IjAwMDAwMDAxLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImFpZCI6IjAiLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJob3N0IjoiaC5leGFtcGxlIiwicGF0aCI6Ii93cyIsInRscyI6InRscyIsInNuaSI6ImNkbi5leGFtcGxlIn0=';
+      final first = parser.parseLine(vmess)!;
+      final exported = const SubscriptionExporter().toShareLink(first)!;
+      final reparsed = parser.parseLine(exported)!;
+      expect(reparsed.id, first.id);
+
+      String b64u(String s) => base64
+          .encode(utf8.encode(s))
+          .replaceAll('+', '-')
+          .replaceAll('/', '_')
+          .replaceAll('=', '');
+      final ssrBody =
+          'h.example:8388:auth_sha1_v4:aes-256-cfb:tls1.2_ticket_auth:${b64u('pass')}/?remarks=${b64u('SS-R')}';
+      final ssr = parser.parseLine('ssr://${b64u(ssrBody)}')!;
+      final ssrExported = const SubscriptionExporter().toShareLink(ssr)!;
+      final ssrReparsed = parser.parseLine(ssrExported)!;
+      expect(ssrReparsed.secret, ssr.secret);
+      expect(ssrReparsed.cipher, ssr.cipher);
+      expect(ssrReparsed.plugin, ssr.plugin);
+    });
+
+    test('export subscription base64 decodes back to links', () {
+      const link =
+          'vless://00000001-0000-4000-8000-000000000001@h.example:443?security=reality&pbk=PUB&type=tcp#R';
+      final p = parser.parseLine(link)!;
+      final body = const SubscriptionExporter().exportSubscription([p]);
+      final decoded = utf8.decode(base64.decode(body));
+      expect(decoded.trim(), isNotEmpty);
+      expect(parser.parse(decoded).profiles.single.id, p.id);
     });
 
     test('vmess b64-json share link parses fields', () {

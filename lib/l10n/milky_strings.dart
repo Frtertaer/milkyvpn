@@ -251,6 +251,12 @@ class S {
   String get advanced => t('Дополнительно', 'Advanced');
   String get copyLink => t('Скопировать ссылку', 'Copy link');
   String get linkCopied => t('Ссылка скопирована', 'Link copied');
+  String get exportProfiles => t('Экспортировать профили', 'Export profiles');
+  String get exportProfilesHint => t(
+    'Скопировать все профили как ссылки для другого клиента',
+    'Copy all profiles as share links for another client',
+  );
+  String get profilesExported => t('Профили скопированы', 'Profiles copied');
   String get subscriptionEmptyTitle =>
       t('Подписки пока нет', 'No subscription yet');
   String get subscriptionEmptyBody => t(
