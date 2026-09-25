@@ -108,18 +108,21 @@ class WindowsProcessVpnBridge implements VpnBridge {
 
     final up = Completer<void>();
     final errLines = <String>[];
+    void onLine(String line) {
+      errLines.add(line);
+      if (errLines.length > 40) errLines.removeAt(0);
+      if (line.contains('session up') && !up.isCompleted) up.complete();
+    }
+
     final sub = proc.stdout
         .transform(utf8.decoder)
         .transform(const LineSplitter())
-        .listen((line) {
-          if (line.contains('session up') && !up.isCompleted) up.complete();
-        });
-    proc.stderr.transform(utf8.decoder).transform(const LineSplitter()).listen((
-      line,
-    ) {
-      errLines.add(line);
-      if (errLines.length > 40) errLines.removeAt(0);
-    });
+        .listen(onLine);
+    // 'session up' goes through log.Printf → stderr, not stdout.
+    final subErr = proc.stderr
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(onLine);
     unawaited(
       proc.exitCode.then((code) {
         _proc = null;
@@ -144,6 +147,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
       proc.kill();
       _proc = null;
       sub.cancel();
+      subErr.cancel();
       _set(
         const VpnSnapshot(state: VpnState.error, errorCode: 'connect_timeout'),
       );
@@ -153,6 +157,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
       );
     }
     sub.cancel();
+    subErr.cancel();
 
     await _applyProxy();
     _set(
