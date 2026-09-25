@@ -169,7 +169,10 @@ class SubscriptionRepository extends ChangeNotifier {
   String? _lastError;
 
   bool get isLoaded => _loaded;
-  bool get hasSubscription => _url != null;
+  /// Either a fetched subscription (has a URL) or a text-imported profile set
+  /// (snapshot only, nothing to refresh).
+  bool get hasSubscription =>
+      _url != null || (_snapshot?.profiles.isNotEmpty ?? false);
   SubscriptionSnapshot? get snapshot => _snapshot;
   String? get lastErrorClass => _lastError;
 
@@ -216,6 +219,28 @@ class SubscriptionRepository extends ChangeNotifier {
     _snapshot = snap;
     _lastError = null;
     await _store.write(_kUrl, url.toString());
+    await _store.write(_kSnapshot, _encodeSnapshot(snap));
+    notifyListeners();
+    return snap;
+  }
+
+  /// Imports share links pasted directly (kal2://, vless://, ss://…): the text is
+  /// parsed in place without a fetch, so there is no source URL to refresh against.
+  Future<SubscriptionSnapshot> importFromText(String rawText) async {
+    final result = _parser.parse(rawText);
+    final snap = SubscriptionSnapshot(
+      profiles: result.profiles,
+      updatedAt: DateTime.now().toUtc(),
+      totalEntries: result.receivedEntryCount,
+      malformedEntries: result.malformedEntryCount,
+      duplicateEntries: result.droppedDuplicateCount,
+      expiresAt: result.expiresAt,
+    );
+    if (snap.profiles.isEmpty) throw SubscriptionFetchException('no_profiles');
+    _url = null;
+    _snapshot = snap;
+    _lastError = null;
+    await _store.delete(_kUrl);
     await _store.write(_kSnapshot, _encodeSnapshot(snap));
     notifyListeners();
     return snap;

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io' show Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -12,6 +13,7 @@ import 'core/storage/secure_store.dart';
 import 'core/subscription/subscription_repository.dart';
 import 'core/vpn/vpn_bridge.dart';
 import 'core/vpn/vpn_controller.dart';
+import 'core/vpn/windows_vpn_bridge.dart';
 import 'design/milky_error_sheet.dart';
 import 'design/milky_motion.dart';
 import 'design/milky_theme.dart';
@@ -33,7 +35,9 @@ Future<void> main() async {
     ),
   );
   final settings = await AppSettings.load();
-  final bridge = MethodChannelVpnBridge();
+  final VpnBridge bridge = Platform.isWindows
+      ? WindowsProcessVpnBridge()
+      : MethodChannelVpnBridge();
   final repo = SubscriptionRepository(
     store: KeystoreSecureStore(),
     fetcher: HttpsSubscriptionFetcher(),

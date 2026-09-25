@@ -35,7 +35,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "homes.milky.vpn"
+        applicationId = "vpn.milky.app"
         // API 23 — Android 6 devices. Reads the pinned value from
         // gradle.properties: the Flutter tooling migrator rewrites integer
         // literals here to flutter.minSdkVersion, which is hardcoded to 24.
