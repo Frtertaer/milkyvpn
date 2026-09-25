@@ -33,6 +33,26 @@ class _MilkyShellState extends State<MilkyShell> {
     final vpn = context.watch<VpnController>();
 
     final dark = Theme.of(context).brightness == Brightness.dark;
+    final labels = [t.home, t.subscription, t.settings];
+    const icons = [
+      Icons.home_outlined,
+      Icons.layers_outlined,
+      Icons.tune_rounded,
+    ];
+    final pages = IndexedStack(
+      index: _tab,
+      children: [
+        TickerMode(
+          enabled: _tab == 0,
+          child: HomeScreen(key: const ValueKey('tab_home'), onOpenTab: _go),
+        ),
+        const SubscriptionScreen(key: ValueKey('tab_subscription')),
+        SettingsScreen(
+          key: const ValueKey('tab_settings'),
+          onOpenSubscription: () => _go(1),
+        ),
+      ],
+    );
     return AnnotatedRegion<SystemUiOverlayStyle>(
       value: SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
@@ -52,48 +72,50 @@ class _MilkyShellState extends State<MilkyShell> {
           backgroundColor: Colors.transparent,
           body: SafeArea(
             bottom: false,
-            child: Center(
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(
-                  maxWidth: 600,
-                  maxHeight: 960,
-                ),
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: IndexedStack(
-                        index: _tab,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                // Wide windows (desktop) get a side rail and real width;
+                // narrow windows keep the phone layout with a bottom bar.
+                final wide = constraints.maxWidth >= 900;
+                if (wide) {
+                  return Center(
+                    child: ConstrainedBox(
+                      constraints: const BoxConstraints(maxWidth: 1200),
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          TickerMode(
-                            enabled: _tab == 0,
-                            child: HomeScreen(
-                              key: const ValueKey('tab_home'),
-                              onOpenTab: _go,
-                            ),
+                          MilkyNavigationRail(
+                            index: _tab,
+                            onChanged: _go,
+                            labels: labels,
+                            icons: icons,
                           ),
-                          const SubscriptionScreen(
-                            key: ValueKey('tab_subscription'),
-                          ),
-                          SettingsScreen(
-                            key: const ValueKey('tab_settings'),
-                            onOpenSubscription: () => _go(1),
-                          ),
+                          Expanded(child: pages),
                         ],
                       ),
                     ),
-                    MilkyNavigationBar(
-                      index: _tab,
-                      onChanged: _go,
-                      labels: [t.home, t.subscription, t.settings],
-                      icons: const [
-                        Icons.home_outlined,
-                        Icons.layers_outlined,
-                        Icons.tune_rounded,
+                  );
+                }
+                return Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(
+                      maxWidth: 600,
+                      maxHeight: 960,
+                    ),
+                    child: Column(
+                      children: [
+                        Expanded(child: pages),
+                        MilkyNavigationBar(
+                          index: _tab,
+                          onChanged: _go,
+                          labels: labels,
+                          icons: icons,
+                        ),
                       ],
                     ),
-                  ],
-                ),
-              ),
+                  ),
+                );
+              },
             ),
           ),
         ),
