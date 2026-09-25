@@ -21,6 +21,7 @@ import homes.milky.vpn.R
 import homes.milky.vpn.core.XrayConfigBuilder
 import homes.milky.vpn.bridge.Kal2Config
 import homes.milky.vpn.bridge.NativeBridge
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -84,7 +85,10 @@ class MilkyVpnService : VpnService() {
         }
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO +
+            CoroutineExceptionHandler { _, t -> SafeLog.w("service coroutine error", t) }
+    )
     private val mutex = Mutex()
     private val attempts = ConnectionAttemptGate()
     private var tunFd: ParcelFileDescriptor? = null
