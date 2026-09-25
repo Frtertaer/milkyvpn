@@ -23,5 +23,5 @@ description: Run and UI-test the MilkyVPN Flutter app (Android-first codebase) o
 
 ## Local subscription fixtures vs the SSRF guard
 `SubscriptionUrlPolicy` rejects localhost/.local/.internal/.lan/.home suffixes and private/loopback/link-local IP *literals* — it inspects the URL string only, so `http://127.0.0.1:port/...` is rejected but a public-looking hostname mapped in `C:\Windows\System32\drivers\etc\hosts` to 127.0.0.1 passes (`feed.testfixture-example.com` works; the code documents this caveat). Serve fixtures with a tiny python HTTP server (`python` = C:\Python314\python.exe) and send `Subscription-Userinfo: expire=<unix>` to exercise the expiry path. Feed bodies may be plaintext URI lists or base64 — both decode.
-- Real feed for end-to-end: `https://sub.milky.homes/s/ZsnoPAVa16wWwA3hURXZizhcQsf1yYfv` → 16 profiles, all compatible, expiry ~2100.
+- Real feed for end-to-end: `https://sub.example.com/s/EXAMPLE_TOKEN_REPLACE_WITH_YOURS` → 16 profiles, all compatible, expiry ~2100.
 - Crafted mixed fixture: `test/fixtures/mixed_formats.txt` + server `C:\Users\Administrator\sub_server.py` (port 8811) → 9 parsed / 6 compatible / 1 malformed (covers vmess/trojan/ss/kal2 + tuic + plugin + garbage).
