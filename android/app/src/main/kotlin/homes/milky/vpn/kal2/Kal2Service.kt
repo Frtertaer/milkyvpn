@@ -33,9 +33,24 @@ import java.util.concurrent.TimeUnit
 class Kal2Service : Service() {
 
     private val binder = object : IKal2.Stub() {
-        override fun start(configJson: String): Int = NativeBridge.start(configJson)
+        @Volatile
+        private var lastError: String? = null
+
+        // Exceptions cannot cross a binder call (the framework reports only
+        // 'Exceptions are not yet supported across processes' and the caller
+        // sees a garbage return value) — map failures to <=0 plus lastError().
+        override fun start(configJson: String): Int = try {
+            NativeBridge.start(configJson).also { lastError = null }
+        } catch (t: Throwable) {
+            lastError = t.message ?: t.javaClass.simpleName
+            -1
+        }
+
         override fun stop() = NativeBridge.stop()
+
         override fun isAlive(): Boolean = NativeBridge.isAlive()
+
+        override fun lastError(): String? = lastError
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -78,7 +93,13 @@ class Kal2Service : Service() {
                 throw NativeBridge.StartException("kal2 bind timeout")
             }
             connection = conn
-            return remote!!.start(configJson)
+            val port = remote!!.start(configJson)
+            if (port <= 0) {
+                val err = runCatching { remote?.lastError() }.getOrNull()
+                runCatching { remote?.stop() }
+                throw NativeBridge.StartException(err ?: "kal2 start failed")
+            }
+            return port
         }
 
         /** Idempotent; safe when nothing is bound. */

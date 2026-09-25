@@ -4,4 +4,5 @@ interface IKal2 {
     int start(String configJson);
     void stop();
     boolean isAlive();
+    String lastError();
 }

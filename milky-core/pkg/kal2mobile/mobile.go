@@ -37,9 +37,10 @@ type mobileConfig struct {
 }
 
 var (
-	mu     sync.Mutex
-	client *kal2core.Client
-	logf   = func(string, ...any) {}
+	mu      sync.Mutex
+	client  *kal2core.Client
+	socksLn net.Listener
+	logf    = func(string, ...any) {}
 )
 
 // LogSink receives 'kal2: ...' log lines. gomobile cannot bind SetLogger
@@ -124,6 +125,7 @@ func Start(configJSON string) (int, error) {
 	}
 	cli.EnableReconnect()
 	client = cli
+	socksLn = ln
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 	p, _ := strconv.Atoi(port)
 	logf("core: up (%s)", ln.Addr())
@@ -141,6 +143,10 @@ func stopLocked() {
 	if client != nil {
 		_ = client.Close()
 		client = nil
+	}
+	if socksLn != nil {
+		_ = socksLn.Close()
+		socksLn = nil
 	}
 }
 
