@@ -1,132 +1,171 @@
 import Foundation
-import NetworkExtension
+import Network
 import os.log
 
-/// Drives `NEPacketTunnelFlow` reads/writes for the provider.
+/// Userspace tun2socks core.
 ///
-/// What this does today (scaffold):
-///   - Parses IPv4 headers and answers ICMPv4 echo requests locally, so the
-///     TUN path is verifiably alive end-to-end (`ping <tun peer>` replies).
-///   - Counts and drops TCP/UDP/other packets, emitting periodic summaries.
+/// Reads whole IP packets from the tunnel flow, demultiplexes them:
+///   - ICMPv4 echo / ICMPv6 echo → answered locally (liveness smoke test)
+///   - TCP → `TcpFlow` state machine, forwarded via SOCKS5 CONNECT
+///   - UDP → `UdpRelay` (DNS-over-TCP fast path for :53, else UDP ASSOCIATE)
+///   - anything else → counted and dropped
 ///
-/// What remains for real traffic: a userspace TCP/IP stack that terminates
-/// TCP flows and forwards them through SOCKS5 at `socksPort` on loopback —
-/// the classic tun2socks seam. On iOS the practical options are a gvisor
-/// netstack bound into the Go core (packets via a bound `PacketFlow`
-/// interface implemented in Swift) or vendoring a C stack such as
-/// hev-socks5-tunnel. See docs/ios-setup.md for the exact integration point.
-final class TunSocksBridge {
-    private let packetFlow: NEPacketTunnelFlow
-    private let socksPort: Int
+/// All flow state lives on `bridgeQueue`; SOCKS callbacks and packet reads
+/// are funnelled onto the same queue, so no locks are needed on flow state.
+final class TunSocksBridge: @unchecked Sendable {
+    let packetFlow: PacketChannel
+    private let socks: SocksClient
+    let bridgeQueue = DispatchQueue(label: "homes.milky.vpn.tun.bridge")
     private let logger = Logger(subsystem: "homes.milky.vpn.tunnel", category: "bridge")
-    private let lock = NSLock()
 
     private var running = false
+    private var tcpFlows: [TcpFlow.Key: TcpFlow] = [:]
+    private var udpRelay: UdpRelay?
     private var icmpEchoReplies = 0
-    private var droppedTCP = 0
-    private var droppedUDP = 0
     private var droppedOther = 0
     private var lastSummary = Date.distantPast
+    private var sweepTimer: DispatchSourceTimer?
 
-    init(packetFlow: NEPacketTunnelFlow, socksPort: Int) {
+    private static let maxFlows = 512
+
+    init(packetFlow: PacketChannel, socksPort: Int) {
         self.packetFlow = packetFlow
-        self.socksPort = socksPort
+        self.socks = SocksClient(socksPort: socksPort, queue: bridgeQueue)
     }
 
     func start() {
-        lock.lock()
-        running = true
-        lock.unlock()
-        logger.notice("bridge up, socks=127.0.0.1:\(self.socksPort)")
-        pump()
+        bridgeQueue.async {
+            self.running = true
+            self.udpRelay = UdpRelay(owner: self, queue: self.bridgeQueue, socks: self.socks)
+            self.logger.notice("bridge up, socks=127.0.0.1:\(self.socks.socksPort)")
+            self.pump()
+            self.startSweep()
+        }
     }
 
     func stop() {
-        lock.lock()
-        running = false
-        lock.unlock()
+        bridgeQueue.async {
+            self.running = false
+            self.sweepTimer?.cancel()
+            self.sweepTimer = nil
+            self.udpRelay?.closeAll()
+            for flow in self.tcpFlows.values { flow.forceClose() }
+            self.tcpFlows.removeAll()
+        }
     }
+
+    // MARK: - packet pump
 
     private func pump() {
         packetFlow.readPackets { [weak self] packets, protocols in
             guard let self = self else { return }
-            self.lock.lock()
-            let isRunning = self.running
-            self.lock.unlock()
-            guard isRunning else { return }
-
-            for (packet, proto) in zip(packets, protocols) {
-                self.handle(packet: packet, proto: proto)
+            self.bridgeQueue.async {
+                guard self.running else { return }
+                for (packet, proto) in zip(packets, protocols) {
+                    self.handle(packet: packet, proto: proto)
+                }
+                self.pump()
             }
-            self.pump()
         }
     }
 
     private func handle(packet: Data, proto: NSNumber) {
-        guard packet.count >= 20, packet[0] >> 4 == 4 else {
-            noteDrop(&droppedOther)
+        guard let ip = IPPacket.parse(packet) else {
+            noteDrop()
             return
         }
-        switch packet[9] {
-        case 1: // ICMP
-            if let reply = icmpEchoReply(to: packet) {
+        switch ip.proto {
+        case 1, 58: // ICMPv4 / ICMPv6
+            if let reply = icmpEchoReply(to: ip) {
                 icmpEchoReplies += 1
-                packetFlow.writePackets([reply], withProtocols: [NSNumber(value: AF_INET)])
+                emit(reply)
             } else {
-                noteDrop(&droppedOther)
+                noteDrop()
             }
         case 6:
-            noteDrop(&droppedTCP)
+            handleTCP(ip)
         case 17:
-            noteDrop(&droppedUDP)
+            guard let udp = UDPDatagram.parse(ip.payload) else { noteDrop(); return }
+            let (src, dst) = ip.addresses
+            udpRelay?.handle(udp: udp, src: src, dst: dst)
         default:
-            noteDrop(&droppedOther)
+            noteDrop()
         }
     }
 
-    private func noteDrop(_ counter: inout Int) {
-        counter += 1
-        if Date().timeIntervalSince(lastSummary) > 10 {
+    private func handleTCP(_ ip: IPPacket) {
+        guard let seg = TCPSegment.parse(ip.payload) else {
+            noteDrop()
+            return
+        }
+        let (src, dst) = ip.addresses
+        let key = TcpFlow.Key(src: src, dst: dst, srcPort: seg.srcPort, dstPort: seg.dstPort)
+        if let flow = tcpFlows[key] {
+            flow.handle(seg)
+            return
+        }
+        guard seg.flags & TCPSegment.SYN != 0, seg.flags & TCPSegment.ACK == 0 else {
+            return // mid-stream packet for an unknown flow: ignore
+        }
+        guard tcpFlows.count < Self.maxFlows else {
+            noteDrop()
+            return
+        }
+        let flow = TcpFlow(syn: seg, key: key, owner: self)
+        tcpFlows[key] = flow
+        // SYN|ACK immediately; SOCKS dial starts when the handshake ACK lands.
+        flow.handle(seg)
+    }
+
+    // MARK: - API used by flow objects (all on bridgeQueue)
+
+    func emit(_ ipPacket: Data) {
+        packetFlow.writePackets([ipPacket], withProtocols: [NSNumber(value: packetAF(ipPacket))])
+    }
+
+    private func packetAF(_ packet: Data) -> Int32 {
+        (packet.first ?? 0) >> 4 == 6 ? AF_INET6 : AF_INET
+    }
+
+    func connectSocks(dst: [UInt8], port: UInt16, done: @escaping (Result<NWConnection, Error>) -> Void) {
+        socks.connect(address: dst, port: port, done: done)
+    }
+
+    func flowClosed(_ flow: TcpFlow) {
+        tcpFlows.removeValue(forKey: flow.key)
+    }
+
+    func log(_ message: String) {
+        logger.notice("\(message, privacy: .public)")
+    }
+
+    // MARK: - maintenance
+
+    private func startSweep() {
+        let t = DispatchSource.makeTimerSource(queue: bridgeQueue)
+        t.schedule(deadline: .now() + 1, repeating: 1.0)
+        t.setEventHandler { [weak self] in self?.tick() }
+        sweepTimer = t
+        t.resume()
+    }
+
+    private func tick() {
+        guard running else { return }
+        var retransmits = 0
+        for flow in tcpFlows.values { retransmits += flow.retransmitTick() }
+        let cutoff = Date().addingTimeInterval(-300)
+        let stale = tcpFlows.values.filter { $0.isClosed || $0.lastTouch < cutoff }
+        for f in stale { f.forceClose() }
+        udpRelay?.sweep(olderThan: 120)
+        if Date().timeIntervalSince(lastSummary) > 15 {
             lastSummary = Date()
             logger.notice(
-                "drops: tcp=\(self.droppedTCP) udp=\(self.droppedUDP) other=\(self.droppedOther) icmp_echo=\(self.icmpEchoReplies)"
+                "tcp_flows=\(self.tcpFlows.count) icmp_echo=\(self.icmpEchoReplies) drops=\(self.droppedOther) retransmits=\(retransmits)"
             )
         }
     }
 
-    /// Builds an ICMPv4 echo reply for an echo request, nil otherwise.
-    private func icmpEchoReply(to packet: Data) -> Data? {
-        let ihl = Int(packet[0] & 0x0F) * 4
-        guard packet.count >= ihl + 8, packet[ihl] == 8 else { return nil }
-
-        var reply = packet
-        reply[12] = packet[16]; reply[13] = packet[17]
-        reply[14] = packet[18]; reply[15] = packet[19]
-        reply[16] = packet[12]; reply[17] = packet[13]
-        reply[18] = packet[14]; reply[19] = packet[15]
-        reply[ihl] = 0 // echo reply
-        reply[10] = 0; reply[11] = 0
-        let ipSum = Self.checksum(reply.prefix(ihl))
-        reply[10] = UInt8(ipSum >> 8); reply[11] = UInt8(ipSum & 0xFF)
-        reply[ihl + 2] = 0; reply[ihl + 3] = 0
-        let icmpSum = Self.checksum(reply.suffix(from: ihl))
-        reply[ihl + 2] = UInt8(icmpSum >> 8); reply[ihl + 3] = UInt8(icmpSum & 0xFF)
-        return reply
-    }
-
-    private static func checksum(_ data: Data) -> UInt16 {
-        var sum: UInt32 = 0
-        var i = data.startIndex
-        while i + 1 < data.endIndex {
-            sum += UInt32(data[i]) << 8 | UInt32(data[i + 1])
-            i += 2
-        }
-        if i < data.endIndex {
-            sum += UInt32(data[i]) << 8
-        }
-        while sum >> 16 != 0 {
-            sum = (sum & 0xFFFF) + (sum >> 16)
-        }
-        return ~UInt16(sum & 0xFFFF)
+    private func noteDrop() {
+        droppedOther += 1
     }
 }

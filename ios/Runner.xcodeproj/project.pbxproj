@@ -18,6 +18,11 @@
 		5AA0000000000000000000E6 /* NetworkExtension.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000AA /* NetworkExtension.framework */; };
 		5AA0000000000000000000E7 /* Mirage.xcframework in Frameworks */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000A9 /* Mirage.xcframework */; };
 		5AA0000000000000000000E8 /* Mirage.xcframework in Embed Frameworks */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000A9 /* Mirage.xcframework */; settings = {ATTRIBUTES = (CodeSignOnCopy, RemoveHeadersOnCopy, ); }; };
+		5AA0000000000000000000F6 /* IPCodec.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000F1 /* IPCodec.swift */; };
+		5AA0000000000000000000F7 /* PacketChannel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000F2 /* PacketChannel.swift */; };
+		5AA0000000000000000000F8 /* Socks5.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000F3 /* Socks5.swift */; };
+		5AA0000000000000000000F9 /* TcpFlow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000F4 /* TcpFlow.swift */; };
+		5AA0000000000000000000FA /* UdpRelay.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000F5 /* UdpRelay.swift */; };
 		5AA0000000000000000000E9 /* PacketTunnel.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000A1 /* PacketTunnel.appex */; settings = {ATTRIBUTES = (RemoveHeadersOnCopy, ); }; };
 		5AA0000000000000000000EA /* VpnPlugin.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000AB /* VpnPlugin.swift */; };
 		5AA0000000000000000000EB /* SharedTunnelState.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5AA0000000000000000000A5 /* SharedTunnelState.swift */; };
@@ -86,6 +91,11 @@
 		5AA0000000000000000000A6 /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		5AA0000000000000000000A7 /* PacketTunnel.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; path = PacketTunnel.entitlements; sourceTree = "<group>"; };
 		5AA0000000000000000000A8 /* Runner.entitlements */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.entitlements; path = Runner.entitlements; sourceTree = "<group>"; };
+		5AA0000000000000000000F1 /* IPCodec.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = IPCodec.swift; sourceTree = "<group>"; };
+		5AA0000000000000000000F2 /* PacketChannel.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = PacketChannel.swift; sourceTree = "<group>"; };
+		5AA0000000000000000000F3 /* Socks5.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = Socks5.swift; sourceTree = "<group>"; };
+		5AA0000000000000000000F4 /* TcpFlow.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = TcpFlow.swift; sourceTree = "<group>"; };
+		5AA0000000000000000000F5 /* UdpRelay.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = UdpRelay.swift; sourceTree = "<group>"; };
 		5AA0000000000000000000A9 /* Mirage.xcframework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.xcframework; name = Mirage.xcframework; path = ../apple/Frameworks/Mirage.xcframework; sourceTree = "<group>"; };
 		5AA0000000000000000000AA /* NetworkExtension.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = NetworkExtension.framework; path = Platforms/iPhoneOS.platform/Developer/SDKs/iPhoneOS.sdk/System/Library/Frameworks/NetworkExtension.framework; sourceTree = DEVELOPER_DIR; };
 		5AA0000000000000000000AB /* VpnPlugin.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = VpnPlugin.swift; sourceTree = "<group>"; };
@@ -166,6 +176,11 @@
 				5AA0000000000000000000A2 /* PacketTunnelProvider.swift */,
 				5AA0000000000000000000A3 /* TunSocksBridge.swift */,
 				5AA0000000000000000000A4 /* MirageBridge.swift */,
+				5AA0000000000000000000F1 /* IPCodec.swift */,
+				5AA0000000000000000000F2 /* PacketChannel.swift */,
+				5AA0000000000000000000F3 /* Socks5.swift */,
+				5AA0000000000000000000F4 /* TcpFlow.swift */,
+				5AA0000000000000000000F5 /* UdpRelay.swift */,
 				5AA0000000000000000000A6 /* Info.plist */,
 				5AA0000000000000000000A7 /* PacketTunnel.entitlements */,
 			);
@@ -488,6 +503,11 @@
 				5AA0000000000000000000E1 /* PacketTunnelProvider.swift in Sources */,
 				5AA0000000000000000000E2 /* TunSocksBridge.swift in Sources */,
 				5AA0000000000000000000E3 /* MirageBridge.swift in Sources */,
+				5AA0000000000000000000F6 /* IPCodec.swift in Sources */,
+				5AA0000000000000000000F7 /* PacketChannel.swift in Sources */,
+				5AA0000000000000000000F8 /* Socks5.swift in Sources */,
+				5AA0000000000000000000F9 /* TcpFlow.swift in Sources */,
+				5AA0000000000000000000FA /* UdpRelay.swift in Sources */,
 				5AA0000000000000000000E4 /* SharedTunnelState.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
