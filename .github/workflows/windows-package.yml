@@ -1,0 +1,59 @@
+name: windows-package
+
+on:
+  push:
+    branches:
+      - devin/1790199091-kal2-universal-subscriptions
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.5'
+          cache: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: milky-core/go.mod
+
+      - name: Flutter app (release)
+        run: |
+          flutter pub get
+          flutter build windows --release
+
+      - name: kal2-client (console-less GUI subsystem)
+        working-directory: milky-core
+        shell: bash
+        run: |
+          mkdir -p ../build/windows/x64/runner/Release/kal2
+          GOOS=windows GOARCH=amd64 go build -trimpath \
+            -ldflags '-s -w -H windowsgui' \
+            -o ../build/windows/x64/runner/Release/kal2/kal2-client.exe \
+            ./cmd/kal2-client
+
+      - name: Build MilkyVPN-Setup.exe (iexpress)
+        shell: pwsh
+        run: |
+          & packaging\windows-installer\build-setup.ps1 `
+            -PayloadDir (Resolve-Path 'build\windows\x64\runner\Release') `
+            -OutDir (Resolve-Path '.')
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-test-${{ github.run_number }}
+          name: Milky VPN for Windows — test build ${{ github.run_number }}
+          body: |
+            Тестовая сборка Windows-приложения Milky VPN (KAL/2).
+            Скачай `MilkyVPN-Setup.exe`, запусти, дальше по шагам.
+          files: MilkyVPN-Setup.exe
+          prerelease: true
