@@ -221,6 +221,28 @@ class SubscriptionRepository extends ChangeNotifier {
     return snap;
   }
 
+  /// Imports share links pasted directly (kal2://, vless://, ss://…): the text is
+  /// parsed in place without a fetch, so there is no source URL to refresh against.
+  Future<SubscriptionSnapshot> importFromText(String rawText) async {
+    final result = _parser.parse(rawText);
+    final snap = SubscriptionSnapshot(
+      profiles: result.profiles,
+      updatedAt: DateTime.now().toUtc(),
+      totalEntries: result.receivedEntryCount,
+      malformedEntries: result.malformedEntryCount,
+      duplicateEntries: result.droppedDuplicateCount,
+      expiresAt: result.expiresAt,
+    );
+    if (snap.profiles.isEmpty) throw SubscriptionFetchException('no_profiles');
+    _url = null;
+    _snapshot = snap;
+    _lastError = null;
+    await _store.delete(_kUrl);
+    await _store.write(_kSnapshot, _encodeSnapshot(snap));
+    notifyListeners();
+    return snap;
+  }
+
   Future<SubscriptionSnapshot?> refresh() async {
     final url = _url;
     if (url == null) return null;

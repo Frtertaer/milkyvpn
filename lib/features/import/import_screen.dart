@@ -70,7 +70,11 @@ class _ImportScreenState extends State<ImportScreen> {
       _result = null;
     });
     try {
-      final snap = await repo.importFromUrl(_ctrl.text);
+      // Pasted share links (kal2://, vless://…) are not subscription URLs — parse
+      // them directly instead of forcing a fetch.
+      final snap = await (SubscriptionUrlPolicy().isAllowed(_ctrl.text)
+          ? repo.importFromUrl(_ctrl.text)
+          : repo.importFromText(_ctrl.text));
       if (!mounted) return;
       MilkyHaptics.success();
       _ctrl.clear();
@@ -154,7 +158,7 @@ class _ImportScreenState extends State<ImportScreen> {
                   if (_error != null) setState(() => _error = null);
                 },
                 decoration: InputDecoration(
-                  hintText: 'https://example.com/s/…',
+                  hintText: 'https://example.com/s/…  или  kal2://…',
                   errorText: _error,
                   errorMaxLines: 4,
                   suffixIcon: _ctrl.text.isEmpty
