@@ -38,6 +38,7 @@ func main() {
 	driftPath := flag.String("drift", "", "drift path")
 	socks := flag.String("socks", "127.0.0.1:10808", "local socks listen")
 	fetch := flag.String("fetch", "", "fetch URL through tunnel and exit")
+	fetchMax := flag.Int64("fetchmax", 32<<20, "max bytes to read for -fetch")
 	proxyURL := flag.String("proxy", "", "base-dial proxy (http://user:pass@host:port)")
 	flag.Parse()
 
@@ -98,7 +99,7 @@ func main() {
 			log.Fatalf("fetch: %v", err)
 		}
 		defer st.Close()
-		out, _ := io.ReadAll(io.LimitReader(st, 1<<20))
+		out, _ := io.ReadAll(io.LimitReader(st, *fetchMax))
 		fmt.Println(string(out))
 		return
 	}
