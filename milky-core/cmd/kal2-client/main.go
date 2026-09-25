@@ -99,7 +99,10 @@ func main() {
 			log.Fatalf("fetch: %v", err)
 		}
 		defer st.Close()
-		out, _ := io.ReadAll(io.LimitReader(st, *fetchMax))
+		out, err := io.ReadAll(io.LimitReader(st, *fetchMax))
+		if err != nil {
+			log.Printf("fetch: read error after %d bytes: %v", len(out), err)
+		}
 		fmt.Println(string(out))
 		return
 	}
@@ -143,7 +146,7 @@ func openURL(cli *kal2core.Client, raw string) (io.ReadCloser, error) {
 		rwc = tc
 	}
 	path := u.RequestURI()
-	fmt.Fprintf(rwc, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, u.Host)
+	fmt.Fprintf(rwc, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.9\r\nConnection: close\r\n\r\n", path, u.Host)
 	return &readCloser{rwc}, nil
 }
 
