@@ -4,7 +4,7 @@ hysteria2://fakepass@fi-hy2.example.com:443?sni=fi-hy2.example.com#FI%20Hy2
 vmess://eyJ2IjogIjIiLCAicHMiOiAiRkkgVm1lc3MiLCAiYWRkIjogImZpLXZtZXNzLmV4YW1wbGUuY29tIiwgInBvcnQiOiAiNDQzIiwgImlkIjogIjMzMzMzMzMzLTMzMzMtNDMzMy04MzMzLTMzMzMzMzMzMzMzMyIsICJhaWQiOiAiMCIsICJzY3kiOiAiYXV0byIsICJuZXQiOiAid3MiLCAidHlwZSI6ICJub25lIiwgImhvc3QiOiAiY2RuLmV4YW1wbGUuY29tIiwgInBhdGgiOiAiL3ZtIiwgInRscyI6ICJ0bHMiLCAic25pIjogImNkbi5leGFtcGxlLmNvbSJ9
 trojan://pw%20abc@us-trojan.example.com:443?sni=tr.example.com&type=grpc&serviceName=trojan-grpc#US%20Trojan
 ss://YWVzLTI1Ni1nY206cHctYWJj@fi-ss.example.com:8388#FI%20SS
-kal2://4cce3cb266dce5f9330e906698fc503ea55f891e5ca84279086e4ae664430a79@us-kal2.example.com:443?sni=kal.example.com&pub=9f0dfb763d6fbdb2fa0f0b1f2fb6fd2f3d8e9ca681c523241c63434d41c76c8f&carrier=drift&path=/api/v2/stream#US%20KAL2
+kal2://000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f@us-kal2.example.com:443?sni=kal.example.com&pub=f0e1d2c3b4a5968778695a4b3c2d1e0ff0e1d2c3b4a5968778695a4b3c2d1e0f&carrier=drift&path=/api/v2/stream#US%20KAL2
 ss://YWVzLTI1Ni1nY206cHctYWJj@us-ssp.example.com:8388?plugin=v2ray-plugin#US%20SS%20Plugin
 tuic://abc@us-tuic.example.com:443#US%20Tuic
 this-is-garbage
