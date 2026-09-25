@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">MilkyVPN</string>
+    <string name="vpn_channel_name">VPN connection</string>
+    <string name="vpn_channel_desc">Status of the MilkyVPN tunnel</string>
+    <string name="vpn_notif_connecting">Connecting…</string>
+    <string name="vpn_notif_connected">Connected</string>
+    <string name="vpn_notif_disconnect">Disconnect</string>
+</resources>
