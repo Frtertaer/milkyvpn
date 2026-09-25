@@ -13,6 +13,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Frtertaer/milkyvpn/milky-core/internal/core"
 	"github.com/Frtertaer/milkyvpn/milky-core/pkg/kal2core"
 )
 
@@ -43,6 +44,9 @@ func main() {
 	steal := flag.String("steal", "", "foreign-SNI decoy upstream host:port")
 	decoy := flag.String("decoy", "", "decoy site directory")
 	driftPath := flag.String("drift", "", "drift carrier path")
+	egressFamily := flag.String("egress-family", "dual", "egress IP family: dual|prefer4|only4")
+	upstream := flag.String("upstream", "", "chain egress via socks5://[user:pass@]host:port")
+	upstreamOnly := flag.String("upstream-only", "", "comma domain suffixes routed via -upstream (empty=all)")
 	var users userFlags
 	flag.Var(&users, "user", "id=psk (repeatable)")
 	keygen := flag.Bool("keygen", false, "print a fresh ed25519 keypair and exit")
@@ -64,6 +68,27 @@ func main() {
 	if err != nil || len(idKey) != ed25519.PrivateKeySize {
 		log.Fatalf("bad -identity: need %d hex chars", ed25519.PrivateKeySize*2)
 	}
+	var eg *core.EgressConfig
+	if *egressFamily == "prefer4" || *egressFamily == "only4" {
+		eg = &core.EgressConfig{PreferIPv4: true}
+	}
+	if *upstream != "" {
+		if eg == nil {
+			eg = &core.EgressConfig{}
+		}
+		u, err := core.ParseUpstream(*upstream)
+		if err != nil {
+			log.Fatalf("bad -upstream: %v", err)
+		}
+		eg.Upstream = u
+		if *upstreamOnly != "" {
+			for _, s := range strings.Split(*upstreamOnly, ",") {
+				if t := strings.TrimSpace(s); t != "" {
+					eg.UpstreamOnly = append(eg.UpstreamOnly, t)
+				}
+			}
+		}
+	}
 	err = kal2core.Serve(kal2core.ServerConfig{
 		Listen:           *listen,
 		Domain:           *domain,
@@ -76,6 +101,7 @@ func main() {
 		DecoyDir:         *decoy,
 		DriftPath:        *driftPath,
 		Users:            users,
+		Egress:           eg,
 		Logf:             func(f string, a ...any) { log.Printf(f, a...) },
 	})
 	if err != nil {

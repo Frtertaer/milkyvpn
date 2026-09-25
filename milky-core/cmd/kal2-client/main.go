@@ -21,9 +21,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"time"
+
+	"golang.org/x/net/http2"
 
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/core"
 	"github.com/Frtertaer/milkyvpn/milky-core/pkg/kal2core"
@@ -136,26 +139,58 @@ func openURL(cli *kal2core.Client, raw string) (io.ReadCloser, error) {
 	if err != nil {
 		return nil, err
 	}
-	var rwc io.ReadWriteCloser = st
+	reqHeaders := "User-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 	if u.Scheme == "https" {
-		tc := tls.Client(st, &tls.Config{ServerName: host})
+		tc := tls.Client(st, &tls.Config{
+			ServerName: host,
+			NextProtos: []string{"h2", "http/1.1"},
+		})
 		if err := tc.Handshake(); err != nil {
 			st.Close()
 			return nil, fmt.Errorf("inner TLS to %s: %w", host, err)
 		}
-		rwc = tc
+		if tc.ConnectionState().NegotiatedProtocol == "h2" {
+			return fetchH2(tc, u, reqHeaders)
+		}
+		// plain http/1.1 over the negotiated TLS stream
+		fmt.Fprintf(tc, "GET %s HTTP/1.1\r\nHost: %s\r\n%s\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.9\r\nConnection: close\r\n\r\n", u.RequestURI(), u.Host, reqHeaders)
+		return tc, nil
 	}
-	path := u.RequestURI()
-	fmt.Fprintf(rwc, "GET %s HTTP/1.1\r\nHost: %s\r\nUser-Agent: Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.9\r\nConnection: close\r\n\r\n", path, u.Host)
-	return &readCloser{rwc}, nil
+	fmt.Fprintf(st, "GET %s HTTP/1.1\r\nHost: %s\r\n%s\r\nAccept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8\r\nAccept-Language: en-US,en;q=0.9\r\nConnection: close\r\n\r\n", u.RequestURI(), u.Host, reqHeaders)
+	return st, nil
 }
 
-type readCloser struct{ io.ReadWriteCloser }
-
-func (r *readCloser) Read(b []byte) (int, error) {
-	n, err := r.ReadWriteCloser.Read(b)
-	return n, err
+// fetchH2 issues the GET over an h2 connection already established on c.
+// Cloudflare-fronted sites that close HTTP/1.1 connections (e.g. chatgpt.com)
+// answer normally over h2.
+func fetchH2(c net.Conn, u *url.URL, ua string) (io.ReadCloser, error) {
+	cc, err := (&http2.Transport{}).NewClientConn(c)
+	if err != nil {
+		return nil, err
+	}
+	req := &http.Request{
+		Method: "GET",
+		URL:    u,
+		Host:   u.Host,
+		Header: http.Header{
+			"User-Agent":      {ua},
+			"Accept":          {"text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"},
+			"Accept-Language": {"en-US,en;q=0.9"},
+		},
+	}
+	resp, err := cc.RoundTrip(req)
+	if err != nil {
+		return nil, err
+	}
+	return &h2Body{ReadCloser: resp.Body, status: resp.StatusCode}, nil
 }
+
+type h2Body struct {
+	io.ReadCloser
+	status int
+}
+
+func (b *h2Body) Close() error { return b.ReadCloser.Close() }
 
 // httpConnectDialer builds a DialContext that tunnels through an HTTP CONNECT
 // proxy (http://[user:pass@]host:port).

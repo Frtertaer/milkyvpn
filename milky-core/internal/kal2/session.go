@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
@@ -329,8 +330,16 @@ func (s *Session) fail(err error) {
 // Streams (minimal reliable mux over the ordered carrier)
 // ---------------------------------------------------------------------------
 
-// OpenTarget encodes a CONNECT-style open payload.
+// OpenTarget encodes a CONNECT-style open payload (implies "tcp").
 func OpenTarget(network, host string, port uint16) []byte {
+	return OpenTargetNet(network, host, port)
+}
+
+// OpenTargetNet encodes an open payload with an explicit network tag.
+// Wire format (v2): [0x80|atyp][netTag][host...][port] — the 0x80 marker lets
+// old servers reject cleanly (unknown atyp) instead of mis-parsing. "tcp"
+// targets may also use the legacy v1 encoding from OpenTarget.
+func OpenTargetNet(network, host string, port uint16) []byte {
 	var atyp byte
 	ip := net.ParseIP(host)
 	var hostBytes []byte
@@ -344,8 +353,17 @@ func OpenTarget(network, host string, port uint16) []byte {
 		atyp = 0x04
 		hostBytes = ip.To16()
 	}
-	out := make([]byte, 0, 4+len(hostBytes)+2)
-	out = append(out, atyp)
+	netTag := byte('t')
+	if strings.EqualFold(network, "udp") {
+		netTag = 'u'
+	}
+	explicit := netTag != 't'
+	out := make([]byte, 0, 5+len(hostBytes)+2)
+	if explicit {
+		out = append(out, atyp|0x80, netTag)
+	} else {
+		out = append(out, atyp)
+	}
 	if atyp == 0x03 {
 		out = append(out, byte(len(hostBytes)))
 	}
@@ -355,12 +373,29 @@ func OpenTarget(network, host string, port uint16) []byte {
 	return append(out, p[:]...)
 }
 
-// ParseOpenTarget decodes an OPEN payload.
+// ParseOpenTarget decodes an OPEN payload (v1 implies tcp; v2 carries the
+// network tag after the 0x80|atyp marker).
 func ParseOpenTarget(b []byte) (network, host string, port uint16, err error) {
 	if len(b) < 4 {
 		return "", "", 0, ErrFraming
 	}
+	network = "tcp"
 	atyp := b[0]
+	if atyp&0x80 != 0 {
+		atyp &^= 0x80
+		if len(b) < 5 {
+			return "", "", 0, ErrFraming
+		}
+		switch b[1] {
+		case 't':
+			network = "tcp"
+		case 'u':
+			network = "udp"
+		default:
+			return "", "", 0, ErrFraming
+		}
+		b = b[1:] // fall through with the tag consumed
+	}
 	switch atyp {
 	case 0x01:
 		if len(b) < 7 {
@@ -384,11 +419,16 @@ func ParseOpenTarget(b []byte) (network, host string, port uint16, err error) {
 	default:
 		return "", "", 0, ErrFraming
 	}
-	return "tcp", host, port, nil
+	return network, host, port, nil
 }
 
-// Open opens a stream to target on the server and returns it after OPEN_ACK.
+// Open opens a TCP stream to target on the server and returns it after OPEN_ACK.
 func (s *Session) Open(host string, port uint16, timeout time.Duration) (*Stream, error) {
+	return s.OpenNet("tcp", host, port, timeout)
+}
+
+// OpenNet opens a stream with an explicit network ("tcp" or "udp").
+func (s *Session) OpenNet(network, host string, port uint16, timeout time.Duration) (*Stream, error) {
 	s.smu.Lock()
 	id := s.nextID
 	s.nextID += 2
@@ -398,7 +438,7 @@ func (s *Session) Open(host string, port uint16, timeout time.Duration) (*Stream
 	s.smu.Lock()
 	s.streams[id] = st
 	s.smu.Unlock()
-	if err := s.sendRecord(MsgOpen, id, OpenTarget("tcp", host, port)); err != nil {
+	if err := s.sendRecord(MsgOpen, id, OpenTargetNet(network, host, port)); err != nil {
 		s.smu.Lock()
 		delete(s.streams, id)
 		s.smu.Unlock()

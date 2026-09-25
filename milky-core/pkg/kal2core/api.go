@@ -40,7 +40,10 @@ type ServerConfig struct {
 	DriftPath        string // secret drift path, default carrier.DefaultDriftPath
 	DecoyDir         string // directory served for plain HTTP probes
 	Users            []User
-	Logf             func(string, ...any)
+	// Egress controls upstream dialing: IPv4 preference and an optional
+	// chained SOCKS5 upstream (e.g. for reputation-flagged ranges).
+	Egress *core.EgressConfig
+	Logf   func(string, ...any)
 }
 
 // User is a provisioned client credential pair.
@@ -151,7 +154,7 @@ func Serve(cfg ServerConfig) error {
 		Logf:      logf,
 		OnSession: func(s *kal2.Session) {
 			go func() {
-				_ = core.ServeEgress(s, nil, logf)
+				_ = core.ServeEgressCfg(s, nil, cfg.Egress, logf)
 			}()
 		},
 	}
