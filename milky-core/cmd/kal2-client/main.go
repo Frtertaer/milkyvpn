@@ -23,12 +23,15 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/net/http2"
 
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/core"
+	"github.com/Frtertaer/milkyvpn/milky-core/internal/tun"
 	"github.com/Frtertaer/milkyvpn/milky-core/pkg/kal2core"
 )
 
@@ -40,6 +43,8 @@ func main() {
 	carrier := flag.String("carrier", "auto", "auto|veil|drift")
 	driftPath := flag.String("drift", "", "drift path")
 	socks := flag.String("socks", "127.0.0.1:10808", "local socks listen")
+	tunName := flag.String("tun", "", "create a wintun adapter with this name and tunnel all device traffic (Windows, needs admin)")
+	ctlAddr := flag.String("ctl", "", "control socket: log lines are mirrored here and 'stop' exits (used when spawned elevated)")
 	fetch := flag.String("fetch", "", "fetch URL through tunnel and exit")
 	fetchMax := flag.Int64("fetchmax", 32<<20, "max bytes to read for -fetch")
 	proxyURL := flag.String("proxy", "", "base-dial proxy (http://user:pass@host:port)")
@@ -116,8 +121,141 @@ func main() {
 	}
 	cli.EnableReconnect()
 	log.Printf("kal2: socks5 on %s (reconnect watchdog on)", ln.Addr())
+
+	var ctl *ctlServer
+	if *ctlAddr != "" {
+		ctl, err = startCtl(*ctlAddr)
+		if err != nil {
+			log.Fatalf("ctl: %v", err)
+		}
+		defer ctl.close()
+		log.SetOutput(io.MultiWriter(os.Stderr, ctl))
+		ctl.echo("kal2: session up via " + *carrier)
+	}
+
+	if *tunName != "" {
+		// Full-device mode: the TUN adapter routes all traffic into kal2
+		// streams. Still serves SOCKS5 alongside — both paths stay live
+		// across reconnects via cli.Session().
+		var serverIPs []string
+		for _, a := range addrs {
+			host, _, _ := net.SplitHostPort(a)
+			if net.ParseIP(host) != nil {
+				serverIPs = append(serverIPs, host)
+				continue
+			}
+			if ips, err := net.LookupIP(host); err == nil {
+				for _, ip := range ips {
+					if ip4 := ip.To4(); ip4 != nil {
+						serverIPs = append(serverIPs, ip4.String())
+					}
+				}
+			}
+		}
+		tcfg := &tun.Config{
+			Name:      *tunName,
+			Addr:      tun.DefaultAddr,
+			ServerIPs: serverIPs,
+			Logf:      log.Printf,
+			OpenTCP: func(ctx context.Context, target string) (tun.Stream, error) {
+				sess := cli.Session()
+				if sess == nil {
+					return nil, fmt.Errorf("no live session")
+				}
+				host, ps, err := net.SplitHostPort(target)
+				if err != nil {
+					return nil, err
+				}
+				var port int
+				if _, err := fmt.Sscanf(ps, "%d", &port); err != nil {
+					return nil, err
+				}
+				return sess.Open(host, uint16(port), 15*time.Second)
+			},
+			OpenUDP: func(ctx context.Context) (tun.Stream, error) {
+				sess := cli.Session()
+				if sess == nil {
+					return nil, fmt.Errorf("no live session")
+				}
+				return sess.OpenNet("udp", "0.0.0.0", 0, 15*time.Second)
+			},
+		}
+		go func() {
+			if err := tun.Run(context.Background(), tcfg); err != nil {
+				log.Printf("kal2: tun stopped: %v", err)
+			}
+		}()
+		log.Printf("kal2: tun requested (%s)", *tunName)
+	}
+	if ctl != nil {
+		// 'stop' on the control channel exits cleanly (defers restore routes).
+		select {
+		case <-ctl.stopCh:
+			return
+		}
+	}
 	select {}
 }
+
+// ctlServer is a one-shot TCP control channel: the client mirrors its log
+// lines to the peer and exits when the peer sends "stop".
+type ctlServer struct {
+	ln     net.Listener
+	conn   net.Conn
+	mu     sync.Mutex
+	stopCh chan struct{}
+	echoed []string
+}
+
+func startCtl(addr string) (*ctlServer, error) {
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	c := &ctlServer{ln: ln, stopCh: make(chan struct{})}
+	go c.accept()
+	return c, nil
+}
+
+func (c *ctlServer) accept() {
+	conn, err := c.ln.Accept()
+	if err != nil {
+		return
+	}
+	c.mu.Lock()
+	c.conn = conn
+	for _, l := range c.echoed {
+		_, _ = fmt.Fprintln(conn, l)
+	}
+	c.echoed = nil
+	c.mu.Unlock()
+	go func() {
+		sc := bufio.NewScanner(conn)
+		for sc.Scan() {
+			if strings.TrimSpace(sc.Text()) == "stop" {
+				close(c.stopCh)
+				return
+			}
+		}
+		// Peer vanished — keep running; the tunnel is still up.
+	}()
+}
+
+// Write mirrors log lines to the control peer (io.Writer for log output).
+func (c *ctlServer) Write(p []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.conn != nil {
+		_, _ = c.conn.Write(p)
+		return len(p), nil
+	}
+	c.echoed = append(c.echoed, strings.TrimRight(string(p), "\n"))
+	return len(p), nil
+}
+
+func (c *ctlServer) echo(line string) { _, _ = c.Write([]byte(line + "\n")) }
+
+func (c *ctlServer) close() { c.ln.Close() }
 
 func openURL(cli *kal2core.Client, raw string) (io.ReadCloser, error) {
 	u, err := url.Parse(raw)

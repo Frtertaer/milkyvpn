@@ -418,6 +418,11 @@ class MilkyError {
       'CONFIG_ASSET_MISSING',
       MilkyFailureCategory.configFailure,
     ),
+    'tun_uac_denied': (
+      MilkyErrorKind.permissionDenied,
+      'PERMISSION_DENIED',
+      MilkyFailureCategory.permissionFailure,
+    ),
 
     // --- user ------------------------------------------------------------
     'cancelled': (

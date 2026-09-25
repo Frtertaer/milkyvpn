@@ -40,6 +40,19 @@ jobs:
             -o ../build/windows/x64/runner/Release/kal2/kal2-client.exe \
             ./cmd/kal2-client
 
+      - name: wintun.dll (full-TUN driver, official signed build)
+        shell: pwsh
+        run: |
+          $zip = 'wintun.zip'
+          Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $zip
+          $h = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51') {
+            throw "wintun sha256 mismatch: $h"
+          }
+          Expand-Archive $zip -DestinationPath wintun-dist
+          Copy-Item 'wintun-dist\wintun\bin\amd64\wintun.dll' `
+            'build\windows\x64\runner\Release\kal2\wintun.dll'
+
       - name: Bundle VC++ redist DLLs
         shell: pwsh
         run: |

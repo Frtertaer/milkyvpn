@@ -2,20 +2,24 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:shared_preferences/shared_preferences.dart';
+
 import '../subscription/vpn_profile.dart';
 import 'vpn_bridge.dart';
 
 /// Windows desktop bridge: runs the bundled `kal2-client.exe` as a hidden
 /// child process and points the system proxy at its local SOCKS5 listener.
 ///
-/// There is no TUN on this path — Windows routes through the WinINet proxy
-/// setting, which covers browsers and any app honouring the system proxy.
+/// Full-TUN mode (Settings → «Полный туннель») instead spawns the client
+/// elevated (-tun -ctl): the UAC prompt appears once per connect, the client
+/// creates the wintun adapter and routes all device traffic into the tunnel.
 class WindowsProcessVpnBridge implements VpnBridge {
   WindowsProcessVpnBridge({String? clientPath, String? socksAddr})
     : _clientPath = clientPath ?? _defaultClientPath(),
       _socksAddr = socksAddr ?? defaultSocksAddr;
 
   static const String defaultSocksAddr = '127.0.0.1:11808';
+  static const String _ctlAddr = '127.0.0.1:11909';
   static const Duration _upTimeout = Duration(seconds: 25);
 
   final String _clientPath;
@@ -24,6 +28,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
   final _states = StreamController<VpnSnapshot>.broadcast();
   final _links = StreamController<String>.broadcast();
   Process? _proc;
+  Socket? _ctl;
   VpnSnapshot _snap = VpnSnapshot.initial;
   bool _proxySet = false;
 
@@ -96,6 +101,11 @@ class WindowsProcessVpnBridge implements VpnBridge {
         profileRemark: profile.redactedRemark,
       ),
     );
+
+    final prefs = await SharedPreferences.getInstance();
+    if (prefs.getBool('tun_mode') ?? false) {
+      return _connectTun(profile);
+    }
 
     Process proc;
     try {
@@ -174,7 +184,9 @@ class WindowsProcessVpnBridge implements VpnBridge {
   @override
   Future<void> disconnect() async {
     final p = _proc;
+    final ctl = _ctl;
     _proc = null;
+    _ctl = null;
     _set(
       VpnSnapshot(
         state: VpnState.disconnecting,
@@ -182,9 +194,145 @@ class WindowsProcessVpnBridge implements VpnBridge {
         profileRemark: _snap.profileRemark,
       ),
     );
-    p?.kill();
+    if (ctl != null) {
+      try {
+        ctl.writeln('stop');
+        await ctl.flush();
+        ctl.destroy();
+      } catch (_) {}
+    } else {
+      p?.kill();
+    }
     await _restoreProxy();
     _set(VpnSnapshot.initial);
+  }
+
+  /// Full-TUN connect: spawn kal2-client elevated via UAC and drive it over
+  /// the -ctl socket. The system proxy is untouched — routes do the work.
+  Future<void> _connectTun(VpnProfile profile) async {
+    final args = <String>[
+      ..._argsFor(profile),
+      '-tun',
+      'MilkyVPN-TUN',
+      '-ctl',
+      _ctlAddr,
+    ];
+    // A helper orphaned by a previous app run would already own the adapter;
+    // ask it to stop before spawning a new one.
+    await _stopCtl();
+
+    final argLine = args.map((a) => "'$a'").join(', ');
+    final res = await Process.run('powershell', [
+      '-NoProfile',
+      '-Command',
+      'Start-Process -Verb RunAs -FilePath "$_clientPath" -ArgumentList $argLine',
+    ]);
+    if (res.exitCode != 0) {
+      _set(
+        const VpnSnapshot(
+          state: VpnState.error,
+          errorCode: 'tun_uac_denied',
+        ),
+      );
+      throw VpnBridgeException(
+        'tun_uac_denied',
+        '${res.stderr}${res.stdout}'.trim(),
+      );
+    }
+
+    // The elevated helper binds the ctl socket once its session is up.
+    Socket? ctl;
+    for (var i = 0; i < 80 && ctl == null; i++) {
+      try {
+        ctl = await Socket.connect(
+          '127.0.0.1',
+          int.parse(_ctlAddr.split(':').last),
+          timeout: const Duration(milliseconds: 300),
+        );
+      } catch (_) {
+        await Future<void>.delayed(const Duration(milliseconds: 250));
+      }
+    }
+    if (ctl == null) {
+      _set(
+        const VpnSnapshot(state: VpnState.error, errorCode: 'connect_timeout'),
+      );
+      throw VpnBridgeException('connect_timeout', 'elevated helper never bound');
+    }
+    _ctl = ctl;
+
+    final up = Completer<void>();
+    final errLines = <String>[];
+    ctl
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(
+          (line) {
+            errLines.add(line);
+            if (errLines.length > 40) errLines.removeAt(0);
+            if ((line.contains('tun: adapter') || line.contains('session up')) &&
+                !up.isCompleted) {
+              up.complete();
+            }
+          },
+          onDone: () {
+            _ctl = null;
+            if (!up.isCompleted) {
+              up.completeError(VpnBridgeException('core_exit'));
+            }
+            _set(
+              _snap.state == VpnState.connected ||
+                      _snap.state == VpnState.disconnecting
+                  ? VpnSnapshot.initial
+                  : VpnSnapshot(
+                      state: VpnState.error,
+                      errorCode: 'core_exit',
+                      lastSuccessfulStage: _snap.lastSuccessfulStage,
+                    ),
+            );
+          },
+        );
+
+    try {
+      await up.future.timeout(_upTimeout);
+    } on Object {
+      _ctl?.destroy();
+      _ctl = null;
+      _set(
+        const VpnSnapshot(state: VpnState.error, errorCode: 'connect_timeout'),
+      );
+      throw VpnBridgeException(
+        'connect_timeout',
+        errLines.isEmpty ? null : errLines.join('\n'),
+      );
+    }
+
+    _set(
+      VpnSnapshot(
+        state: VpnState.connected,
+        profileId: profile.id,
+        profileRemark: profile.redactedRemark,
+        connectedSince: DateTime.now(),
+        lastSuccessfulStage: 'tun',
+      ),
+    );
+  }
+
+  Future<void> _stopCtl() async {
+    try {
+      final s = await Socket.connect(
+        '127.0.0.1',
+        int.parse(_ctlAddr.split(':').last),
+        timeout: const Duration(milliseconds: 400),
+      );
+      s.writeln('stop');
+      await s.flush();
+      s.destroy();
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+    } catch (_) {
+      // No stale helper listening — normal path.
+    }
   }
 
   @override

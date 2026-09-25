@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -69,6 +71,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onChanged: s.setAutoConnect,
                   ),
                   const MilkyHairline(indent: MilkySpace.lg),
+                  // Full-TUN exists on Windows only; Android tunnels via
+                  // VpnService already.
+                  if (Platform.isWindows)
+                    MilkySettingRow(
+                      icon: Icons.lan_rounded,
+                      title: t.fullTunnel,
+                      subtitle: t.fullTunnelHint,
+                      value: s.fullTunnel,
+                      onChanged: s.setFullTunnel,
+                    ),
+                  if (Platform.isWindows)
+                    const MilkyHairline(indent: MilkySpace.lg),
                   MilkySettingRow(
                     icon: Icons.vpn_lock_rounded,
                     title: t.alwaysOn,

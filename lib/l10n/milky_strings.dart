@@ -310,6 +310,11 @@ class S {
   String get alwaysOn => t('Always-on VPN', 'Always-on VPN');
   String get alwaysOnHint =>
       t('Системные настройки Android', 'Android system settings');
+  String get fullTunnel => t('Полный туннель', 'Full tunnel');
+  String get fullTunnelHint => t(
+    'Весь трафик ПК через VPN (запросит права администратора)',
+    'Route all PC traffic through the VPN (asks for admin rights)',
+  );
   String get theme => t('Тема', 'Theme');
   String get themeSystem => t('Системная', 'System');
   String get themeLight => t('Светлая', 'Light');
