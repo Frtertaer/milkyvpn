@@ -40,6 +40,17 @@ jobs:
             -o ../build/windows/x64/runner/Release/kal2/kal2-client.exe \
             ./cmd/kal2-client
 
+      - name: Bundle VC++ redist DLLs
+        shell: pwsh
+        run: |
+          $rel = 'build\windows\x64\runner\Release'
+          $crt = Get-ChildItem `
+            'C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT' |
+            Sort-Object -Descending FullName | Select-Object -First 1
+          foreach ($d in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll') {
+            Copy-Item (Join-Path $crt.FullName $d) $rel
+          }
+
       - name: Inno Setup
         run: choco install innosetup -y --no-progress
 
