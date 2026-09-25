@@ -451,9 +451,18 @@ func (s *Session) OpenNet(network, host string, port uint16, timeout time.Durati
 		return nil, err
 	}
 	if !st.waitDial(timeout) {
+		s.smu.Lock()
+		delete(s.streams, id)
+		s.smu.Unlock()
+		st.remoteClose()
+		_ = s.sendRecord(MsgRst, id, []byte("open timeout"))
 		return nil, fmt.Errorf("session: open timeout or refused")
 	}
 	if st.dialErr != nil {
+		s.smu.Lock()
+		delete(s.streams, id)
+		s.smu.Unlock()
+		st.remoteClose()
 		return nil, st.dialErr
 	}
 	return &Stream{stream: st}, nil

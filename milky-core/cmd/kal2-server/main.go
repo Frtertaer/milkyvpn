@@ -69,8 +69,14 @@ func main() {
 		log.Fatalf("bad -identity: need %d hex chars", ed25519.PrivateKeySize*2)
 	}
 	var eg *core.EgressConfig
-	if *egressFamily == "prefer4" || *egressFamily == "only4" {
+	switch *egressFamily {
+	case "prefer4":
 		eg = &core.EgressConfig{PreferIPv4: true}
+	case "only4":
+		eg = &core.EgressConfig{OnlyIPv4: true}
+	case "dual":
+	default:
+		log.Fatalf("bad -egress-family %q (dual|prefer4|only4)", *egressFamily)
 	}
 	if *upstream != "" {
 		if eg == nil {

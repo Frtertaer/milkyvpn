@@ -18,6 +18,9 @@ type EgressConfig struct {
 	// failure (IPv6-only hosts still work). Useful when the server's v6 range
 	// carries worse reputation than its v4.
 	PreferIPv4 bool
+	// OnlyIPv4 refuses non-IPv4 egress entirely (no dual fallback; literal
+	// IPv6 targets fail). Use when any v6 egress would leak a dirty range.
+	OnlyIPv4 bool
 	// Upstream chains egress through an upstream SOCKS5 proxy
 	// (e.g. "socks5://user:pass@host:port"). Empty = direct egress.
 	Upstream *UpstreamSOCKS5
@@ -188,7 +191,7 @@ func (cfg *EgressConfig) routeUpstream(host string) bool {
 func (cfg *EgressConfig) dial(dialer *net.Dialer, network, host string, port uint16, logf func(string, ...any)) (net.Conn, error) {
 	target := net.JoinHostPort(host, fmt.Sprint(int(port)))
 	if cfg != nil && cfg.routeUpstream(host) {
-		cfg.Upstream.preferV4 = cfg.PreferIPv4
+		cfg.Upstream.preferV4 = cfg.PreferIPv4 || cfg.OnlyIPv4
 		c, err := cfg.Upstream.Dial(network, host, port)
 		if err != nil {
 			return nil, fmt.Errorf("upstream %s: %w", cfg.Upstream.Addr, err)
@@ -197,6 +200,20 @@ func (cfg *EgressConfig) dial(dialer *net.Dialer, network, host string, port uin
 		return c, nil
 	}
 	netw := strings.ToLower(network)
+	if cfg != nil && cfg.OnlyIPv4 {
+		switch netw {
+		case "tcp":
+			netw = "tcp4"
+		case "udp":
+			netw = "udp4"
+		}
+		if netw == "tcp4" {
+			if ip := net.ParseIP(host); ip != nil && ip.To4() == nil {
+				return nil, fmt.Errorf("egress: IPv6 target %s disallowed by only4", host)
+			}
+		}
+		return dialer.Dial(netw, target)
+	}
 	if cfg != nil && cfg.PreferIPv4 && netw == "tcp" && net.ParseIP(host) == nil {
 		if c, err := dialer.Dial("tcp4", target); err == nil {
 			return c, nil
@@ -270,7 +287,7 @@ func ServeEgressCfg(sess *kal2.Session, dialer *net.Dialer, cfg *EgressConfig, l
 // replies carry the actual source address back.
 func relayUDP(st *kal2.Stream, dialer *net.Dialer, cfg *EgressConfig, logf func(string, ...any)) {
 	network := "udp"
-	if cfg != nil && cfg.PreferIPv4 {
+	if cfg != nil && (cfg.PreferIPv4 || cfg.OnlyIPv4) {
 		network = "udp4"
 	}
 	pc, err := net.ListenPacket(network, ":0")

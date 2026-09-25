@@ -249,11 +249,11 @@ func httpConnectDialer(raw string) (func(context.Context, string, string) (net.C
 				break
 			}
 		}
+		_ = c.SetDeadline(time.Time{})
 		// Preserve any buffered bytes past the headers.
 		if br.Buffered() > 0 {
 			return &prefixReaderConn{Conn: c, r: br}, nil
 		}
-		_ = c.SetDeadline(time.Time{})
 		return c, nil
 	}, nil
 }

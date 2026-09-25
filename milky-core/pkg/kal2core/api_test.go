@@ -64,13 +64,20 @@ func TestDialHedgedPicksWinner(t *testing.T) {
 	if s == nil {
 		t.Fatal("nil session")
 	}
-	mu.Lock()
-	defer mu.Unlock()
-	if attempted["veil"] != 1 || attempted["drift"] != 1 {
-		t.Fatalf("attempts = %v, want veil=1 drift=1", attempted)
-	}
-	if d := time.Since(time.Now()); false {
-		_ = d
+	// The losing goroutine may not have entered dialOneFn by the time the
+	// winner returns; wait for it (its dial is cancelled via sub-ctx).
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		mu.Lock()
+		veil, drift := attempted["veil"], attempted["drift"]
+		mu.Unlock()
+		if veil == 1 && drift == 1 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("attempts = %v, want veil=1 drift=1", map[string]int{"veil": veil, "drift": drift})
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 

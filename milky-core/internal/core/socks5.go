@@ -158,7 +158,7 @@ func socksUDPAssociate(c net.Conn, sessFn func() *kal2.Session) {
 			continue
 		}
 		// frame: [u16 len][ATYP][addr][port][payload]
-		inner := header[3 : len(header)-len(payload)] // keep ATYP block only
+		inner := header[3:] // strip RSV+FRAG, keep ATYP..PORT
 		frame := make([]byte, 0, 2+len(inner)+len(payload))
 		var lb [2]byte
 		binary.LittleEndian.PutUint16(lb[:], uint16(len(inner)+len(payload)))
@@ -259,7 +259,7 @@ func socksRequest(c net.Conn) (cmd byte, host string, port uint16, err error) {
 		if _, err = io.ReadFull(c, b); err != nil {
 			return
 		}
-		host = "[" + net.IP(b[:16]).String() + "]"
+		host = net.IP(b[:16]).String()
 		port = binary.BigEndian.Uint16(b[16:])
 	default:
 		socksReply(c, 0x08)
