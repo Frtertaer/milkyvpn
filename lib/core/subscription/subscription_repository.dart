@@ -169,7 +169,10 @@ class SubscriptionRepository extends ChangeNotifier {
   String? _lastError;
 
   bool get isLoaded => _loaded;
-  bool get hasSubscription => _url != null;
+  /// Either a fetched subscription (has a URL) or a text-imported profile set
+  /// (snapshot only, nothing to refresh).
+  bool get hasSubscription =>
+      _url != null || (_snapshot?.profiles.isNotEmpty ?? false);
   SubscriptionSnapshot? get snapshot => _snapshot;
   String? get lastErrorClass => _lastError;
 
