@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- libv2ray.aar declares minSdk 24 but its JNI imports are all <=API 21;
+         the app still targets Android 6 (API 23). -->
+    <uses-sdk tools:overrideLibrary="go.libv2ray.gojni, io.flutter.plugins.pathprovider, io.flutter.plugins.sharedpreferences, io.flutter.plugins.urllauncher, com.it_nomads.fluttersecurestorage" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />

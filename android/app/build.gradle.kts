@@ -36,6 +36,8 @@ android {
 
     defaultConfig {
         applicationId = "homes.milky.vpn"
+        // API 23 — Android 6 devices. Keep as a literal: the Flutter tooling
+        // migrator keeps rewriting this to flutter.minSdkVersion (=24).
         minSdk = 23
         targetSdk = 36
         versionCode = flutter.versionCode
