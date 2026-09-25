@@ -129,8 +129,13 @@ func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
 	if err != nil {
 		return err
 	}
-	rec := outRec{t: t, id: streamID, p: payload}
-	if t == MsgData {
+	// Copy the payload before queueing: callers may reuse the buffer (e.g.
+	// io.CopyBuffer) before the writer goroutine encrypts it.
+	rec := outRec{t: t, id: streamID, p: append([]byte(nil), payload...)}
+	// MsgClose rides the data lane so it stays ordered behind this stream's
+	// queued DATA on the wire (ctrl lane can otherwise overtake it and the
+	// peer sees close before trailing data).
+	if t == MsgData || t == MsgClose {
 		select {
 		case s.dataCh <- rec:
 			return nil
