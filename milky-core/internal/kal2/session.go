@@ -451,7 +451,7 @@ type stream struct {
 	dialCh      chan []byte
 	dialErr     error
 	closedCh    chan struct{}
-	closeOnce   sync.Once
+	closed      bool // guards the once-only close transition (mu)
 	recvBuf     []byte
 	openPayload []byte
 }
@@ -487,6 +487,28 @@ func (st *stream) feed(b []byte) {
 	}
 }
 
+// markClosed flips the closed flag once; false if already closed (mu).
+func (st *stream) markClosed() bool {
+	st.mu.Lock()
+	defer st.mu.Unlock()
+	if st.closed {
+		return false
+	}
+	st.closed = true
+	return true
+}
+
+// queueEOF appends the nil sentinel behind any queued data, preserving order.
+func (st *stream) queueEOF() {
+	st.mu.Lock()
+	st.rawQ = append(st.rawQ, nil)
+	st.mu.Unlock()
+	select {
+	case st.kick <- struct{}{}:
+	default:
+	}
+}
+
 // pump moves rawQ into recvCh in order. It may block on recvCh — that only
 // backpressures this stream, not the demux.
 func (st *stream) pump() {
@@ -497,6 +519,11 @@ func (st *stream) pump() {
 			st.rawQ[0] = nil
 			st.rawQ = st.rawQ[1:]
 			st.mu.Unlock()
+			if b == nil {
+				// EOF sentinel: report close only after all queued data
+				st.sendEOF()
+				return
+			}
 			select {
 			case st.recvCh <- b:
 				continue
@@ -511,6 +538,11 @@ func (st *stream) pump() {
 			return
 		}
 	}
+}
+
+// sendEOF closes recvCh so readers drain rbuf then see io.EOF.
+func (st *stream) sendEOF() {
+	close(st.recvCh)
 }
 
 func (st *stream) setDialResult(payload []byte) {
@@ -537,11 +569,18 @@ func (st *stream) waitDial(timeout time.Duration) bool {
 }
 
 func (st *stream) remoteClose() {
-	st.closeOnce.Do(func() { close(st.closedCh) })
+	// Graceful close: keep ordering — the peer may still have sent data before
+	// its close frame; enqueue EOF behind it instead of aborting reads.
+	if st.markClosed() {
+		st.queueEOF()
+	}
 }
 
 func (st *stream) reset() {
-	st.closeOnce.Do(func() { close(st.closedCh) })
+	// Abrupt close (RST or session death): abort reads immediately.
+	if st.markClosed() {
+		close(st.closedCh)
+	}
 }
 
 func (st *stream) fail(err error) {
