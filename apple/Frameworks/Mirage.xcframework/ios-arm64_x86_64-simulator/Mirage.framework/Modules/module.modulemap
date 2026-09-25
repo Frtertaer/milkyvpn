@@ -1,0 +1,8 @@
+framework module "Mirage" {
+	header "ref.h"
+    header "Kal2mobile.objc.h"
+    header "Universe.objc.h"
+    header "Mirage.h"
+
+    export *
+}

@@ -42,6 +42,22 @@ var (
 	logf   = func(string, ...any) {}
 )
 
+// LogSink receives 'kal2: ...' log lines. gomobile cannot bind SetLogger
+// directly (function-typed parameters are unsupported), so ObjC/Swift and
+// Java/Kotlin callers implement this interface instead.
+type LogSink interface {
+	Log(msg string)
+}
+
+// SetLogSink installs a LogSink for kal2 log lines (mobile entry point).
+func SetLogSink(s LogSink) {
+	if s == nil {
+		SetLogger(nil)
+		return
+	}
+	SetLogger(s.Log)
+}
+
 // SetLogger installs a callback receiving 'kal2: ...' lines — wire it to the
 // platform logger.
 func SetLogger(l func(msg string)) {
