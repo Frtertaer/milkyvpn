@@ -63,7 +63,7 @@ type ClientConfig struct {
 	SNI       string   // TLS SNI (server domain)
 	ServerPub []byte   // server Ed25519 public key (32B)
 	PSK       []byte   // per-user PSK (32B)
-	Carrier   string   // "veil" (default), "drift", "auto" (hedged), or "a,b" list
+	Carrier   string   // "veil" (default), "drift", "cdn" (WS-shaped drift), "auto" (hedged), or "a,b" list
 	DriftPath string   // secret path when Carrier=drift
 	// InsecureSkipVerify disables chain verification on the carrier TLS layer.
 	// Safe here: the KAL/2 inner handshake authenticates the server by its
@@ -120,6 +120,20 @@ func DecodeKey(s string) ([]byte, error) {
 
 // Serve runs a kal2 server until the listener fails.
 func Serve(cfg ServerConfig) error {
+	var echKeys []tls.EncryptedClientHelloKey
+	var echNames []string
+	if len(cfg.ECHKeyFiles) > 0 {
+		k, err := carrier.LoadECHKeys(cfg.ECHKeyFiles)
+		if err != nil {
+			return fmt.Errorf("ech keys: %w", err)
+		}
+		echKeys = k
+		for _, kk := range k {
+			if n, err := carrier.ECHPublicName(kk.Config); err == nil && n != "" {
+				echNames = append(echNames, n)
+			}
+		}
+	}
 	var cert *tls.Certificate
 	var autocertMgr *autocert.Manager
 	if cfg.CertFile != "" {
@@ -130,8 +144,10 @@ func Serve(cfg ServerConfig) error {
 		cert = &c
 	} else if cfg.AutocertDir != "" {
 		autocertMgr = &autocert.Manager{
-			Prompt:     autocert.AcceptTOS,
-			HostPolicy: autocert.HostWhitelist(cfg.Domain),
+			Prompt: autocert.AcceptTOS,
+			// Whitelist the real domain plus ECH cover names so autocert
+			// issues fallback certs for outer hellos too.
+			HostPolicy: autocert.HostWhitelist(append([]string{cfg.Domain}, echNames...)...),
 			Cache:      autocert.DirCache(cfg.AutocertDir),
 		}
 		httpAddr := cfg.AutocertHTTPAddr
@@ -156,15 +172,6 @@ func Serve(cfg ServerConfig) error {
 	logf := cfg.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
-	}
-
-	var echKeys []tls.EncryptedClientHelloKey
-	if len(cfg.ECHKeyFiles) > 0 {
-		k, err := carrier.LoadECHKeys(cfg.ECHKeyFiles)
-		if err != nil {
-			return fmt.Errorf("ech keys: %w", err)
-		}
-		echKeys = k
 	}
 
 	ln, err := net.Listen("tcp", cfg.Listen)
@@ -266,7 +273,7 @@ func endpoints(cfg ClientConfig) []string {
 func carriers(cfg ClientConfig) []string {
 	c := strings.TrimSpace(cfg.Carrier)
 	if c == "" || c == "auto" {
-		return []string{"veil", "drift"}
+		return []string{"veil", "drift", "cdn"}
 	}
 	parts := strings.Split(c, ",")
 	out := parts[:0]
@@ -379,6 +386,9 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		return s, err
 	case "drift":
 		s, _, err := carrier.DialDrift(ctx, cc, cfg.DriftPath)
+		return s, err
+	case "cdn":
+		s, _, err := carrier.DialDriftWS(ctx, cc, cfg.DriftPath)
 		return s, err
 	default:
 		return nil, fmt.Errorf("unknown carrier %q", cfg.Carrier)

@@ -86,6 +86,11 @@ func GenerateECHConfig(publicName string) (list []byte, key tls.EncryptedClientH
 }
 
 // echPublicName extracts public_name from one marshalled ECHConfig.
+// ECHPublicName extracts the public_name from a serialized ECHConfig.
+func ECHPublicName(cfg []byte) (string, error) {
+	return echPublicName(cfg)
+}
+
 func echPublicName(cfg []byte) (string, error) {
 	s := cryptobyte.String(cfg)
 	var version, length uint16

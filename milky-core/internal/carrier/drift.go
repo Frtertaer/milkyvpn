@@ -50,35 +50,57 @@ func (v *VeilListener) DriftHandler(base string) http.Handler {
 				break
 			}
 		}
-		if !ok || (r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch) {
+		if !ok {
 			http.NotFound(w, r)
 			return
 		}
-		bc := newDriftServerConn(w, r)
+		var bc BoundConn
+		isWS := headerContains(r.Header, "Connection", "upgrade") &&
+			headerContains(r.Header, "Upgrade", "websocket")
+		if !isWS && (r.Method != http.MethodPost && r.Method != http.MethodPut && r.Method != http.MethodPatch) {
+			http.NotFound(w, r)
+			return
+		}
+		if isWS {
+			// CDN-shaped drift: kal2 stream inside binary WebSocket frames.
+			// Survives CDN/proxy request-body buffering that breaks raw POST.
+			wc := v.wsAccept(w, r)
+			if wc == nil {
+				return
+			}
+			defer wc.Close()
+			bc = wc
+		} else {
+			bc = newDriftServerConn(w, r)
+		}
+		fail := func(code int) {
+			if isWS {
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(code)
+			_, _ = w.Write([]byte(`{"error":"bad request"}`))
+		}
 		magic := make([]byte, len(kal2.Magic))
 		if _, err := io.ReadFull(bc, magic); err != nil {
-			http.NotFound(w, r)
+			fail(http.StatusNotFound)
 			return
 		}
 		if !bytesEqual(magic, kal2.Magic) {
 			// Rewind isn't possible on a consumed request body — respond like
 			// an unknown upload endpoint.
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusBadRequest)
-			_, _ = w.Write([]byte(`{"error":"bad request"}`))
+			fail(http.StatusBadRequest)
 			return
 		}
 		rest := make([]byte, kal2.FirstFlightMinSize-len(kal2.Magic))
 		if _, err := io.ReadFull(bc, rest); err != nil {
-			http.NotFound(w, r)
+			fail(http.StatusNotFound)
 			return
 		}
 		prefix := append(magic, rest...)
 		eph, totalLen, psk, err := v.authFlight(prefix, nil)
 		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			w.WriteHeader(http.StatusForbidden)
-			_, _ = w.Write([]byte(`{"error":"forbidden"}`))
+			fail(http.StatusForbidden)
 			return
 		}
 		if pad := totalLen - kal2.FirstFlightMinSize; pad > 0 {
@@ -86,20 +108,29 @@ func (v *VeilListener) DriftHandler(base string) http.Handler {
 				return
 			}
 		}
-		// Authenticated: open the streaming response and finish the handshake.
-		w.Header().Set("Content-Type", "application/octet-stream")
-		w.Header().Set("Cache-Control", "no-store")
-		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
+		if !isWS {
+			// Authenticated: open the streaming response and finish the handshake.
+			w.Header().Set("Content-Type", "application/octet-stream")
+			w.Header().Set("Cache-Control", "no-store")
+			w.WriteHeader(http.StatusOK)
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			bc.(*driftServerConn).started = true
 		}
-		bc.started = true
 		if err := v.establishKAL(bc, eph, psk, prefix); err != nil {
 			return
 		}
 		// Keep the handler alive while the session lives: the session's read
-		// loop consumes req.Body; block until it ends.
-		<-r.Context().Done()
+		// loop consumes the request body / WS frames; block until it ends.
+		if isWS {
+			select {
+			case <-bc.(*wsConn).closed:
+			case <-r.Context().Done():
+			}
+		} else {
+			<-r.Context().Done()
+		}
 	})
 }
 
@@ -274,31 +305,123 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 	conn.resp = resp
 	conn.read = resp.Body
 
-	serverFlight := make([]byte, kal2.ServerFlightSize)
-	if _, err := io.ReadFull(conn, serverFlight); err != nil {
-		_ = conn.Close()
-		return nil, nil, fmt.Errorf("server flight: %w", err)
-	}
-	sess, err := hs.ServerFlight(serverFlight)
+	sess, err := driftHandshakeConn(hs, conn, cfg)
 	if err != nil {
 		_ = conn.Close()
 		return nil, nil, err
 	}
+	return sess, conn, nil
+}
+
+// driftHandshakeConn finishes the kal2 handshake over conn once the first
+// flight has been written and the read side is live (shared by the POST-body
+// and WebSocket drift transports).
+func driftHandshakeConn(hs *kal2.ClientHandshake, conn BoundConn, cfg ClientConfig) (*kal2.Session, error) {
+	serverFlight := make([]byte, kal2.ServerFlightSize)
+	if _, err := io.ReadFull(conn, serverFlight); err != nil {
+		return nil, fmt.Errorf("server flight: %w", err)
+	}
+	sess, err := hs.ServerFlight(serverFlight)
+	if err != nil {
+		return nil, err
+	}
 	if _, err := conn.Write(sess.ClientAuthFlight(cfg.PSK, serverFlight)); err != nil {
-		_ = conn.Close()
-		return nil, nil, err
+		return nil, err
 	}
 	fin := make([]byte, kal2.FinishedSize)
 	if _, err := io.ReadFull(conn, fin); err != nil {
-		_ = conn.Close()
-		return nil, nil, fmt.Errorf("server finished: %w", err)
+		return nil, fmt.Errorf("server finished: %w", err)
 	}
 	if subtleCompare(fin, sess.FinishedValue("server")) != 1 {
-		_ = conn.Close()
-		return nil, nil, kal2.ErrHandshake
+		return nil, kal2.ErrHandshake
 	}
 	sess.Attach(conn)
-	return sess, conn, nil
+	return sess, nil
+}
+
+// DialDriftWS is drift over a WebSocket: identical kal2 stream inside binary
+// frames. WebSocket is the one streaming shape CDNs pass unbuffered — use it
+// when the endpoint sits behind a CDN/proxy (proxied DNS name) where raw
+// streaming POST bodies get swallowed.
+func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Session, BoundConn, error) {
+	if path == "" {
+		path = DefaultDriftPath
+	}
+	to := cfg.timeout()
+	dial := cfg.DialContext
+	if dial == nil {
+		d := &net.Dialer{Timeout: to}
+		dial = d.DialContext
+	}
+	raw, err := dial(ctx, "tcp", cfg.Addr)
+	if err != nil {
+		return nil, nil, err
+	}
+	spec, _ := utls.UTLSIdToSpec(pickHelloID(cfg.Fingerprint))
+	// WebSocket upgrade needs http/1.1 end-to-end — force the ALPN extension
+	// in the picked spec or the server negotiates h2 and the GET never parses.
+	for _, ext := range spec.Extensions {
+		if a, ok := ext.(*utls.ALPNExtension); ok {
+			a.AlpnProtocols = []string{"http/1.1"}
+		}
+	}
+	uc := utls.UClient(raw, &utls.Config{
+		ServerName:         cfg.SNI,
+		MinVersion:         utls.VersionTLS13,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
+		NextProtos:         []string{"http/1.1"},
+	}, utls.HelloCustom)
+	if err := uc.ApplyPreset(&spec); err != nil {
+		_ = raw.Close()
+		return nil, nil, err
+	}
+	if err := uc.HandshakeContext(ctx); err != nil {
+		_ = raw.Close()
+		return nil, nil, err
+	}
+	wsc, err := wsDial(uc, cfg.SNI, strings.TrimSuffix(path, "/")+"/"+driftPathToken(cfg.PSK))
+	if err != nil {
+		_ = raw.Close()
+		return nil, nil, err
+	}
+
+	hs, err := kal2.NewClientHandshake(cfg.ServerPub, cfg.PSK, nil)
+	if err != nil {
+		_ = wsc.Close()
+		return nil, nil, err
+	}
+	flight, err := hs.FirstFlight(cfg.FirstFlightPadLen)
+	if err != nil {
+		_ = wsc.Close()
+		return nil, nil, err
+	}
+	if _, err := wsc.Write(flight); err != nil {
+		_ = wsc.Close()
+		return nil, nil, err
+	}
+	type hsRes struct {
+		s   *kal2.Session
+		err error
+	}
+	done := make(chan hsRes, 1)
+	go func() {
+		s, err := driftHandshakeConn(hs, wsc, cfg)
+		done <- hsRes{s, err}
+	}()
+	select {
+	case r := <-done:
+		if r.err != nil {
+			_ = wsc.Close()
+			return nil, nil, r.err
+		}
+		return r.s, wsc, nil
+	case <-ctx.Done():
+		_ = wsc.Close()
+		return nil, nil, ctx.Err()
+	case <-time.After(to):
+		_ = wsc.Close()
+		return nil, nil, fmt.Errorf("drift-ws handshake timeout")
+	}
 }
 
 // driftClientConn adapts the h2 request/response pair to BoundConn.

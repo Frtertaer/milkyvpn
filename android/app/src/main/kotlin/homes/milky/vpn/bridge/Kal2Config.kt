@@ -17,6 +17,7 @@ object Kal2Config {
         val carrier = when (p.network.lowercase()) {
             "drift" -> "drift"
             "veil" -> "veil"
+            "cdn" -> "cdn"
             else -> "auto"
         }
         return JSONObject()
