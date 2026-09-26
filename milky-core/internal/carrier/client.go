@@ -29,6 +29,11 @@ type ClientConfig struct {
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 	// InsecureSkipVerify disables TLS chain verification (tests only).
 	InsecureSkipVerify bool
+	// ECHConfigList enables Encrypted Client Hello (draft-ietf-tls-esni): the
+	// real SNI travels encrypted; the outer ClientHello shows only the
+	// config's public_name — defeats SNI-based DPI blocking entirely.
+	// Serialized ECHConfigList (base64 in links/configs).
+	ECHConfigList []byte
 	// Deadline for connect+handshake.
 	HandshakeTimeout time.Duration
 	// FirstFlightPadLen: -1 random, else explicit padding length.
@@ -62,10 +67,11 @@ func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, 
 		spec, _ = utls.UTLSIdToSpec(utls.HelloGolang)
 	}
 	uconn := utls.UClient(raw, &utls.Config{
-		ServerName:         cfg.SNI,
-		MinVersion:         utls.VersionTLS13,
-		InsecureSkipVerify: cfg.InsecureSkipVerify,
-		NextProtos:         []string{"h2", "http/1.1"},
+		ServerName:                     cfg.SNI,
+		MinVersion:                     utls.VersionTLS13,
+		InsecureSkipVerify:             cfg.InsecureSkipVerify,
+		NextProtos:                     []string{"h2", "http/1.1"},
+		EncryptedClientHelloConfigList: cfg.ECHConfigList,
 	}, utls.HelloCustom)
 	if err := uconn.ApplyPreset(&spec); err != nil {
 		_ = raw.Close()

@@ -43,7 +43,11 @@ type ServerConfig struct {
 	// Egress controls upstream dialing: IPv4 preference and an optional
 	// chained SOCKS5 upstream (e.g. for reputation-flagged ranges).
 	Egress *core.EgressConfig
-	Logf   func(string, ...any)
+	// ECHKeyFiles are JSON key files written by `kal2-server -echgen`
+	// (carrier.SaveECHKeyFile format). Enables Encrypted Client Hello on the
+	// veil listener — the outer ClientHello then shows only the cover name.
+	ECHKeyFiles []string
+	Logf        func(string, ...any)
 }
 
 // User is a provisioned client credential pair.
@@ -67,6 +71,13 @@ type ClientConfig struct {
 	// forge the session. Needed on devices with stale CA stores (old Android
 	// system images lack newer roots like ISRG Root X1/X2).
 	InsecureSkipVerify bool
+	// ECHConfigList enables Encrypted Client Hello on the veil carrier
+	// (serialized ECHConfigList). On a veil dial failure it is retried once
+	// without ECH — availability beats the marginal stealth loss.
+	ECHConfigList []byte
+	// Cover sends jittered randomized PING records while the session is up so
+	// idle periods don't read as a "quiet tunnel" timing signature.
+	Cover bool
 	// DialContext overrides the base TCP dial (e.g. via HTTP CONNECT proxy).
 	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
 	HandshakeTimeout time.Duration
@@ -147,6 +158,15 @@ func Serve(cfg ServerConfig) error {
 		logf = func(string, ...any) {}
 	}
 
+	var echKeys []tls.EncryptedClientHelloKey
+	if len(cfg.ECHKeyFiles) > 0 {
+		k, err := carrier.LoadECHKeys(cfg.ECHKeyFiles)
+		if err != nil {
+			return fmt.Errorf("ech keys: %w", err)
+		}
+		echKeys = k
+	}
+
 	ln, err := net.Listen("tcp", cfg.Listen)
 	if err != nil {
 		return err
@@ -158,6 +178,7 @@ func Serve(cfg ServerConfig) error {
 		Users:     toCarrierUsers(cfg.Users),
 		StealAddr: cfg.StealAddr,
 		Logf:      logf,
+		ECHKeys:   echKeys,
 		OnSession: func(s *kal2.Session) {
 			go func() {
 				_ = core.ServeEgressCfg(s, nil, cfg.Egress, logf)
@@ -200,7 +221,34 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	return &Client{Sess: sess, cfg: cfg, logf: logf, stop: make(chan struct{})}, nil
+	cli := &Client{Sess: sess, cfg: cfg, logf: logf, stop: make(chan struct{})}
+	if cfg.Cover {
+		go cli.coverLoop()
+	}
+	return cli, nil
+}
+
+// coverLoop emits jittered random-payload PINGs while the session is up so an
+// idle tunnel doesn't read as a quiet, fixed-timing signature to DPI.
+func (c *Client) coverLoop() {
+	for {
+		// 6–18s jittered interval; payload size varies too.
+		d := 6*time.Second + time.Duration(rand.IntN(13))*time.Second
+		select {
+		case <-c.stop:
+			return
+		case <-time.After(d):
+		}
+		s := c.Session()
+		if s == nil {
+			continue
+		}
+		pad := make([]byte, 8+rand.IntN(80))
+		for i := range pad {
+			pad[i] = byte(rand.IntN(256))
+		}
+		_ = s.Ping(pad, 10*time.Second)
+	}
 }
 
 func endpoints(cfg ClientConfig) []string {
@@ -316,10 +364,18 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		DialContext:        cfg.DialContext,
 		HandshakeTimeout:   cfg.HandshakeTimeout,
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
+		ECHConfigList:      cfg.ECHConfigList,
 	}
 	switch cfg.Carrier {
 	case "", "veil":
 		s, _, err := carrier.DialVeil(ctx, cc)
+		if err != nil && len(cc.ECHConfigList) > 0 {
+			cc.ECHConfigList = nil
+			if cfg.Logf != nil {
+				cfg.Logf("kal2: veil+ech failed (%v) — retrying plain veil", err)
+			}
+			s, _, err = carrier.DialVeil(ctx, cc)
+		}
 		return s, err
 	case "drift":
 		s, _, err := carrier.DialDrift(ctx, cc, cfg.DriftPath)

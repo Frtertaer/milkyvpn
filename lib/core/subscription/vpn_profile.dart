@@ -40,6 +40,8 @@ class VpnProfile {
     this.fingerprint,
     this.publicKey,
     this.shortId,
+    this.ech,
+    this.cover,
     this.spiderX,
     this.flow,
     this.host,
@@ -69,6 +71,10 @@ class VpnProfile {
   final String? fingerprint;
   final String? publicKey;
   final String? shortId;
+  /// kal2 veil: base64 ECHConfigList — encrypted ClientHello (outer SNI =
+  /// cover name only). `cover`: "0"/"false" disables jittered chaff traffic.
+  final String? ech;
+  final String? cover;
   final String? spiderX;
   final String? flow;
   final String? host;
@@ -148,6 +154,8 @@ class VpnProfile {
     'fingerprint': fingerprint,
     'publicKey': publicKey,
     'shortId': shortId,
+    'ech': ech,
+    'cover': cover,
     'spiderX': spiderX,
     'flow': flow,
     'host': host,

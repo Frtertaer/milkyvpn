@@ -42,6 +42,11 @@ type VeilConfig struct {
 	// StealAddr optionally splices connections whose ClientHello carries a
 	// foreign SNI to this host:port (REALITY-style fallback). Empty closes.
 	StealAddr string
+	// ECHKeys enables Encrypted Client Hello: clients present public_name
+	// (taken from each key's Config) as the outer SNI while the real SNI stays
+	// encrypted — an observer or blocklist sees only the cover name. Load via
+	// LoadECHKeys.
+	ECHKeys []tls.EncryptedClientHelloKey
 	// OnSession is invoked for each established KAL/2 session.
 	OnSession func(*kal2.Session)
 	// Logf receives operational messages.
@@ -187,8 +192,18 @@ func (v *VeilListener) handle(c net.Conn) bool {
 		return false
 	}
 
+	// ECH clients carry the config's public_name as outer SNI.
+	echPublic := ""
+	for _, k := range v.cfg.ECHKeys {
+		if n, err := echPublicName(k.Config); err == nil {
+			echPublic = n
+			break
+		}
+	}
+
 	switch {
-	case equalSNI(sni, v.cfg.Domain):
+	case equalSNI(sni, v.cfg.Domain),
+		echPublic != "" && equalSNI(sni, echPublic):
 		// ours — terminate and demux
 	case sni != "" && v.cfg.StealAddr != "":
 		v.spliceUpstream(c, peeked, v.cfg.StealAddr)
@@ -203,9 +218,10 @@ func (v *VeilListener) handle(c net.Conn) bool {
 	}
 
 	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{v.cfg.Cert},
-		MinVersion:   tls.VersionTLS13,
-		NextProtos:   []string{"h2", "http/1.1"},
+		Certificates:             []tls.Certificate{v.cfg.Cert},
+		MinVersion:               tls.VersionTLS13,
+		NextProtos:               []string{"h2", "http/1.1"},
+		EncryptedClientHelloKeys: v.cfg.ECHKeys,
 	}
 	if v.cfg.GetCertificate != nil {
 		tlsCfg.Certificates = nil
