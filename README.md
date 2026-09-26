@@ -2,7 +2,17 @@
 
 > Простой VPN без ручной настройки серверов.
 
-Android VPN-клиент для подписки Milky (`https://sub.milky.homes/s/{token}`): Flutter UI + нативный Kotlin `VpnService` + движок **Xray-core** (через [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite)).
+## Готовые пакеты (скачать и сразу пользоваться)
+
+Три самостоятельные ветки этого репозитория — каждая скачивается одним zip:
+
+| ветка | что внутри | zip |
+|-------|-----------|-----|
+| [`mirage-core`](../../tree/mirage-core) | ядро Mirage (KAL/2): исходники Go + готовые бинарники клиента/сервера + пошаговые инструкции | [скачать](../../archive/refs/heads/mirage-core.zip) |
+| [`milky-app`](../../tree/milky-app) | приложение: Flutter-код + готовые APK (Android 6+, arm64/armeabi) + PC-клиент + инструкции | [скачать](../../archive/refs/heads/milky-app.zip) |
+| [`kal2-protocol`](../../tree/kal2-protocol) | протокол KAL/2: полная спецификация провода, модель угроз, гайд по встраиванию | [скачать](../../archive/refs/heads/kal2-protocol.zip) |
+
+Android VPN-клиент для подписки Milky (`https://sub.milky.homes/s/{token}`): Flutter UI + нативный Kotlin `VpnService` + движок **Xray-core** (через [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite)) + собственный протокол **KAL/2** (ядро Mirage — `milky-core/`).
 
 | | |
 |---|---|

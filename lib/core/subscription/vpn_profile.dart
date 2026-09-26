@@ -8,7 +8,17 @@ enum ServerLocation { finland, usa, unknown }
 enum LocationChoice { auto, finland, usa }
 
 /// Transport family of a parsed profile.
-enum ProfileKind { vlessRealityTcp, vlessWsTls, vlessXhttp, hysteria2, other }
+enum ProfileKind {
+  vlessRealityTcp,
+  vlessWsTls,
+  vlessXhttp,
+  hysteria2,
+  vmess,
+  trojan,
+  shadowsocks,
+  kal2,
+  other,
+}
 
 /// A parsed subscription entry.
 ///
@@ -30,6 +40,8 @@ class VpnProfile {
     this.fingerprint,
     this.publicKey,
     this.shortId,
+    this.ech,
+    this.cover,
     this.spiderX,
     this.flow,
     this.host,
@@ -38,6 +50,9 @@ class VpnProfile {
     this.alpn,
     this.allowInsecure = false,
     this.obfsPassword,
+    this.alterId = 0,
+    this.cipher,
+    this.plugin,
   });
 
   /// Opaque stable correlation id.
@@ -56,6 +71,10 @@ class VpnProfile {
   final String? fingerprint;
   final String? publicKey;
   final String? shortId;
+  /// kal2 veil: base64 ECHConfigList — encrypted ClientHello (outer SNI =
+  /// cover name only). `cover`: "0"/"false" disables jittered chaff traffic.
+  final String? ech;
+  final String? cover;
   final String? spiderX;
   final String? flow;
   final String? host;
@@ -65,10 +84,23 @@ class VpnProfile {
   final bool allowInsecure;
   final String? obfsPassword;
 
+  /// VMess `aid` (0 for modern servers).
+  final int alterId;
+
+  /// Shadowsocks cipher (`method`) or VMess `scy` cipher name.
+  final String? cipher;
+
+  /// Shadowsocks SIP002 `plugin=` string, when present in the share link.
+  final String? plugin;
+
   ProfileKind get kind {
     final proto = protocol.toLowerCase();
     final sec = security.toLowerCase();
     if (proto == 'hysteria2' || proto == 'hy2') return ProfileKind.hysteria2;
+    if (proto == 'vmess') return ProfileKind.vmess;
+    if (proto == 'trojan') return ProfileKind.trojan;
+    if (proto == 'ss' || proto == 'shadowsocks') return ProfileKind.shadowsocks;
+    if (proto == 'kal2') return ProfileKind.kal2;
     if (proto == 'vless') {
       final n = normalizeNetwork(network);
       if (n == 'tcp' && sec == 'reality') return ProfileKind.vlessRealityTcp;
@@ -122,6 +154,8 @@ class VpnProfile {
     'fingerprint': fingerprint,
     'publicKey': publicKey,
     'shortId': shortId,
+    'ech': ech,
+    'cover': cover,
     'spiderX': spiderX,
     'flow': flow,
     'host': host,
@@ -130,6 +164,9 @@ class VpnProfile {
     'alpn': alpn,
     'allowInsecure': allowInsecure,
     'obfsPassword': obfsPassword,
+    'alterId': alterId,
+    'cipher': cipher,
+    'plugin': plugin,
   };
 
   /// Remark with anything that looks like credential material removed.
@@ -174,6 +211,34 @@ class VpnProfile {
         return true;
       case ProfileKind.hysteria2:
         return true;
+      case ProfileKind.vmess:
+        const vmessNetworks = {'tcp', 'ws', 'xhttp', 'grpc'};
+        if (!vmessNetworks.contains(normalizeNetwork(network))) return false;
+        return sec == 'tls' || sec == 'none';
+      case ProfileKind.trojan:
+        const trojanNetworks = {'tcp', 'ws', 'grpc'};
+        if (!trojanNetworks.contains(normalizeNetwork(network))) return false;
+        return sec == 'tls' || sec == 'none';
+      case ProfileKind.shadowsocks:
+        const ciphers = {
+          'aes-128-gcm',
+          'aes-256-gcm',
+          'chacha20-ietf-poly1305',
+          'chacha20-poly1305',
+          'xchacha20-ietf-poly1305',
+          '2022-blake3-aes-128-gcm',
+          '2022-blake3-aes-256-gcm',
+          '2022-blake3-chacha20-poly1305',
+          'none',
+          'plain',
+        };
+        if (!ciphers.contains((cipher ?? '').toLowerCase())) return false;
+        // SIP002 plugins (v2ray-plugin, obfs-local) have no engine equivalent.
+        return plugin == null || plugin!.isEmpty;
+      case ProfileKind.kal2:
+        // Executable where the native core is present (Android: libcore.so in
+        // the APK); requires the server public key alongside the PSK.
+        return publicKey != null && publicKey!.isNotEmpty;
       case ProfileKind.other:
         return false;
     }

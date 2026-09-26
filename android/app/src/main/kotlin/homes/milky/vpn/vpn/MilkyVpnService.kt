@@ -19,6 +19,9 @@ import go.Seq
 import homes.milky.vpn.MainActivity
 import homes.milky.vpn.R
 import homes.milky.vpn.core.XrayConfigBuilder
+import homes.milky.vpn.bridge.Kal2Config
+import homes.milky.vpn.kal2.Kal2Service
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -82,7 +85,10 @@ class MilkyVpnService : VpnService() {
         }
     }
 
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val scope = CoroutineScope(
+        SupervisorJob() + Dispatchers.IO +
+            CoroutineExceptionHandler { _, t -> SafeLog.w("service coroutine error", t) }
+    )
     private val mutex = Mutex()
     private val attempts = ConnectionAttemptGate()
     private var tunFd: ParcelFileDescriptor? = null
@@ -184,7 +190,22 @@ class MilkyVpnService : VpnService() {
 
             // 1. Resolve uplink on the underlying network (TUN not yet established).
             val resolved = resolveServer(spec.address)
-            val config = XrayConfigBuilder.build(spec, tunEnabled = true, resolvedServerIps = resolved)
+
+            // KAL/2 profiles: the native session must be up before the config is built —
+            // the SOCKS port it binds goes into the bridge outbound.
+            var kal2SocksPort: Int? = null
+            if (Kal2Config.isKal2(spec)) {
+                trace.begin("KAL2_SESSION_STARTING")
+                kal2SocksPort = Kal2Service.startSession(this, Kal2Config.toJson(spec).toString())
+                trace.success("KAL2_SESSION_STARTED", "carrier=${spec.network.lowercase()}")
+            }
+
+            val config = XrayConfigBuilder.build(
+                spec,
+                tunEnabled = true,
+                resolvedServerIps = resolved,
+                kal2SocksPort = kal2SocksPort,
+            )
             trace.success("CONFIG_BUILT", configShape(spec, config))
 
             // 2. Establish TUN.
@@ -392,6 +413,11 @@ class MilkyVpnService : VpnService() {
         }
         controller = null
         try {
+            Kal2Service.stopSession(this) // idempotent
+        } catch (t: Throwable) {
+            SafeLog.w("kal2 stop", t)
+        }
+        try {
             tunFd?.close()
         } catch (t: Throwable) {
             SafeLog.w("tun close", t)
@@ -482,6 +508,7 @@ class MilkyVpnService : VpnService() {
     // ---------------------------------------------------------------- notification
 
     private fun createChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val ch = NotificationChannel(NOTIF_CHANNEL, getString(R.string.vpn_channel_name), NotificationManager.IMPORTANCE_LOW)
         ch.description = getString(R.string.vpn_channel_desc)
@@ -535,8 +562,8 @@ internal fun configShape(p: XrayConfigBuilder.ProfileSpec, config: JSONObject): 
     fun present(value: String?) = !value.isNullOrBlank()
     fun enum(value: String?, allowed: Set<String>) = if (value in allowed) value else "other_or_absent"
     return listOf(
-        "protocol=${enum(p.protocol, setOf("vless", "hysteria2"))}",
-        "network=${enum(p.network, setOf("tcp", "raw", "ws", "xhttp"))}",
+        "protocol=${enum(p.protocol, setOf("vless", "hysteria2", "kal2"))}",
+        "network=${enum(p.network, setOf("tcp", "raw", "ws", "xhttp", "veil", "drift", "relay"))}",
         "security=${enum(p.security, setOf("reality", "tls", "none"))}",
         "addressPresent=${p.address.isNotBlank()}", "portValid=${p.port in 1..65535}",
         "credentialPresent=${p.secret.isNotBlank()}", "sniPresent=${present(p.sni)}",

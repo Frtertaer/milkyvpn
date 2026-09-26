@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.json.JSONObject
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -57,9 +58,45 @@ class XrayConfigBuilderTest {
         }
         assertTrue(found)
         // DNS port 53 from tun goes to dns-out
-        val dnsRule = rules.getJSONObject(0)
-        assertEquals("53", dnsRule.getString("port"))
-        assertEquals("dns-out", dnsRule.getString("outboundTag"))
+        var dnsFound = false
+        for (i in 0 until rules.length()) {
+            val r = rules.getJSONObject(i)
+            if (r.optString("port") == "53" && r.optString("outboundTag") == "dns-out") dnsFound = true
+        }
+        assertTrue(dnsFound)
+    }
+
+    @Test
+    fun ruDomainsBypassTunnel() {
+        val cfg = XrayConfigBuilder.build(reality())
+        val rules = cfg.getJSONObject("routing").getJSONArray("rules")
+        var ruRule: JSONObject? = null
+        for (i in 0 until rules.length()) {
+            val r = rules.getJSONObject(i)
+            if (!r.has("domain") || r.optString("outboundTag") != "direct") continue
+            val domains = r.getJSONArray("domain")
+            val values = (0 until domains.length()).map { domains.getString(it) }
+            if ("ru" in values && "su" in values) ruRule = r
+        }
+        assertTrue("RU domains must route to direct", ruRule != null)
+        val ruDomains = ruRule!!.getJSONArray("domain")
+        val values = (0 until ruDomains.length()).map { ruDomains.getString(it) }.toSet()
+        assertTrue(values.contains("xn--p1ai"))
+        assertTrue(values.contains("ozoncdn.net"))
+
+        // Yandex DNS is pinned as a domain-scoped server and reachable directly
+        val dnsServers = cfg.getJSONObject("dns").getJSONArray("servers")
+        val first = dnsServers.getJSONObject(0)
+        assertEquals("77.88.8.8", first.getString("address"))
+        var dnsBypass = false
+        for (i in 0 until rules.length()) {
+            val r = rules.getJSONObject(i)
+            if (!r.has("ip") || r.optString("outboundTag") != "direct") continue
+            val ips = r.getJSONArray("ip")
+            val v = (0 until ips.length()).map { ips.getString(it) }
+            if ("77.88.8.8" in v) dnsBypass = true
+        }
+        assertTrue(dnsBypass)
     }
 
     @Test
@@ -110,16 +147,23 @@ class XrayConfigBuilderTest {
         assertEquals("h3", stream.getJSONObject("tlsSettings").getJSONArray("alpn").getString(0))
         assertEquals("hy.example.invalid", stream.getJSONObject("tlsSettings").getString("serverName"))
         assertEquals("salamander", stream.getJSONObject("finalmask").getJSONArray("udp").getJSONObject(0).getString("type"))
-        // IP literal server -> routed by ip rule
+        // IP literal server -> routed by an ip rule to direct
         val rules = XrayConfigBuilder.build(p).getJSONObject("routing").getJSONArray("rules")
-        assertEquals("203.0.113.20", rules.getJSONObject(1).getJSONArray("ip").getString(0))
+        var ipFound = false
+        for (i in 0 until rules.length()) {
+            val r = rules.getJSONObject(i)
+            if (!r.has("ip")) continue
+            val ips = r.getJSONArray("ip")
+            for (j in 0 until ips.length()) if (ips.getString(j) == "203.0.113.20") ipFound = true
+        }
+        assertTrue(ipFound)
     }
 
     @Test
     fun rejectsUnsupportedProtocolsAndMissingReality() {
-        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vmess", "a.b", 443, fakeUuid)))
-        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("trojan", "a.b", 443, "x")))
-        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "a.b", 443, fakeUuid, network = "grpc")))
+        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("wireguard", "a.b", 443, fakeUuid)))
+        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("tuic", "a.b", 443, "x")))
+        assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "a.b", 443, fakeUuid, network = "mkcp")))
         assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "a.b", 443, fakeUuid, security = "reality"))) // no pbk
         assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "a.b", 0, fakeUuid)))
         assertFalse(XrayConfigBuilder.isSupported(ProfileSpec("vless", "", 443, fakeUuid)))
@@ -132,6 +176,64 @@ class XrayConfigBuilderTest {
             assertEquals("protocol", e.message)
         }
     }
+
+    @Test
+    fun vmessBuildsVmessOutbound() {
+        val p = ProfileSpec(
+            protocol = "vmess", address = "us1.example.invalid", port = 443, secret = fakeUuid,
+            network = "ws", security = "tls", host = "cdn.example.invalid", path = "/vm",
+            alterId = 0, cipher = "auto",
+        )
+        val proxy = XrayConfigBuilder.build(p).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("vmess", proxy.getString("protocol"))
+        val user = proxy.getJSONObject("settings").getJSONArray("vnext").getJSONObject(0)
+            .getJSONArray("users").getJSONObject(0)
+        assertEquals(fakeUuid, user.getString("id"))
+        assertEquals("auto", user.getString("security"))
+        val stream = proxy.getJSONObject("streamSettings")
+        assertEquals("ws", stream.getString("network"))
+        assertEquals("tls", stream.getString("security"))
+        assertEquals("cdn.example.invalid", stream.getJSONObject("tlsSettings").getString("serverName"))
+    }
+
+    @Test
+    fun trojanBuildsTrojanOutboundWithGrpc() {
+        val p = ProfileSpec(
+            protocol = "trojan", address = "us1.example.invalid", port = 443, secret = "pw-abc",
+            network = "grpc", security = "tls", path = "trojan-grpc",
+        )
+        val proxy = XrayConfigBuilder.build(p).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("trojan", proxy.getString("protocol"))
+        val server = proxy.getJSONObject("settings").getJSONArray("servers").getJSONObject(0)
+        assertEquals("pw-abc", server.getString("password"))
+        val stream = proxy.getJSONObject("streamSettings")
+        assertEquals("grpc", stream.getString("network"))
+        assertEquals("trojan-grpc", stream.getJSONObject("grpcSettings").getString("serviceName"))
+        assertEquals("tls", stream.getString("security"))
+    }
+
+    @Test
+    fun shadowsocksBuildsSsOutboundAndValidatesCipher() {
+        val p = ProfileSpec(
+            protocol = "ss", address = "us1.example.invalid", port = 8388, secret = "pw-abc",
+            cipher = "aes-256-gcm",
+        )
+        val proxy = XrayConfigBuilder.build(p).getJSONArray("outbounds").getJSONObject(0)
+        assertEquals("shadowsocks", proxy.getString("protocol"))
+        val server = proxy.getJSONObject("settings").getJSONArray("servers").getJSONObject(0)
+        assertEquals("aes-256-gcm", server.getString("method"))
+        assertEquals("pw-abc", server.getString("password"))
+        assertFalse(XrayConfigBuilder.isSupported(p.copy(cipher = "aes-256-cfb")))
+        assertFalse(XrayConfigBuilder.isSupported(p.copy(plugin = "obfs-local")))
+    }
+
+    private fun ProfileSpec.copy(
+        cipher: String? = this.cipher,
+        plugin: String? = this.plugin,
+    ) = ProfileSpec(
+        protocol = protocol, address = address, port = port, secret = secret,
+        network = network, security = security, cipher = cipher, plugin = plugin,
+    )
 
     @Test
     fun fromMapHandlesMissingAndNumericValues() {

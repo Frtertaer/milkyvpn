@@ -1,6 +1,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <!-- libv2ray.aar declares minSdk 24 but its JNI imports are all <=API 21;
+         the app still targets Android 6 (API 23). -->
+    <uses-sdk tools:overrideLibrary="go.libv2ray.gojni, io.flutter.plugins.pathprovider, io.flutter.plugins.sharedpreferences, io.flutter.plugins.urllauncher, com.it_nomads.fluttersecurestorage" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
@@ -63,6 +67,16 @@
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
                 android:value="Persistent Android VpnService tunnel: routes the device's traffic through the user's MilkyVPN server while the VPN is connected. Google Play VpnService declaration is submitted for this app." />
         </service>
+
+        <!-- KAL/2 Mirage core lives in its own process: libcore.so and libgojni.so
+             each carry an independent Go runtime, and two Go runtimes in one
+             process corrupt each other's scheduler/signal state (connect-time
+             SIGABRT). The cores already speak loopback SOCKS5, which crosses
+             process boundaries transparently. -->
+        <service
+            android:name=".kal2.Kal2Service"
+            android:exported="false"
+            android:process=":kal2" />
 
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

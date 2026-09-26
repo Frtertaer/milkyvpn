@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/errors/milky_error.dart';
+import '../../core/subscription/subscription_exporter.dart';
 import '../../core/subscription/subscription_repository.dart';
 import '../../core/vpn/vpn_bridge.dart';
 import '../../core/vpn/vpn_controller.dart';
@@ -117,11 +118,21 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
               if (_advanced)
                 MilkyGlassCard(
                   padding: EdgeInsets.zero,
-                  child: _AdvancedRow(
-                    icon: Icons.content_copy_rounded,
-                    title: t.copyLink,
-                    subtitle: t.subscriptionHint,
-                    onTap: _copyLink,
+                  child: Column(
+                    children: [
+                      _AdvancedRow(
+                        icon: Icons.content_copy_rounded,
+                        title: t.copyLink,
+                        subtitle: t.subscriptionHint,
+                        onTap: _copyLink,
+                      ),
+                      _AdvancedRow(
+                        icon: Icons.ios_share_rounded,
+                        title: t.exportProfiles,
+                        subtitle: t.exportProfilesHint,
+                        onTap: _exportProfiles,
+                      ),
+                    ],
                   ),
                 ),
             ],
@@ -193,6 +204,21 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     if (url == null) return;
     await MilkyClipboard.copy(url);
     messenger.showSnackBar(SnackBar(content: Text(t.linkCopied)));
+  }
+
+  /// Copies the full profile list as share links to the clipboard.
+  /// The payload is credential-bearing — same trust level as the sub URL.
+  Future<void> _exportProfiles() async {
+    final t = S.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+    final snap = context.read<SubscriptionRepository>().snapshot;
+    if (snap == null || snap.profiles.isEmpty) return;
+    final body = const SubscriptionExporter().exportSubscription(
+      snap.profiles,
+    );
+    if (body.isEmpty) return;
+    await MilkyClipboard.copy(body);
+    messenger.showSnackBar(SnackBar(content: Text(t.profilesExported)));
   }
 
   void _openDiagnostics() {

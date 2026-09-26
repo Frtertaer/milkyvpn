@@ -12,7 +12,8 @@ import org.json.JSONObject
  * Network topology:
  *   Android TUN (fd passed to core)  ->  "tun" inbound (gVisor stack inside Xray)
  *   -> routing: port 53 -> dns-out, everything else -> "proxy" outbound
- *   -> proxy outbound: vless(+reality|tls, tcp|ws|xhttp) or hysteria2
+ *   -> proxy outbound: vless|vmess|trojan|shadowsocks(+reality|tls,
+ *   tcp|ws|xhttp|grpc) or hysteria2
  *
  * Loop avoidance: the VpnService excludes its own package from the tunnel
  * (Builder.addDisallowedApplication), so the core's uplink sockets never enter the TUN.
@@ -25,9 +26,17 @@ object XrayConfigBuilder {
     const val TUN_DNS_2 = "8.8.8.8"
 
     /** Transports that are genuinely executable by this engine. */
-    val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2")
-    val SUPPORTED_VLESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp")
+    val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2", "vmess", "trojan", "ss", "shadowsocks", "kal2")
+    val SUPPORTED_KAL2_CARRIERS = setOf("veil", "drift", "relay")
+    val SUPPORTED_VLESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
     val SUPPORTED_VLESS_SECURITY = setOf("reality", "tls", "none")
+    val SUPPORTED_VMESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
+    val SUPPORTED_TROJAN_NETWORKS = setOf("tcp", "raw", "ws", "grpc")
+    val SUPPORTED_SS_CIPHERS = setOf(
+        "aes-128-gcm", "aes-256-gcm", "chacha20-ietf-poly1305", "chacha20-poly1305",
+        "xchacha20-ietf-poly1305", "2022-blake3-aes-128-gcm", "2022-blake3-aes-256-gcm",
+        "2022-blake3-chacha20-poly1305", "none", "plain",
+    )
 
     /**
      * Inline equivalent of the upstream `geoip:private` entry.
@@ -72,6 +81,8 @@ object XrayConfigBuilder {
         val fingerprint: String? = null,
         val publicKey: String? = null,
         val shortId: String? = null,
+        val ech: String? = null,
+        val cover: String? = null,
         val spiderX: String? = null,
         val flow: String? = null,
         val host: String? = null,
@@ -80,6 +91,9 @@ object XrayConfigBuilder {
         val alpn: String? = null,
         val allowInsecure: Boolean = false,
         val obfsPassword: String? = null,
+        val alterId: Int = 0,
+        val cipher: String? = null,
+        val plugin: String? = null,
     ) {
         companion object {
             fun fromMap(m: Map<*, *>): ProfileSpec {
@@ -95,6 +109,8 @@ object XrayConfigBuilder {
                     fingerprint = s("fingerprint"),
                     publicKey = s("publicKey"),
                     shortId = s("shortId"),
+                    ech = s("ech"),
+                    cover = s("cover"),
                     spiderX = s("spiderX"),
                     flow = s("flow"),
                     host = s("host"),
@@ -103,10 +119,43 @@ object XrayConfigBuilder {
                     alpn = s("alpn"),
                     allowInsecure = (m["allowInsecure"] as? Boolean) ?: false,
                     obfsPassword = s("obfsPassword"),
+                    alterId = (m["alterId"] as? Number)?.toInt() ?: 0,
+                    cipher = s("cipher"),
+                    plugin = s("plugin"),
                 )
             }
         }
     }
+
+    /**
+     * RU services bypass the tunnel so they keep seeing the user's real (residential)
+     * egress IP instead of a datacentre VPN exit that their anti-bot/fraud checks flag
+     * or outright block (e.g. "Похоже, нет соединения" on ozon.ru).
+     *
+     * [RU_TLD_SUFFIXES] uses plain domain entries: in the core's matcher a bare "ru"
+     * covers "ru" itself and every subdomain — i.e. the entire .ru zone.
+     * [RU_SERVICE_DOMAINS] lists major RU properties hosted on non-RU TLDs.
+     */
+    private val RU_TLD_SUFFIXES = listOf("ru", "su", "xn--p1ai")
+    private val RU_SERVICE_DOMAINS = listOf(
+        // Yandex / VK / Mail group
+        "yandex.net", "yandex.com", "yaani.net", "yastatic.net",
+        "vk.com", "vk.me", "vk.company", "userapi.com", "mycdn.me", "vkcdn.net", "my.com",
+        // Marketplaces & retail
+        "ozon.ru", "ozoncdn.net", "ozonusercontent.com", "ozon.tech",
+        "wildberries.ru", "wb.ru", "wbstatic.net", "wbbasket.ru",
+        "avito.st", "lenta.com", "lemanapro.ru", "vseinstrumenti.ru",
+        // Banks & fintech
+        "vtb.com", "alfabank.net", "tinkoff.net", "tbank.ru", "sber.ru", "sberdevices.ru",
+        // Gov & services
+        "2gis.com", "gosuslugi.ru", "esia.gosuslugi.ru",
+        // Media & misc
+        "kino.pub", "kinopoisk.io",
+    )
+
+    /** Yandex public DNS — queried directly for RU domains so CDN geo answers are RU-side. */
+    private const val RU_DNS_PRIMARY = "77.88.8.8"
+    private const val RU_DNS_SECONDARY = "77.88.8.1"
 
     class UnsupportedProfileException(message: String) : IllegalArgumentException(message)
 
@@ -121,13 +170,34 @@ object XrayConfigBuilder {
         if (p.address.isBlank()) throw UnsupportedProfileException("address")
         if (p.port !in 1..65535) throw UnsupportedProfileException("port")
         if (p.secret.isBlank()) throw UnsupportedProfileException("credential")
-        if (p.protocol == "vless") {
-            val net = normalizeNetwork(p.network)
-            if (net !in SUPPORTED_VLESS_NETWORKS) throw UnsupportedProfileException("network")
-            if (p.security !in SUPPORTED_VLESS_SECURITY) throw UnsupportedProfileException("security")
-            if (p.security == "reality") {
-                if (p.publicKey.isNullOrBlank()) throw UnsupportedProfileException("reality.publicKey")
-                if (net == "ws") throw UnsupportedProfileException("reality+ws")
+        when (p.protocol) {
+            "kal2" -> {
+                if (p.publicKey.isNullOrBlank()) throw UnsupportedProfileException("kal2.pub")
+                if (p.network.lowercase() !in SUPPORTED_KAL2_CARRIERS)
+                    throw UnsupportedProfileException("kal2.carrier")
+            }
+            "vless" -> {
+                val net = normalizeNetwork(p.network)
+                if (net !in SUPPORTED_VLESS_NETWORKS) throw UnsupportedProfileException("network")
+                if (p.security !in SUPPORTED_VLESS_SECURITY) throw UnsupportedProfileException("security")
+                if (p.security == "reality") {
+                    if (p.publicKey.isNullOrBlank()) throw UnsupportedProfileException("reality.publicKey")
+                    if (net == "ws") throw UnsupportedProfileException("reality+ws")
+                }
+            }
+            "vmess" -> {
+                if (normalizeNetwork(p.network) !in SUPPORTED_VMESS_NETWORKS)
+                    throw UnsupportedProfileException("network")
+            }
+            "trojan" -> {
+                if (normalizeNetwork(p.network) !in SUPPORTED_TROJAN_NETWORKS)
+                    throw UnsupportedProfileException("network")
+            }
+            "ss", "shadowsocks" -> {
+                if (p.cipher.isNullOrBlank()) throw UnsupportedProfileException("method")
+                if (p.cipher.lowercase() !in SUPPORTED_SS_CIPHERS)
+                    throw UnsupportedProfileException("method")
+                if (!p.plugin.isNullOrBlank()) throw UnsupportedProfileException("plugin")
             }
         }
     }
@@ -140,14 +210,20 @@ object XrayConfigBuilder {
 
     /**
      * @param tunEnabled when false, only a local SOCKS inbound is created (used by MeasureOutboundDelay).
+     * @param kal2SocksPort loopback SOCKS port of the already-running KAL/2 client; required
+     *        when [p.protocol] is "kal2" — the proxy outbound then points at that local bridge
+     *        instead of speaking to the server directly.
      */
     fun build(
         p: ProfileSpec,
         tunEnabled: Boolean = true,
         socksPort: Int = 10808,
         resolvedServerIps: List<String> = emptyList(),
+        kal2SocksPort: Int? = null,
     ): JSONObject {
         validate(p)
+        if (p.protocol == "kal2" && kal2SocksPort == null)
+            throw UnsupportedProfileException("kal2.port")
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning").put("access", "none"))
 
@@ -179,8 +255,8 @@ object XrayConfigBuilder {
 
         // --- outbounds ---
         val outbounds = JSONArray()
-        val proxy = buildProxyOutbound(p)
-        if (resolvedServerIps.isNotEmpty() && !isIpLiteral(p.address)) {
+        val proxy = buildProxyOutbound(p, kal2SocksPort)
+        if (resolvedServerIps.isNotEmpty() && !isIpLiteral(p.address) && proxy.has("streamSettings")) {
             proxy.getJSONObject("streamSettings")
                 .put("sockopt", JSONObject().put("domainStrategy", "UseIP"))
         }
@@ -193,9 +269,15 @@ object XrayConfigBuilder {
         outbounds.put(JSONObject().put("tag", "dns-out").put("protocol", "dns"))
         root.put("outbounds", outbounds)
 
-        // --- dns: resolved through the tunnel; the server hostname itself is resolved directly ---
+        // --- dns: RU domains go to Yandex DNS (direct, RU vantage); everything else via tunnel ---
         val dns = JSONObject()
         val servers = JSONArray()
+        servers.put(
+            JSONObject()
+                .put("address", RU_DNS_PRIMARY)
+                .put("port", 53)
+                .put("domains", JSONArray(RU_TLD_SUFFIXES + RU_SERVICE_DOMAINS))
+        )
         servers.put("https://1.1.1.1/dns-query")
         servers.put(TUN_DNS)
         servers.put(TUN_DNS_2)
@@ -214,6 +296,13 @@ object XrayConfigBuilder {
         // --- routing ---
         val rules = JSONArray()
         val inboundTags = JSONArray().put("socks").apply { if (tunEnabled) put("tun") }
+        // RU-resolver queries must reach the real network: without this rule they would be
+        // caught by the port-53 rule below and loop back into the DNS module.
+        rules.put(
+            JSONObject().put("type", "field")
+                .put("ip", JSONArray().put(RU_DNS_PRIMARY).put(RU_DNS_SECONDARY))
+                .put("outboundTag", "direct")
+        )
         // DNS from the device -> Xray built-in DNS outbound (which uses the "dns" module above).
         rules.put(
             JSONObject().put("type", "field").put("inboundTag", inboundTags)
@@ -223,6 +312,12 @@ object XrayConfigBuilder {
         rules.put(
             JSONObject().put("type", "field")
                 .put(if (isIpLiteral(p.address)) "ip" else "domain", JSONArray().put(p.address))
+                .put("outboundTag", "direct")
+        )
+        // RU services bypass the tunnel entirely (anti-VPN-detection on RU apps/sites).
+        rules.put(
+            JSONObject().put("type", "field")
+                .put("domain", JSONArray(RU_TLD_SUFFIXES + RU_SERVICE_DOMAINS))
                 .put("outboundTag", "direct")
         )
         // Local / private ranges bypass. Use literal CIDRs because the embedded Android core
@@ -248,10 +343,23 @@ object XrayConfigBuilder {
         return root
     }
 
-    private fun buildProxyOutbound(p: ProfileSpec): JSONObject {
+    private fun buildProxyOutbound(p: ProfileSpec, kal2SocksPort: Int? = null): JSONObject {
         val ob = JSONObject().put("tag", "proxy")
         val stream = JSONObject()
         when (p.protocol) {
+            "kal2" -> {
+                // The KAL/2 native client (libkal2.so) owns the tunnel session and serves
+                // plain SOCKS5 on loopback; Xray's TUN stack is bridged onto it.
+                ob.put("protocol", "socks")
+                ob.put(
+                    "settings", JSONObject().put(
+                        "servers", JSONArray().put(
+                            JSONObject().put("address", "127.0.0.1").put("port", kal2SocksPort)
+                        )
+                    )
+                )
+                return ob // no streamSettings on a socks outbound
+            }
             "vless" -> {
                 ob.put("protocol", "vless")
                 val user = JSONObject().put("id", p.secret).put("encryption", "none").put("level", 8)
@@ -265,6 +373,47 @@ object XrayConfigBuilder {
                 )
                 populateVlessStream(stream, p)
                 ob.put("mux", JSONObject().put("enabled", false).put("concurrency", -1))
+            }
+
+            "vmess" -> {
+                ob.put("protocol", "vmess")
+                val user = JSONObject()
+                    .put("id", p.secret)
+                    .put("alterId", p.alterId)
+                    .put("security", p.cipher ?: "auto")
+                    .put("level", 8)
+                ob.put(
+                    "settings", JSONObject().put(
+                        "vnext", JSONArray().put(
+                            JSONObject().put("address", p.address).put("port", p.port).put("users", JSONArray().put(user))
+                        )
+                    )
+                )
+                populateVlessStream(stream, p)
+            }
+
+            "trojan" -> {
+                ob.put("protocol", "trojan")
+                val server = JSONObject()
+                    .put("address", p.address)
+                    .put("port", p.port)
+                    .put("password", p.secret)
+                    .put("level", 8)
+                ob.put("settings", JSONObject().put("servers", JSONArray().put(server)))
+                populateVlessStream(stream, p)
+            }
+
+            "ss", "shadowsocks" -> {
+                ob.put("protocol", "shadowsocks")
+                val server = JSONObject()
+                    .put("address", p.address)
+                    .put("port", p.port)
+                    .put("method", p.cipher)
+                    .put("password", p.secret)
+                    .put("level", 8)
+                ob.put("settings", JSONObject().put("servers", JSONArray().put(server)))
+                stream.put("network", "tcp")
+                stream.put("security", "none")
             }
 
             "hysteria2" -> {
@@ -322,6 +471,16 @@ object XrayConfigBuilder {
                 }
                 xh.put("mode", p.xhttpMode ?: "auto")
                 stream.put("xhttpSettings", xh)
+            }
+
+            "grpc" -> {
+                stream.put("network", "grpc")
+                val g = JSONObject().put("serviceName", p.path ?: "")
+                if (!p.host.isNullOrBlank()) {
+                    g.put("authority", p.host)
+                    sniHint = p.host
+                }
+                stream.put("grpcSettings", g)
             }
         }
         val sni = p.sni ?: sniHint ?: (if (!isIpLiteral(p.address)) p.address else null)

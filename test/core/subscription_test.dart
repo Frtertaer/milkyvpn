@@ -1,9 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:milkyvpn/core/security/redactor.dart';
 import 'package:milkyvpn/core/security/subscription_url_policy.dart';
 import 'package:milkyvpn/core/storage/secure_store.dart';
+import 'package:milkyvpn/core/subscription/subscription_exporter.dart';
 import 'package:milkyvpn/core/subscription/subscription_parser.dart';
 import 'package:milkyvpn/core/subscription/subscription_repository.dart';
 import 'package:milkyvpn/core/subscription/vpn_profile.dart';
@@ -98,8 +100,317 @@ void main() {
     });
 
     test('unsupported schemes counted but marked other', () {
-      final p = parser.parseLine('vmess://abc@h.example:443#x');
-      expect(p?.kind, ProfileKind.other);
+      for (final line in [
+        'socks://abc@h.example:443#x',
+        'http://abc@h.example:443#x',
+        'https://abc@h.example:443#x',
+      ]) {
+        final p = parser.parseLine(line);
+        expect(p?.kind, ProfileKind.other, reason: line);
+      }
+    });
+
+    test('ssr link parses method and packed obfs triplet', () {
+      String b64u(String s) => base64
+          .encode(utf8.encode(s))
+          .replaceAll('+', '-')
+          .replaceAll('/', '_')
+          .replaceAll('=', '');
+      final body =
+          'h.example:8388:auth_sha1_v4:aes-256-cfb:tls1.2_ticket_auth:${b64u('pass')}'
+          '/?obfsparam=${b64u('ob')}&protoparam=${b64u('pp')}&remarks=${b64u('SS-R')}';
+      final p = parser.parseLine('ssr://${b64u(body)}');
+      expect(p?.protocol, 'ssr');
+      expect(p?.cipher, 'aes-256-cfb');
+      expect(p?.secret, 'pass');
+      expect(p?.remark, 'SS-R');
+      expect(p?.plugin, 'ssr:auth_sha1_v4:tls1.2_ticket_auth:ob:pp');
+    });
+
+    test('tuic link parses uuid:password and transport extras', () {
+      const uuid = '00000001-0000-4000-8000-000000000001';
+      final p = parser.parseLine(
+        'tuic://$uuid:pw@h.example:443?congestion_control=bbr&udp_relay_mode=native&sni=t.example&alpn=h3#T',
+      );
+      expect(p?.protocol, 'tuic');
+      expect(p?.secret, '$uuid:pw');
+      expect(p?.sni, 't.example');
+      expect(p?.alpn, 'h3');
+      expect(p?.plugin, contains('congestion_control=bbr'));
+      expect(p?.plugin, contains('udp_relay_mode=native'));
+    });
+
+    test('wireguard link parses peer key and packed extras', () {
+      final p = parser.parseLine(
+        'wireguard://privkey@h.example:51820?publickey=peerkey&presharedkey=psk&address=10.0.0.2%2F24&mtu=1420#W',
+      );
+      expect(p?.protocol, 'wireguard');
+      expect(p?.secret, 'privkey');
+      expect(p?.publicKey, 'peerkey');
+      expect(p?.plugin, contains('pre_shared_key=psk'));
+      expect(p?.plugin, contains('local_address=10.0.0.2/24'));
+      expect(p?.plugin, contains('mtu=1420'));
+    });
+
+    test('sing-box JSON outbounds parse', () {
+      final body = jsonEncode({
+        'outbounds': [
+          {
+            'type': 'vless',
+            'tag': 'fin',
+            'server': '1.2.3.4',
+            'server_port': 443,
+            'uuid': '00000001-0000-4000-8000-000000000001',
+            'flow': 'xtls-rprx-vision',
+            'tls': {
+              'enabled': true,
+              'server_name': 'www.example.com',
+              'reality': {
+                'enabled': true,
+                'public_key': 'PUB',
+                'short_id': 'ab',
+              },
+            },
+          },
+          {
+            'type': 'shadowsocks',
+            'tag': 's',
+            'server': 'h.example',
+            'server_port': 8388,
+            'method': 'aes-256-gcm',
+            'password': 'pw',
+          },
+        ],
+      });
+      final r = parser.parse(body);
+      expect(r.profiles.length, 2);
+      expect(r.profiles[0].kind, ProfileKind.vlessRealityTcp);
+      expect(r.profiles[0].publicKey, 'PUB');
+      expect(r.profiles[0].remark, 'fin');
+      expect(r.profiles[1].protocol, 'ss');
+      expect(r.profiles[1].cipher, 'aes-256-gcm');
+    });
+
+    test('v2ray JSON outbound parses via vnext + streamSettings', () {
+      final body = jsonEncode({
+        'outbounds': [
+          {
+            'protocol': 'vmess',
+            'settings': {
+              'vnext': [
+                {
+                  'address': 'v.example',
+                  'port': 443,
+                  'users': [
+                    {'id': '00000001-0000-4000-8000-000000000001', 'alterId': 0},
+                  ],
+                },
+              ],
+            },
+            'streamSettings': {
+              'network': 'ws',
+              'security': 'tls',
+              'tlsSettings': {'serverName': 'cdn.example'},
+              'wsSettings': {
+                'path': '/ws',
+                'headers': {'Host': 'h.example'},
+              },
+            },
+          },
+        ],
+      });
+      final r = parser.parse(body);
+      expect(r.profiles.length, 1);
+      expect(r.profiles.single.protocol, 'vmess');
+      expect(r.profiles.single.network, 'ws');
+      expect(r.profiles.single.sni, 'cdn.example');
+      expect(r.profiles.single.host, 'h.example');
+      expect(r.profiles.single.path, '/ws');
+    });
+
+    test('clash YAML proxies parse', () {
+      const body = '''
+proxies:
+  - name: "clash-ss"
+    type: ss
+    server: h.example
+    port: 8388
+    cipher: aes-256-gcm
+    password: pw
+  - name: clash-hy2
+    type: hysteria2
+    server: hy.example
+    port: 443
+    password: hpw
+    sni: hy.example
+    obfs-password: ob
+''';
+      final r = parser.parse(body);
+      expect(r.profiles.length, 2);
+      expect(r.profiles[0].protocol, 'ss');
+      expect(r.profiles[0].remark, 'clash-ss');
+      expect(r.profiles[1].kind, ProfileKind.hysteria2);
+      expect(r.profiles[1].obfsPassword, 'ob');
+    });
+
+    test('export round-trip preserves identity for link protocols', () {
+      const links = [
+        'vless://00000001-0000-4000-8000-000000000001@h.example:443?security=reality&sni=www.example.com&fp=chrome&pbk=PUB&sid=ab&flow=xtls-rprx-vision&type=tcp#R',
+        'hy2://pw@hy.example:8443?sni=hy.example&obfs=salamander&obfs-password=ob#H',
+        'trojan://pw@t.example:443?sni=t.example&type=ws&host=h.example&path=%2Fws#T',
+        'kal2://psk@k.example:443?sni=k.example&pub=PUBK&carrier=veil&path=%2Fp#K',
+      ];
+      for (final link in links) {
+        final first = parser.parseLine(link);
+        expect(first, isNotNull, reason: link);
+        final exported = const SubscriptionExporter().toShareLink(first!);
+        expect(exported, isNotNull, reason: link);
+        final reparsed = parser.parseLine(exported!);
+        expect(reparsed, isNotNull, reason: exported);
+        expect(reparsed!.id, first.id, reason: exported);
+        expect(reparsed.protocol, first.protocol);
+        expect(reparsed.address, first.address);
+        expect(reparsed.port, first.port);
+        expect(reparsed.secret, first.secret);
+      }
+    });
+
+    test('export round-trip for vmess + ssr', () {
+      const vmess =
+          'vmess://eyJ2IjoiMiIsInBzIjoiTSIsImFkZCI6Im0uZXhhbXBsZSIsInBvcnQiOiI0NDMiLCJpZCI6IjAwMDAwMDAxLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMSIsImFpZCI6IjAiLCJzY3kiOiJhdXRvIiwibmV0Ijoid3MiLCJob3N0IjoiaC5leGFtcGxlIiwicGF0aCI6Ii93cyIsInRscyI6InRscyIsInNuaSI6ImNkbi5leGFtcGxlIn0=';
+      final first = parser.parseLine(vmess)!;
+      final exported = const SubscriptionExporter().toShareLink(first)!;
+      final reparsed = parser.parseLine(exported)!;
+      expect(reparsed.id, first.id);
+
+      String b64u(String s) => base64
+          .encode(utf8.encode(s))
+          .replaceAll('+', '-')
+          .replaceAll('/', '_')
+          .replaceAll('=', '');
+      final ssrBody =
+          'h.example:8388:auth_sha1_v4:aes-256-cfb:tls1.2_ticket_auth:${b64u('pass')}/?remarks=${b64u('SS-R')}';
+      final ssr = parser.parseLine('ssr://${b64u(ssrBody)}')!;
+      final ssrExported = const SubscriptionExporter().toShareLink(ssr)!;
+      final ssrReparsed = parser.parseLine(ssrExported)!;
+      expect(ssrReparsed.secret, ssr.secret);
+      expect(ssrReparsed.cipher, ssr.cipher);
+      expect(ssrReparsed.plugin, ssr.plugin);
+    });
+
+    test('export subscription base64 decodes back to links', () {
+      const link =
+          'vless://00000001-0000-4000-8000-000000000001@h.example:443?security=reality&pbk=PUB&type=tcp#R';
+      final p = parser.parseLine(link)!;
+      final body = const SubscriptionExporter().exportSubscription([p]);
+      final decoded = utf8.decode(base64.decode(body));
+      expect(decoded.trim(), isNotEmpty);
+      expect(parser.parse(decoded).profiles.single.id, p.id);
+    });
+
+    test('vmess b64-json share link parses fields', () {
+      final payload = base64.encode(utf8.encode(jsonEncode({
+        'v': '2',
+        'ps': 'US Vmess',
+        'add': 'vm1.example.invalid',
+        'port': '443',
+        'id': '00000001-0000-4000-8000-000000000001',
+        'aid': '0',
+        'scy': 'auto',
+        'net': 'ws',
+        'type': 'none',
+        'host': 'cdn.example.invalid',
+        'path': '/vm',
+        'tls': 'tls',
+        'sni': 'cdn.example.invalid',
+      })));
+      final p = parser.parseLine('vmess://$payload')!;
+      expect(p.protocol, 'vmess');
+      expect(p.kind, ProfileKind.vmess);
+      expect(p.address, 'vm1.example.invalid');
+      expect(p.port, 443);
+      expect(p.secret, '00000001-0000-4000-8000-000000000001');
+      expect(p.network, 'ws');
+      expect(p.security, 'tls');
+      expect(p.sni, 'cdn.example.invalid');
+      expect(p.host, 'cdn.example.invalid');
+      expect(p.path, '/vm');
+      expect(p.remark, 'US Vmess');
+      expect(p.isStaticCompatible, isTrue);
+    });
+
+    test('trojan share link parses incl. grpc serviceName', () {
+      final p = parser.parseLine(
+        'trojan://pw%20abc@us1.example.invalid:443?sni=tr.example.invalid&type=grpc&serviceName=trojan-grpc#US%20Trojan',
+      )!;
+      expect(p.protocol, 'trojan');
+      expect(p.kind, ProfileKind.trojan);
+      expect(p.secret, 'pw abc');
+      expect(p.network, 'grpc');
+      expect(p.path, 'trojan-grpc');
+      expect(p.sni, 'tr.example.invalid');
+      expect(p.isStaticCompatible, isTrue);
+    });
+
+    test('shadowsocks SIP002 + legacy forms parse', () {
+      // SIP002: base64 userinfo
+      final b64user = base64.encode(utf8.encode('aes-256-gcm:pw-abc'));
+      final p1 = parser.parseLine('ss://$b64user@us2.example.invalid:8388#US%20SS')!;
+      expect(p1.protocol, 'ss');
+      expect(p1.kind, ProfileKind.shadowsocks);
+      expect(p1.cipher, 'aes-256-gcm');
+      expect(p1.secret, 'pw-abc');
+      expect(p1.address, 'us2.example.invalid');
+      expect(p1.port, 8388);
+      expect(p1.isStaticCompatible, isTrue);
+      // legacy: whole payload base64
+      final whole = base64.encode(
+        utf8.encode('chacha20-ietf-poly1305:pw2@us3.example.invalid:8389'),
+      );
+      final p2 = parser.parseLine('ss://$whole#x')!;
+      expect(p2.cipher, 'chacha20-ietf-poly1305');
+      expect(p2.address, 'us3.example.invalid');
+      expect(p2.port, 8389);
+      // plaintext userinfo
+      final p3 = parser.parseLine(
+        'ss://aes-128-gcm:pw3@us4.example.invalid:8390#x',
+      )!;
+      expect(p3.cipher, 'aes-128-gcm');
+      // plugin-bearing link parses but is not executable
+      final p4 = parser.parseLine(
+        'ss://$b64user@us5.example.invalid:8388?plugin=v2ray-plugin#x',
+      )!;
+      expect(p4.plugin, 'v2ray-plugin');
+      expect(p4.isStaticCompatible, isFalse);
+      // unknown cipher -> not compatible
+      final p5 = parser.parseLine(
+        'ss://aes-256-cfb:pw@us6.example.invalid:8388#x',
+      )!;
+      expect(p5.isStaticCompatible, isFalse);
+    });
+
+    test('kal2 share link parses carrier and credentials', () {
+      final p = parser.parseLine(
+        'kal2://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@203.0.113.10:443'
+        '?sni=kal.example.com&pub=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210'
+        '&carrier=drift&path=/api/v2/stream#US%20KAL2',
+      )!;
+      expect(p.protocol, 'kal2');
+      expect(p.kind, ProfileKind.kal2);
+      expect(p.network, 'drift');
+      expect(p.sni, 'kal.example.com');
+      expect(
+        p.publicKey,
+        'fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210',
+      );
+      expect(p.path, '/api/v2/stream');
+      // kal2 native engine (libkal2.so) is bundled on Android: executable.
+      expect(p.isStaticCompatible, isTrue);
+      // bad carrier rejected
+      expect(
+        parser.parseLine('kal2://psk@h.example:443?carrier=bogus'),
+        isNull,
+      );
     });
 
     test('expiry from subscription-userinfo header', () {
@@ -115,30 +426,45 @@ void main() {
   });
 
   group('url allowlist', () {
-    test('accepts canonical url only', () {
-      expect(policy.isAllowed('https://sub.milky.homes/s/AbCdEf123456'), isTrue);
-      expect(policy.validate('https://sub.milky.homes/s/AbCdEf123456')!.toString(), 'https://sub.milky.homes/s/AbCdEf123456');
-      expect(policy.isAllowed('  https://sub.milky.homes/s/AbCdEf123456  '), isTrue);
-    });
-    test('rejects http, other hosts, localhost, private ip, file, javascript, tricks', () {
-      for (final bad in [
-        'http://sub.milky.homes/s/AbCdEf123456',
+    test('accepts any http(s) public subscription url', () {
+      for (final good in [
+        'https://sub.milky.homes/s/AbCdEf123456',
+        '  https://sub.milky.homes/s/AbCdEf123456  ',
         'https://evil.example/s/AbCdEf123456',
         'https://sub.milky.homes.evil.example/s/AbCdEf123456',
+        'http://plain.example/sub/x',
+        'https://sub.example.com/any/path?x=1&y=2',
+        'https://sub.milky.homes:8443/s/AbCdEf123456',
+        'https://1.2.3.4/feed',
+        'https://[2001:db8::1]:8443/feed',
+      ]) {
+        expect(policy.isAllowed(good), isTrue, reason: good);
+      }
+      expect(
+        policy.validate('https://sub.milky.homes/s/AbCdEf123456')!.toString(),
+        'https://sub.milky.homes/s/AbCdEf123456',
+      );
+    });
+    test('rejects localhost, private ip, non-http schemes, userinfo, tricks', () {
+      for (final bad in [
         'https://localhost/s/AbCdEf123456',
         'https://127.0.0.1/s/AbCdEf123456',
         'https://192.168.1.1/s/AbCdEf123456',
         'https://10.0.0.1/s/AbCdEf123456',
+        'https://172.16.0.1/s/x',
+        'https://169.254.1.1/s/x',
+        'https://100.64.0.1/s/x',
+        'https://0.0.0.0/s/x',
+        'https://224.0.0.1/s/x',
+        'https://[::1]/s/x',
+        'https://[fe80::1]/s/x',
+        'https://[fd00::1]/s/x',
         'file:///etc/passwd',
         'javascript:alert(1)',
-        'https://sub.milky.homes/other/AbCdEf123456',
-        'https://sub.milky.homes/s/../../x',
-        'https://sub.milky.homes/s/AbCdEf123456?x=1',
-        'https://sub.milky.homes/s/AbCdEf123456#f',
+        'ftp://host.example/feed',
         'https://user@sub.milky.homes/s/AbCdEf123456',
-        'https://sub.milky.homes:8443/s/AbCdEf123456',
-        'https://sub.milky.homes/s/short',
-        'https://sub.milky.homes/s/a b c d e f g h',
+        'https://sub.milky.homes/s/AbCdEf123456#f',
+        'https://sub.milky.homes/s/a b c',
         '',
       ]) {
         expect(policy.isAllowed(bad), isFalse, reason: bad);
@@ -146,7 +472,7 @@ void main() {
     });
     test('deep link extraction + sanitization', () {
       expect(policy.fromDeepLink('milkyvpn://import?url=https%3A%2F%2Fsub.milky.homes%2Fs%2FAbCdEf123456')!.path, '/s/AbCdEf123456');
-      expect(policy.fromDeepLink('milkyvpn://import?url=http://sub.milky.homes/s/AbCdEf123456'), isNull);
+      expect(policy.fromDeepLink('milkyvpn://import?url=http://sub.milky.homes/s/AbCdEf123456'), isNotNull);
       expect(policy.fromDeepLink('milkyvpn://other?url=https://sub.milky.homes/s/AbCdEf123456'), isNull);
       expect(policy.fromDeepLink('https://import?url=https://sub.milky.homes/s/AbCdEf123456'), isNull);
       expect(SubscriptionUrlPolicy.redact(Uri.parse('https://sub.milky.homes/s/AbCdEf123456')), isNot(contains('AbCdEf')));
@@ -185,7 +511,17 @@ void main() {
     test('rejects disallowed url without fetching', () async {
       final f = FakeFetcher('x');
       final repo = SubscriptionRepository(store: MemorySecureStore(), fetcher: f);
-      await expectLater(repo.importFromUrl('http://sub.milky.homes/s/AbCdEf123456'), throwsA(isA<SubscriptionFetchException>()));
+      for (final bad in [
+        'ftp://sub.milky.homes/s/AbCdEf123456',
+        'https://192.168.1.1/s/AbCdEf123456',
+        'https://user@sub.milky.homes/s/AbCdEf123456',
+      ]) {
+        await expectLater(
+          repo.importFromUrl(bad),
+          throwsA(isA<SubscriptionFetchException>()),
+          reason: bad,
+        );
+      }
       expect(f.calls, 0);
     });
     test('empty subscription rejected', () async {

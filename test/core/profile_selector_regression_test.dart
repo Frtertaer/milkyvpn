@@ -17,7 +17,14 @@ void main() {
     };
     return VpnProfile(
       id: id,
-      protocol: kind == ProfileKind.hysteria2 ? 'hysteria2' : 'vless',
+      protocol: switch (kind) {
+        ProfileKind.hysteria2 => 'hysteria2',
+        ProfileKind.vmess => 'vmess',
+        ProfileKind.trojan => 'trojan',
+        ProfileKind.shadowsocks => 'ss',
+        ProfileKind.kal2 => 'kal2',
+        _ => 'vless',
+      },
       address: '$id.example.invalid',
       port: 443,
       secret: 'test-credential',
@@ -26,13 +33,23 @@ void main() {
         ProfileKind.vlessRealityTcp => 'tcp',
         ProfileKind.vlessWsTls => 'ws',
         ProfileKind.vlessXhttp => 'xhttp',
-        ProfileKind.hysteria2 || ProfileKind.other => 'tcp',
+        ProfileKind.hysteria2 ||
+        ProfileKind.vmess ||
+        ProfileKind.trojan ||
+        ProfileKind.shadowsocks ||
+        ProfileKind.kal2 ||
+        ProfileKind.other => 'tcp',
       },
       security: switch (kind) {
         ProfileKind.vlessRealityTcp => 'reality',
         ProfileKind.vlessWsTls => 'tls',
         ProfileKind.vlessXhttp => 'reality',
-        ProfileKind.hysteria2 || ProfileKind.other => 'none',
+        ProfileKind.hysteria2 ||
+        ProfileKind.vmess ||
+        ProfileKind.trojan ||
+        ProfileKind.shadowsocks ||
+        ProfileKind.kal2 ||
+        ProfileKind.other => 'none',
       },
       publicKey:
           kind == ProfileKind.vlessRealityTcp || kind == ProfileKind.vlessXhttp
@@ -60,6 +77,10 @@ void main() {
               ProfileKind.vlessXhttp => 1,
               ProfileKind.vlessWsTls => 2,
               ProfileKind.hysteria2 => 3,
+              ProfileKind.vmess ||
+              ProfileKind.trojan ||
+              ProfileKind.shadowsocks ||
+              ProfileKind.kal2 ||
               ProfileKind.other => 9,
             };
             return oldRank(a).compareTo(oldRank(b));

@@ -101,10 +101,18 @@ class MethodChannelVpnBridge implements VpnBridge {
       .map((e) => e as String)
       .asBroadcastStream();
 
-  Future<T> _call<T>(String method, [Object? args]) async {
+  Future<T> _call<T>(
+    String method, [
+    Object? args,
+    Duration? timeout,
+  ]) async {
     try {
-      final r = await _m.invokeMethod<T>(method, args);
+      final r = await _m
+          .invokeMethod<T>(method, args)
+          .timeout(timeout ?? const Duration(seconds: 20));
       return r as T;
+    } on TimeoutException {
+      throw VpnBridgeException('bridge_timeout:$method');
     } on PlatformException catch (e) {
       throw VpnBridgeException(
         normalizePlatformCode(e.code, e.message),
@@ -141,7 +149,8 @@ class MethodChannelVpnBridge implements VpnBridge {
   Future<bool> isPrepared() => _call<bool>('isPrepared');
 
   @override
-  Future<bool> prepare() => _call<bool>('prepare');
+  Future<bool> prepare() =>
+      _call<bool>('prepare', null, const Duration(seconds: 90));
 
   @override
   Future<bool> isProfileSupported(VpnProfile profile) =>
