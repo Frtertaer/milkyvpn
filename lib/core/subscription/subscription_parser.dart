@@ -696,6 +696,8 @@ class SubscriptionParser {
         sni: _trimmedNz(query['sni']),
         publicKey: _nz(query['pub']),
         path: _nz(query['path']),
+        ech: _nz(query['ech']),
+        cover: _nz(query['cover']),
       ),
     );
   }
@@ -1477,6 +1479,8 @@ class SubscriptionParser {
             sni: _trimmedNz(s('sni')),
             publicKey: _nz(s('pub') ?? s('public-key')),
             path: _nz(s('path')),
+            ech: _nz(s('ech')),
+            cover: _nz(s('cover')),
           ),
         );
       default:

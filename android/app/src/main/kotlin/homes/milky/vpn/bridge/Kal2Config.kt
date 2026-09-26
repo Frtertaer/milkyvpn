@@ -27,5 +27,8 @@ object Kal2Config {
             .put("pub", p.publicKey ?: "")
             .put("psk", p.secret)
             .put("socks", LOCAL_SOCKS)
+            .put("ech", p.ech ?: "")
+            // cover defaults on in the native core; "0"/"false" disables it.
+            .put("cover", !p.cover.equals("0") && !p.cover.equals("false", true))
     }
 }
