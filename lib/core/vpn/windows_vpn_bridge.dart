@@ -82,6 +82,8 @@ class WindowsProcessVpnBridge implements VpnBridge {
       p.path ?? '',
       '-socks',
       _socksAddr,
+      if (p.ech != null && p.ech!.isNotEmpty) ...['-ech', p.ech!],
+      if (p.cover == '0' || p.cover == 'false') '-cover=false',
     ];
   }
 
@@ -229,10 +231,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
     ]);
     if (res.exitCode != 0) {
       _set(
-        const VpnSnapshot(
-          state: VpnState.error,
-          errorCode: 'tun_uac_denied',
-        ),
+        const VpnSnapshot(state: VpnState.error, errorCode: 'tun_uac_denied'),
       );
       throw VpnBridgeException(
         'tun_uac_denied',
@@ -257,7 +256,10 @@ class WindowsProcessVpnBridge implements VpnBridge {
       _set(
         const VpnSnapshot(state: VpnState.error, errorCode: 'connect_timeout'),
       );
-      throw VpnBridgeException('connect_timeout', 'elevated helper never bound');
+      throw VpnBridgeException(
+        'connect_timeout',
+        'elevated helper never bound',
+      );
     }
     _ctl = ctl;
 
@@ -271,7 +273,8 @@ class WindowsProcessVpnBridge implements VpnBridge {
           (line) {
             errLines.add(line);
             if (errLines.length > 40) errLines.removeAt(0);
-            if ((line.contains('tun: adapter') || line.contains('session up')) &&
+            if ((line.contains('tun: adapter') ||
+                    line.contains('session up')) &&
                 !up.isCompleted) {
               up.complete();
             }

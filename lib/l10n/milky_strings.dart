@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 
 import '../core/errors/milky_error.dart';
@@ -278,8 +280,7 @@ class S {
   String get importing => t('Загружаем…', 'Loading…');
   String get importOk => t('Подписка добавлена', 'Subscription added');
   String get goToConnect => t('Перейти к подключению', 'Go to connect');
-  String get deepLinkTitle =>
-      t('Добавить подписку?', 'Add subscription?');
+  String get deepLinkTitle => t('Добавить подписку?', 'Add subscription?');
   String get deepLinkBody => t(
     'Ссылка получена из другого приложения. Подписка будет сохранена только на этом устройстве. Подключение не начнётся автоматически.',
     'The link came from another app. The subscription is stored on this device only. No connection starts automatically.',
@@ -387,6 +388,12 @@ class S {
   String errorBody(MilkyErrorKind kind) {
     switch (kind) {
       case MilkyErrorKind.permissionDenied:
+        if (Platform.isWindows) {
+          return t(
+            'Windows запросил права администратора (UAC), но запуск был отклонён. Разрешите запуск или выключите «Полный туннель» в настройках — тогда хватит обычных прав.',
+            'Windows asked for admin rights (UAC) and the launch was declined. Allow it, or turn off "Full tunnel" in settings — the normal mode needs no admin.',
+          );
+        }
         return t(
           'Android не разрешил создать VPN-туннель. Разрешите подключение и попробуйте снова.',
           'Android did not allow the VPN tunnel. Grant the permission and try again.',
