@@ -676,7 +676,8 @@ class SubscriptionParser {
 
     final query = parts.params;
     final carrier = (query['carrier'] ?? 'veil').trim().toLowerCase();
-    if (carrier != 'veil' && carrier != 'drift' && carrier != 'relay') {
+    if (carrier != 'veil' && carrier != 'drift' &&
+        carrier != 'cdn' && carrier != 'auto' && carrier != 'relay') {
       return null;
     }
     final remark = parts.remark.isEmpty
@@ -1463,7 +1464,8 @@ class SubscriptionParser {
         final psk = s('psk') ?? s('password');
         if (psk == null) return null;
         final carrier = (s('carrier') ?? 'veil').trim().toLowerCase();
-        if (carrier != 'veil' && carrier != 'drift' && carrier != 'relay') {
+        if (carrier != 'veil' && carrier != 'drift' &&
+        carrier != 'cdn' && carrier != 'auto' && carrier != 'relay') {
           return null;
         }
         return _identified(
