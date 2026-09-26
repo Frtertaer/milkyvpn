@@ -77,6 +77,13 @@ type VeilListener struct {
 	connsByIP map[string]int
 	fails     map[string]int // scanner tarpit: repeated probe-profile failures
 	mux       http.Handler
+	// hijacks tracks WS-hijacked conns (key: remote addr) so serveHTTP keeps
+	// the conn alive until the WS session — not the HTTP request — ends.
+	hijacks sync.Map // string -> *hijackReg
+}
+
+type hijackReg struct {
+	closed chan struct{}
 }
 
 // maxConnsPerIP bounds concurrent pre-adoption connections per source —
@@ -378,6 +385,18 @@ func (v *VeilListener) serveHTTP(c BoundConn) {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       60 * time.Second,
 		ConnState: func(nc net.Conn, s http.ConnState) {
+			if s == http.StateHijacked {
+				key := nc.RemoteAddr().String()
+				if reg, ok := v.hijacks.Load(key); ok {
+					// WS session owns the conn now — wait for it, not the request.
+					go func() {
+						<-reg.(*hijackReg).closed
+						v.hijacks.Delete(key)
+						once.Do(func() { close(done) })
+					}()
+					return
+				}
+			}
 			if s == http.StateClosed || s == http.StateHijacked {
 				once.Do(func() { close(done) })
 			}

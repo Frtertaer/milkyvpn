@@ -101,7 +101,9 @@ func (s *Session) WaitClosed() <-chan struct{} { return s.closed }
 func (s *Session) Close() error {
 	var err error
 	s.closeOnce.Do(func() {
-		close(s.closed)
+		if s.closed != nil {
+			close(s.closed)
+		}
 		if s.rw != nil {
 			err = s.rw.Close()
 		}

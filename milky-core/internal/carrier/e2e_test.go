@@ -237,6 +237,24 @@ func TestECHConfigRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDriftWSEndToEnd(t *testing.T) {
+	ts := newTestServer(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	sess, _, err := DialDriftWS(ctx, ClientConfig{
+		Addr:               ts.ln.Addr().String(),
+		SNI:                "kal.test",
+		ServerPub:          ts.pub,
+		PSK:                ts.psk,
+		InsecureSkipVerify: true,
+	}, "")
+	if err != nil {
+		t.Fatalf("dial drift-ws: %v", err)
+	}
+	defer sess.Close()
+	streamEchoTest(t, sess)
+}
+
 func TestDriftEndToEnd(t *testing.T) {
 	ts := newTestServer(t)
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
