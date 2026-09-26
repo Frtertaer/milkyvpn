@@ -6,7 +6,9 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
+	"math/rand/v2"
 	"net"
+	"strings"
 	"time"
 
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/kal2"
@@ -23,7 +25,10 @@ type ClientConfig struct {
 	ServerPub ed25519.PublicKey
 	// PSK is the client credential.
 	PSK []byte
-	// Fingerprint selects the ClientHello shape ("chrome" default).
+	// Fingerprint selects the ClientHello shape. "chrome" (default/empty)
+	// rotates across modern Chrome builds each dial so successive sessions
+	// don't share a byte-identical hello (harder to signature). A fixed
+	// utls ID string or "ff"/"safari" pins one shape instead.
 	Fingerprint string
 	// DialContext overrides TCP dial (e.g. through a proxy CONNECT).
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
@@ -49,6 +54,44 @@ func (c *ClientConfig) timeout() time.Duration {
 
 // DialVeil connects to a veil listener: real TLS handshake with a Chrome-grade
 // ClientHello, then the KAL/2 inner handshake inside.
+// helloRotator picks a different real Chrome build per dial: every session's
+// outer ClientHello differs in extension order/values, so a DPI signature
+// built on one capture doesn't match the next.
+var helloRotator = []utls.ClientHelloID{
+	utls.HelloChrome_120_PQ,
+	utls.HelloChrome_131,
+	utls.HelloChrome_133,
+	utls.HelloChrome_115_PQ,
+	utls.HelloChrome_Auto,
+}
+
+var helloRand = func() int { return rand.IntN(len(helloRotator)) }
+
+func pickHelloID(fp string) utls.ClientHelloID {
+	switch strings.ToLower(strings.TrimSpace(fp)) {
+	case "", "chrome", "auto":
+		return helloRotator[helloRand()]
+	case "ff", "firefox":
+		return utls.HelloFirefox_Auto
+	case "safari":
+		return utls.HelloSafari_Auto
+	default:
+		if id, ok := mapHelloID(fp); ok {
+			return id
+		}
+		return utls.HelloChrome_Auto
+	}
+}
+
+func mapHelloID(name string) (utls.ClientHelloID, bool) {
+	for _, id := range helloRotator {
+		if strings.EqualFold(id.Str(), name) || strings.EqualFold(id.Client, name) {
+			return id, true
+		}
+	}
+	return utls.HelloCustom, false
+}
+
 func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, error) {
 	to := cfg.timeout()
 	dial := cfg.DialContext
@@ -62,9 +105,10 @@ func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, 
 	}
 	_ = raw.SetDeadline(time.Now().Add(to))
 
-	spec, err := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
+	helloID := pickHelloID(cfg.Fingerprint)
+	spec, err := utls.UTLSIdToSpec(helloID)
 	if err != nil {
-		spec, _ = utls.UTLSIdToSpec(utls.HelloGolang)
+		spec, _ = utls.UTLSIdToSpec(utls.HelloChrome_Auto)
 	}
 	uconn := utls.UClient(raw, &utls.Config{
 		ServerName:                     cfg.SNI,
