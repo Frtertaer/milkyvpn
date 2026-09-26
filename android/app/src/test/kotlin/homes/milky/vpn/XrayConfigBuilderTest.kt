@@ -6,6 +6,7 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.json.JSONObject
 import org.junit.Assert.fail
 import org.junit.Test
 
@@ -57,9 +58,45 @@ class XrayConfigBuilderTest {
         }
         assertTrue(found)
         // DNS port 53 from tun goes to dns-out
-        val dnsRule = rules.getJSONObject(0)
-        assertEquals("53", dnsRule.getString("port"))
-        assertEquals("dns-out", dnsRule.getString("outboundTag"))
+        var dnsFound = false
+        for (i in 0 until rules.length()) {
+            val r = rules.getJSONObject(i)
+            if (r.optString("port") == "53" && r.optString("outboundTag") == "dns-out") dnsFound = true
+        }
+        assertTrue(dnsFound)
+    }
+
+    @Test
+    fun ruDomainsBypassTunnel() {
+        val cfg = XrayConfigBuilder.build(reality())
+        val rules = cfg.getJSONObject("routing").getJSONArray("rules")
+        var ruRule: JSONObject? = null
+        for (i in 0 until rules.length()) {
+            val r = rules.getJSONObject(i)
+            if (!r.has("domain") || r.optString("outboundTag") != "direct") continue
+            val domains = r.getJSONArray("domain")
+            val values = (0 until domains.length()).map { domains.getString(it) }
+            if ("ru" in values && "su" in values) ruRule = r
+        }
+        assertTrue("RU domains must route to direct", ruRule != null)
+        val ruDomains = ruRule!!.getJSONArray("domain")
+        val values = (0 until ruDomains.length()).map { ruDomains.getString(it) }.toSet()
+        assertTrue(values.contains("xn--p1ai"))
+        assertTrue(values.contains("ozoncdn.net"))
+
+        // Yandex DNS is pinned as a domain-scoped server and reachable directly
+        val dnsServers = cfg.getJSONObject("dns").getJSONArray("servers")
+        val first = dnsServers.getJSONObject(0)
+        assertEquals("77.88.8.8", first.getString("address"))
+        var dnsBypass = false
+        for (i in 0 until rules.length()) {
+            val r = rules.getJSONObject(i)
+            if (!r.has("ip") || r.optString("outboundTag") != "direct") continue
+            val ips = r.getJSONArray("ip")
+            val v = (0 until ips.length()).map { ips.getString(it) }
+            if ("77.88.8.8" in v) dnsBypass = true
+        }
+        assertTrue(dnsBypass)
     }
 
     @Test
@@ -110,9 +147,16 @@ class XrayConfigBuilderTest {
         assertEquals("h3", stream.getJSONObject("tlsSettings").getJSONArray("alpn").getString(0))
         assertEquals("hy.example.invalid", stream.getJSONObject("tlsSettings").getString("serverName"))
         assertEquals("salamander", stream.getJSONObject("finalmask").getJSONArray("udp").getJSONObject(0).getString("type"))
-        // IP literal server -> routed by ip rule
+        // IP literal server -> routed by an ip rule to direct
         val rules = XrayConfigBuilder.build(p).getJSONObject("routing").getJSONArray("rules")
-        assertEquals("203.0.113.20", rules.getJSONObject(1).getJSONArray("ip").getString(0))
+        var ipFound = false
+        for (i in 0 until rules.length()) {
+            val r = rules.getJSONObject(i)
+            if (!r.has("ip")) continue
+            val ips = r.getJSONArray("ip")
+            for (j in 0 until ips.length()) if (ips.getString(j) == "203.0.113.20") ipFound = true
+        }
+        assertTrue(ipFound)
     }
 
     @Test
