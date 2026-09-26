@@ -61,6 +61,12 @@ type ClientConfig struct {
 	PSK       []byte   // per-user PSK (32B)
 	Carrier   string   // "veil" (default), "drift", "auto" (hedged), or "a,b" list
 	DriftPath string   // secret path when Carrier=drift
+	// InsecureSkipVerify disables chain verification on the carrier TLS layer.
+	// Safe here: the KAL/2 inner handshake authenticates the server by its
+	// Ed25519 pubkey and binds to the TLS exporter (RFC 9266), so a MitM cannot
+	// forge the session. Needed on devices with stale CA stores (old Android
+	// system images lack newer roots like ISRG Root X1/X2).
+	InsecureSkipVerify bool
 	// DialContext overrides the base TCP dial (e.g. via HTTP CONNECT proxy).
 	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
 	HandshakeTimeout time.Duration
@@ -303,12 +309,13 @@ var dialOneFn = dialOne
 
 func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 	cc := carrier.ClientConfig{
-		Addr:             cfg.Addr,
-		SNI:              cfg.SNI,
-		ServerPub:        cfg.ServerPub,
-		PSK:              cfg.PSK,
-		DialContext:      cfg.DialContext,
-		HandshakeTimeout: cfg.HandshakeTimeout,
+		Addr:               cfg.Addr,
+		SNI:                cfg.SNI,
+		ServerPub:          cfg.ServerPub,
+		PSK:                cfg.PSK,
+		DialContext:        cfg.DialContext,
+		HandshakeTimeout:   cfg.HandshakeTimeout,
+		InsecureSkipVerify: cfg.InsecureSkipVerify,
 	}
 	switch cfg.Carrier {
 	case "", "veil":
