@@ -48,6 +48,7 @@ func main() {
 	fetch := flag.String("fetch", "", "fetch URL through tunnel and exit")
 	fetchMax := flag.Int64("fetchmax", 32<<20, "max bytes to read for -fetch")
 	proxyURL := flag.String("proxy", "", "base-dial proxy (http://user:pass@host:port)")
+	insecure := flag.Bool("insecure", false, "skip carrier TLS chain verify (inner handshake still authenticates the server pubkey)")
 	flag.Parse()
 
 	serverPub, err := kal2core.DecodeKey(*pub)
@@ -75,14 +76,15 @@ func main() {
 		log.Fatal("need -addr")
 	}
 	cfg := kal2core.ClientConfig{
-		Addr:      addrs[0],
-		Addrs:     addrs,
-		SNI:       *sni,
-		ServerPub: serverPub,
-		PSK:       userPSK,
-		Carrier:   *carrier,
-		DriftPath: *driftPath,
-		Logf:      log.Printf,
+		Addr:               addrs[0],
+		Addrs:              addrs,
+		SNI:                *sni,
+		ServerPub:          serverPub,
+		PSK:                userPSK,
+		Carrier:            *carrier,
+		DriftPath:          *driftPath,
+		Logf:               log.Printf,
+		InsecureSkipVerify: *insecure,
 	}
 	if *proxyURL != "" {
 		d, err := httpConnectDialer(*proxyURL)

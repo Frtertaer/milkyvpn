@@ -103,14 +103,15 @@ func Start(configJSON string) (int, error) {
 	stopLocked()
 
 	cfg := kal2core.ClientConfig{
-		Addr:      addrs[0],
-		Addrs:     addrs,
-		SNI:       mc.SNI,
-		ServerPub: pub,
-		PSK:       psk,
-		Carrier:   mc.Carrier,
-		DriftPath: mc.DriftPath,
-		Logf:      logf,
+		Addr:               addrs[0],
+		Addrs:              addrs,
+		SNI:                mc.SNI,
+		ServerPub:          pub,
+		PSK:                psk,
+		Carrier:            mc.Carrier,
+		DriftPath:          mc.DriftPath,
+		Logf:               logf,
+		InsecureSkipVerify: true,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
