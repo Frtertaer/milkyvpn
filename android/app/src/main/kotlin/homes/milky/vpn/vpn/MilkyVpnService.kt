@@ -508,6 +508,7 @@ class MilkyVpnService : VpnService() {
     // ---------------------------------------------------------------- notification
 
     private fun createChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         val ch = NotificationChannel(NOTIF_CHANNEL, getString(R.string.vpn_channel_name), NotificationManager.IMPORTANCE_LOW)
         ch.description = getString(R.string.vpn_channel_desc)

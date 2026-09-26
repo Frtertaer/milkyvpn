@@ -123,6 +123,36 @@ object XrayConfigBuilder {
         }
     }
 
+    /**
+     * RU services bypass the tunnel so they keep seeing the user's real (residential)
+     * egress IP instead of a datacentre VPN exit that their anti-bot/fraud checks flag
+     * or outright block (e.g. "Похоже, нет соединения" on ozon.ru).
+     *
+     * [RU_TLD_SUFFIXES] uses plain domain entries: in the core's matcher a bare "ru"
+     * covers "ru" itself and every subdomain — i.e. the entire .ru zone.
+     * [RU_SERVICE_DOMAINS] lists major RU properties hosted on non-RU TLDs.
+     */
+    private val RU_TLD_SUFFIXES = listOf("ru", "su", "xn--p1ai")
+    private val RU_SERVICE_DOMAINS = listOf(
+        // Yandex / VK / Mail group
+        "yandex.net", "yandex.com", "yaani.net", "yastatic.net",
+        "vk.com", "vk.me", "vk.company", "userapi.com", "mycdn.me", "vkcdn.net", "my.com",
+        // Marketplaces & retail
+        "ozon.ru", "ozoncdn.net", "ozonusercontent.com", "ozon.tech",
+        "wildberries.ru", "wb.ru", "wbstatic.net", "wbbasket.ru",
+        "avito.st", "lenta.com", "lemanapro.ru", "vseinstrumenti.ru",
+        // Banks & fintech
+        "vtb.com", "alfabank.net", "tinkoff.net", "tbank.ru", "sber.ru", "sberdevices.ru",
+        // Gov & services
+        "2gis.com", "gosuslugi.ru", "esia.gosuslugi.ru",
+        // Media & misc
+        "kino.pub", "kinopoisk.io",
+    )
+
+    /** Yandex public DNS — queried directly for RU domains so CDN geo answers are RU-side. */
+    private const val RU_DNS_PRIMARY = "77.88.8.8"
+    private const val RU_DNS_SECONDARY = "77.88.8.1"
+
     class UnsupportedProfileException(message: String) : IllegalArgumentException(message)
 
     fun isSupported(p: ProfileSpec): Boolean = try {
@@ -235,9 +265,15 @@ object XrayConfigBuilder {
         outbounds.put(JSONObject().put("tag", "dns-out").put("protocol", "dns"))
         root.put("outbounds", outbounds)
 
-        // --- dns: resolved through the tunnel; the server hostname itself is resolved directly ---
+        // --- dns: RU domains go to Yandex DNS (direct, RU vantage); everything else via tunnel ---
         val dns = JSONObject()
         val servers = JSONArray()
+        servers.put(
+            JSONObject()
+                .put("address", RU_DNS_PRIMARY)
+                .put("port", 53)
+                .put("domains", JSONArray(RU_TLD_SUFFIXES + RU_SERVICE_DOMAINS))
+        )
         servers.put("https://1.1.1.1/dns-query")
         servers.put(TUN_DNS)
         servers.put(TUN_DNS_2)
@@ -256,6 +292,13 @@ object XrayConfigBuilder {
         // --- routing ---
         val rules = JSONArray()
         val inboundTags = JSONArray().put("socks").apply { if (tunEnabled) put("tun") }
+        // RU-resolver queries must reach the real network: without this rule they would be
+        // caught by the port-53 rule below and loop back into the DNS module.
+        rules.put(
+            JSONObject().put("type", "field")
+                .put("ip", JSONArray().put(RU_DNS_PRIMARY).put(RU_DNS_SECONDARY))
+                .put("outboundTag", "direct")
+        )
         // DNS from the device -> Xray built-in DNS outbound (which uses the "dns" module above).
         rules.put(
             JSONObject().put("type", "field").put("inboundTag", inboundTags)
@@ -265,6 +308,12 @@ object XrayConfigBuilder {
         rules.put(
             JSONObject().put("type", "field")
                 .put(if (isIpLiteral(p.address)) "ip" else "domain", JSONArray().put(p.address))
+                .put("outboundTag", "direct")
+        )
+        // RU services bypass the tunnel entirely (anti-VPN-detection on RU apps/sites).
+        rules.put(
+            JSONObject().put("type", "field")
+                .put("domain", JSONArray(RU_TLD_SUFFIXES + RU_SERVICE_DOMAINS))
                 .put("outboundTag", "direct")
         )
         // Local / private ranges bypass. Use literal CIDRs because the embedded Android core
