@@ -24,5 +24,15 @@ description: End-to-end test the MilkyVPN Android app on the test35 emulator rou
 - Live traffic check while session is up: `adb forward tcp:11808 tcp:11808` (kal2/Mirage SOCKS) and `adb forward tcp:10808 tcp:10808` (Xray SOCKS, full chain); `curl -s -m 12 --socks5-hostname 127.0.0.1:11808 https://ifconfig.me` should return the VPN exit IP (NOT the RU underlay IP). Session exists only during/after a successful connect; a healthy listener returns in ~1–4s, a stale one refuses in <0.1s.
 - Android guest has no curl; use adb forwards + host curl instead.
 
+## Old-Android AVDs (API 24/25 floor)
+- AVDs: `test24` (API 24, emulator-5556) and `test25` (API 25, emulator-5554); launch with `-port 5556` for a second emulator on the same host. Target them with `adb -s emulator-XXXX`.
+- minSdk floor is **24**: libflutter.so references `__fwrite_chk` (API 24+) — any lower floor crashes at load with UnsatisfiedLinkError. Do not lower it.
+- Known old-Android traps already fixed: NotificationChannel needs `SDK_INT >= O` guard in `MilkyVpnService.createChannel()`; veil TLS needs `InsecureSkipVerify` (stale CA stores lack ISRG Root X1/X2) — both live in the code, keep them.
+- Screenshot pixels vs device pixels differ (~1.45x): `screencap`/`uiautomator dump` coordinates in this guide are device px; scale screenshot coords before `input tap`.
+
+## Typing the kal2 link via adb (two traps)
+- `adb shell input text` runs the string through the **device** shell: every `&` splits commands ("bb: not found") and the link is truncated — escape each one as `\&`, else `pub=` is lost and the profile imports as "0 совместимых".
+- Do NOT fetch the link from a local URL: `SubscriptionUrlPolicy` rejects private/reserved hosts incl. `10.0.2.2`, and a `*.sslip.io` name pointing at it still routes to the proxy upstream. Type the raw `kal2://` link with `\&` escapes instead.
+
 ## Devin Secrets Needed
 - none — DataImpulse creds are embedded in `~/auth_proxy.py` on the box.
