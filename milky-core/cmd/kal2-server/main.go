@@ -6,6 +6,7 @@ package main
 
 import (
 	"crypto/ed25519"
+	"encoding/base64"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/Frtertaer/milkyvpn/milky-core/internal/carrier"
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/core"
 	"github.com/Frtertaer/milkyvpn/milky-core/pkg/kal2core"
 )
@@ -50,8 +52,23 @@ func main() {
 	var users userFlags
 	flag.Var(&users, "user", "id=psk (repeatable)")
 	keygen := flag.Bool("keygen", false, "print a fresh ed25519 keypair and exit")
+	echGen := flag.String("echgen", "", "generate an ECH config+key for this outer cover name (public_name), print the client ECHConfigList (b64, goes into kal2:// links as ech=) and write the key file to -echkeys-out")
+	echKeysOut := flag.String("echkeys-out", "ech-keys.json", "key file written by -echgen")
+	echKeys := flag.String("echkeys", "", "comma-separated ECH key files to serve (from -echgen)")
 	flag.Parse()
 
+	if *echGen != "" {
+		list, k, err := carrier.GenerateECHConfig(*echGen)
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := carrier.SaveECHKeyFile(*echKeysOut, *echGen, k); err != nil {
+			log.Fatal(err)
+		}
+		fmt.Println("ECHConfigList (base64, link param ech=):", base64.StdEncoding.EncodeToString(list))
+		fmt.Println("key file written:", *echKeysOut)
+		return
+	}
 	if *keygen {
 		priv, pub, err := kal2core.GenerateKeypairHex()
 		if err != nil {
@@ -107,6 +124,7 @@ func main() {
 		DecoyDir:         *decoy,
 		DriftPath:        *driftPath,
 		Users:            users,
+		ECHKeyFiles:      splitCommaStr(*echKeys),
 		Egress:           eg,
 		Logf:             func(f string, a ...any) { log.Printf(f, a...) },
 	})
@@ -114,4 +132,14 @@ func main() {
 		log.Fatal(err)
 	}
 	os.Exit(0)
+}
+
+func splitCommaStr(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }

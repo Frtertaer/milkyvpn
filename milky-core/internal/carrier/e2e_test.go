@@ -75,6 +75,10 @@ type testServer struct {
 }
 
 func newTestServer(t *testing.T) *testServer {
+	return newTestServerWith(t, nil)
+}
+
+func newTestServerWith(t *testing.T, echKeys []tls.EncryptedClientHelloKey) *testServer {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -89,6 +93,7 @@ func newTestServer(t *testing.T) *testServer {
 		Domain:   "kal.test",
 		Cert:     cert,
 		Identity: priv,
+		ECHKeys:  echKeys,
 		Logf:     func(f string, a ...any) { t.Logf(f, a...) },
 		Users:    []User{{ID: "u1", PSK: psk}},
 		OnSession: func(s *kal2.Session) {
@@ -174,6 +179,62 @@ func TestVeilEndToEnd(t *testing.T) {
 	}
 	defer sess.Close()
 	streamEchoTest(t, sess)
+}
+
+// ECH: client presents the cover name as outer SNI; the inner ClientHello
+// (real SNI + ALPN) is hidden from on-path DPI. Assert ECHAccepted + traffic.
+func TestVeilECH(t *testing.T) {
+	list, key, err := GenerateECHConfig("cover.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := newTestServerWith(t, []tls.EncryptedClientHelloKey{key})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	sess, bc, err := DialVeil(ctx, ClientConfig{
+		Addr:               ts.ln.Addr().String(),
+		SNI:                "kal.test",
+		ServerPub:          ts.pub,
+		PSK:                ts.psk,
+		InsecureSkipVerify: true,
+		ECHConfigList:      list,
+	})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer sess.Close()
+	if u, ok := bc.(*utlsBoundConn); ok && !u.UConn.ConnectionState().ECHAccepted {
+		t.Fatal("ECH not accepted by server")
+	}
+	streamEchoTest(t, sess)
+}
+
+// ECHConfig round-trip: marshal → parse public_name.
+func TestECHConfigRoundTrip(t *testing.T) {
+	list, key, err := GenerateECHConfig("cdn.example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	name, err := echPublicName(key.Config)
+	if err != nil || name != "cdn.example.com" {
+		t.Fatalf("public_name %q err %v", name, err)
+	}
+	if len(list) < 4 {
+		t.Fatal("ECHConfigList too short")
+	}
+	f := t.TempDir() + "/k.json"
+	if err := SaveECHKeyFile(f, "cdn.example.com", key); err != nil {
+		t.Fatal(err)
+	}
+	ks, err := LoadECHKeys([]string{f})
+	if err != nil || len(ks) != 1 {
+		t.Fatalf("load: %v %v", ks, err)
+	}
+	name2, err := echPublicName(ks[0].Config)
+	if err != nil || name2 != "cdn.example.com" {
+		t.Fatalf("reloaded public_name %q err %v", name2, err)
+	}
 }
 
 func TestDriftEndToEnd(t *testing.T) {

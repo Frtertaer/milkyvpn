@@ -49,6 +49,8 @@ func main() {
 	fetchMax := flag.Int64("fetchmax", 32<<20, "max bytes to read for -fetch")
 	proxyURL := flag.String("proxy", "", "base-dial proxy (http://user:pass@host:port)")
 	insecure := flag.Bool("insecure", false, "skip carrier TLS chain verify (inner handshake still authenticates the server pubkey)")
+	ech := flag.String("ech", "", "base64 ECHConfigList — Encrypted Client Hello on veil (outer SNI shows only the cover name)")
+	cover := flag.Bool("cover", true, "jittered chaff traffic against timing/size DPI heuristics")
 	flag.Parse()
 
 	serverPub, err := kal2core.DecodeKey(*pub)
@@ -85,6 +87,17 @@ func main() {
 		DriftPath:          *driftPath,
 		Logf:               log.Printf,
 		InsecureSkipVerify: *insecure,
+		Cover:              *cover,
+	}
+	if *ech != "" {
+		list, err := base64.StdEncoding.DecodeString(*ech)
+		if err != nil {
+			list, err = base64.RawURLEncoding.DecodeString(*ech)
+		}
+		if err != nil {
+			log.Fatalf("bad -ech: %v", err)
+		}
+		cfg.ECHConfigList = list
 	}
 	if *proxyURL != "" {
 		d, err := httpConnectDialer(*proxyURL)

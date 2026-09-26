@@ -7,13 +7,15 @@
 //
 //	{"addr":"ip:443[,ip2:443,...]", "sni":"kal.example.dev",
 //	 "carrier":"auto|veil|drift", "path":"/api/v2/stream",
-//	 "pub":"<hex>", "psk":"<hex>", "socks":"127.0.0.1:10808"}
+//	 "pub":"<hex>", "psk":"<hex>", "socks":"127.0.0.1:10808",
+//	 "ech":"<base64 ECHConfigList>", "cover":true}
 //
 // Point OS proxy / VPN routing at the returned SOCKS port.
 package kal2mobile
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -34,6 +36,8 @@ type mobileConfig struct {
 	Pub       string `json:"pub"`
 	PSK       string `json:"psk"`
 	Socks     string `json:"socks"`
+	ECH       string `json:"ech"`   // base64 ECHConfigList (link param ech=)
+	Cover     *bool  `json:"cover"` // default on: jittered chaff against timing DPI
 }
 
 var (
@@ -102,6 +106,18 @@ func Start(configJSON string) (int, error) {
 	defer mu.Unlock()
 	stopLocked()
 
+	var echList []byte
+	if mc.ECH != "" {
+		echList, err = base64.StdEncoding.DecodeString(mc.ECH)
+		if err != nil {
+			echList, err = base64.RawURLEncoding.DecodeString(mc.ECH)
+		}
+		if err != nil {
+			return 0, fmt.Errorf("bad ech param: %w", err)
+		}
+	}
+	cover := mc.Cover == nil || *mc.Cover
+
 	cfg := kal2core.ClientConfig{
 		Addr:               addrs[0],
 		Addrs:              addrs,
@@ -112,6 +128,8 @@ func Start(configJSON string) (int, error) {
 		DriftPath:          mc.DriftPath,
 		Logf:               logf,
 		InsecureSkipVerify: true,
+		ECHConfigList:      echList,
+		Cover:              cover,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
