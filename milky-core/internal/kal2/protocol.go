@@ -35,6 +35,10 @@ const MaxPadBucketsAbove = 1
 // MinPadBytes is the absolute minimum of random padding per record.
 const MinPadBytes = 16
 
+// MaxSessionPadBucket bounds the per-session padding multiple chosen in
+// sessionPadBucket — receivers size record buffers against it.
+const MaxSessionPadBucket = PadBucketSize * 4 // 1024
+
 // Maximum random padding added to the client first flight so its size is not
 // a fixed signature.
 const FirstFlightMaxPad = 512
@@ -131,20 +135,27 @@ const (
 // total (payload + 2-byte pad length + pad) lands on a bucket boundary, with a
 // ~1/2 chance of one extra bucket.
 func NextPaddingLength(payloadLen int) (int, error) {
-	if payloadLen < 0 {
+	return NextPaddingLengthBucket(payloadLen, PadBucketSize)
+}
+
+// NextPaddingLengthBucket pads to `bucket`-sized multiples instead of the
+// default — senders may pick a per-session bucket so packet-size histograms
+// don't form a fixed signature across sessions.
+func NextPaddingLengthBucket(payloadLen, bucket int) (int, error) {
+	if payloadLen < 0 || bucket < MinPadBytes {
 		return 0, ErrFraming
 	}
 	target := payloadLen + 2
-	extra := (-target) % PadBucketSize
+	extra := (-target) % bucket
 	if extra < MinPadBytes {
-		extra += PadBucketSize
+		extra += bucket
 	}
 	var roll [1]byte
 	if _, err := rand.Read(roll[:]); err != nil {
 		return 0, err
 	}
 	if roll[0] >= 128 {
-		extra += PadBucketSize * MaxPadBucketsAbove
+		extra += bucket * MaxPadBucketsAbove
 	}
 	return extra, nil
 }
@@ -152,7 +163,12 @@ func NextPaddingLength(payloadLen int) (int, error) {
 // Pad appends uint16-le length-delimited random padding so
 // len(plaintext)+padblock is bucket-aligned.
 func Pad(plaintext []byte) ([]byte, error) {
-	n, err := NextPaddingLength(len(plaintext))
+	return PadBucket(plaintext, PadBucketSize)
+}
+
+// PadBucket pads to `bucket`-sized multiples (see NextPaddingLengthBucket).
+func PadBucket(plaintext []byte, bucket int) ([]byte, error) {
+	n, err := NextPaddingLengthBucket(len(plaintext), bucket)
 	if err != nil {
 		return nil, err
 	}
@@ -187,18 +203,20 @@ func Unpad(padded []byte) ([]byte, error) {
 // ---------------------------------------------------------------------------
 
 // Record frame on the wire (AEAD ciphertext):
-//   1 byte  type
-//   8 bytes big-endian sequence
-//   4 bytes big-endian stream id
-//   4 bytes big-endian ciphertext length
-//   N bytes AEAD ciphertext (plaintext || pad-block, 16-byte tag)
+//
+//	1 byte  type
+//	8 bytes big-endian sequence
+//	4 bytes big-endian stream id
+//	4 bytes big-endian ciphertext length
+//	N bytes AEAD ciphertext (plaintext || pad-block, 16-byte tag)
+//
 // The 17-byte header is the AEAD additional data.
 const RecordHeaderSize = 17
 
 const aeadTagSize = 16
 
 // MaxRecordCiphertext bounds a single record's ciphertext.
-const MaxRecordCiphertext = MaxPayload + 2 + PadBucketSize*(MaxPadBucketsAbove+2) + aeadTagSize
+const MaxRecordCiphertext = MaxPayload + 2 + MaxSessionPadBucket*(MaxPadBucketsAbove+2) + aeadTagSize
 
 // Record is one decoded inbound record.
 type Record struct {

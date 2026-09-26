@@ -328,8 +328,18 @@ func deriveSessionKeys(transcriptBytes, salt []byte) (*Session, error) {
 		nonceBase:  nb,
 		verify:     v,
 		streams:    map[uint32]*stream{},
+		padBucket:  sessionPadBucket(),
 	}
 	return s, nil
+}
+
+// sessionPadBucket picks the record padding multiple for this session:
+// 256B×{1..4} (~uniform) so the wire packet-size histogram isn't a constant
+// fingerprint across reconnects. Receiver side is bucket-agnostic.
+func sessionPadBucket() int {
+	var b [1]byte
+	_, _ = rand.Read(b[:])
+	return PadBucketSize * (1 + int(b[0]&3)) // 256/512/768/1024 — see MaxSessionPadBucket
 }
 
 func genX25519() (priv, pub []byte, err error) {

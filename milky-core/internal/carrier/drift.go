@@ -192,7 +192,7 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 			if err != nil {
 				return nil, err
 			}
-			spec, _ := utls.UTLSIdToSpec(utls.HelloChrome_Auto)
+			spec, _ := utls.UTLSIdToSpec(pickHelloID(cfg.Fingerprint))
 			uc := utls.UClient(raw, &utls.Config{
 				ServerName:         cfg.SNI,
 				MinVersion:         utls.VersionTLS13,

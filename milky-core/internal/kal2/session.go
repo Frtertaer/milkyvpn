@@ -33,6 +33,10 @@ type Session struct {
 
 	rw io.ReadWriteCloser
 
+	// padBucket is this direction's padding multiple (default PadBucketSize);
+	// randomized per session so wire packet-size histograms differ run to run.
+	padBucket int
+
 	// Outbound scheduler: control records (OPEN/ACK/CLOSE/RST/PING/PONG)
 	// go out ahead of queued DATA so stream control never starves behind
 	// bulk transfer. DATA senders block when dataCh is full — that is the
@@ -40,8 +44,8 @@ type Session struct {
 	ctrlCh chan outRec
 	dataCh chan outRec
 
-	smu     sync.RWMutex // guards streams
-	streams map[uint32]*stream
+	smu       sync.RWMutex // guards streams
+	streams   map[uint32]*stream
 	acceptCh  chan *stream
 	nextID    uint32
 	writeErr  error
@@ -196,7 +200,11 @@ func (s *Session) writeLoop() {
 // appendFrame encrypts one record into buf. Runs only on the writer goroutine;
 // an undeliverable payload is dropped (the session continues).
 func (s *Session) appendFrame(buf []byte, r outRec) []byte {
-	padded, err := Pad(r.p)
+	bucket := s.padBucket
+	if bucket < MinPadBytes {
+		bucket = PadBucketSize
+	}
+	padded, err := PadBucket(r.p, bucket)
 	if err != nil {
 		return buf
 	}
