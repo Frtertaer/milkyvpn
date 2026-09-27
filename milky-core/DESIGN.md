@@ -72,6 +72,7 @@ New in v2:
 | `veil` | real TLS 1.3 termination, own LE cert, decoy splice on failed auth | primary, port 443 |
 | `drift` | HTTP/1.1+H2 request/response pairs inside TLS (POST up / GET long-poll down) | anti-"hammering" heuristic, CDN-compatible |
 | `relay` | TCP splice hop on a domestic VPS | whitelist/domestic chain |
+| `mosaic` | one session sharded over many short, independent HTTPS POST tiles across all entry points | per-flow truncation (16–20 KB cut), entry-IP blocking, network changes |
 | `quic` | future (Hysteria-style UDP) | lossy networks |
 
 **Veil details.** The listener peeks the ClientHello: SNI matching our domain
@@ -88,6 +89,50 @@ any other path (including the bare base) returns the decoy's plain 404, so
 the entry point cannot be found by path enumeration or active probing.
 Chrome UA, chunk-padded bodies, POST/PUT/PATCH allowed. Over CDN this is
 ordinary long-poll API traffic.
+
+**Mosaic details.** Every other carrier maps a session onto one connection,
+so whatever kills the connection (a reset, the ~16–20 KB per-flow cut on
+foreign hosting, a blackholed entry IP, a phone switching networks) kills the
+session. Mosaic separates the two: the KAL/2 byte streams are cut into
+offset-addressed *tiles* of at most 4 KiB, each carried by an independent
+HTTPS POST (request = uplink slice, response = downlink slice).
+
+- Tile body: `sid[16] | upOff[8] | downAck[8] | upLen[2] | padLen[2] |
+  mac[16] | data | pad`; the response mirrors it (`downOff | upAck | ...`).
+  `mac = HMAC-SHA256(psk, label || header || data)[:16]`. The endpoint is keyed
+  like drift (`<base>/<hex8(HMAC(psk, "mxs/mosaic-path"))>`, base
+  `/api/v3/tiles`); an unkeyed path, a wrong PSK or any forged/garbled tile
+  gets the decoy's plain 404.
+- Reliability: both ends keep unacknowledged bytes until the peer's
+  cumulative ack covers them. A failed tile rewinds its range; a range whose
+  ack does not advance within the RTO is re-sent. Tiles are idempotent, so
+  reordering, duplication and replay are harmless (KAL/2 records carry their
+  own sequence numbers and AEAD tags). Receive windows cap per-session memory
+  at 256 KiB per direction; ended session ids are tombstoned.
+- Flow hygiene: the client retires each TLS connection after ~8 KiB of tile
+  bytes, so no single flow ever grows to the truncation threshold.
+- Entry diversity: every tile picks the next endpoint from the whole `addr`
+  list (relays, CDN edges, direct IPs of the same server). A dead or newly
+  blocked entry costs retransmits, not the session; the session only ends
+  after 45 s with no tile completing, and then the reconnect loop redials.
+- Shape: two empty tiles stay parked on the server (long-poll, ~3–4 s) for
+  downlink data, two more lanes carry uplink as it appears. On the wire this
+  is a burst of small XHR-sized requests to one API path.
+- Binding: a mosaic session spans many TLS connections by design, so it has
+  no exporter binding; the Ed25519 identity signature and PSK proofs still
+  authenticate both ends.
+
+Costs: every ~2 tiles pay a fresh TLS handshake, so bulk throughput is well
+below veil. In `auto` it is hedged with the other carriers and wins only when
+they fail to complete — which is the situation it is built for.
+
+**Exporter binding.** Veil keys the KAL/2 first flight to the TLS exporter
+(RFC 9266, label `mxs-bind`). uTLS browser presets enable renegotiation
+(they carry `renegotiation_info`), which blocks exporters; the client
+switches it off once TLS 1.3 is negotiated. The server accepts an unbound
+flight as a fallback for older clients unless `RequireBinding` is set — a
+bound flight never verifies on a different TLS leg, so an interceptor gains
+nothing from the fallback.
 
 **Fronting.** Because drift is plain h2-over-TLS, it can sit behind any
 h2-capable CDN (e.g. Cloudflare): point the domain at the CDN, then dial the

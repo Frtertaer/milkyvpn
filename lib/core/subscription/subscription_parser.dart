@@ -667,7 +667,7 @@ class SubscriptionParser {
     );
   }
 
-  /// `kal2://psk@host:port?sni=domain&pub=hex&carrier=veil|drift&path=/p#remark`
+  /// `kal2://psk@host:port?sni=domain&pub=hex&carrier=veil|drift|cdn|mosaic&path=/p#remark`
   VpnProfile? _parseKal2(String line) {
     final parts = _split(line);
     if (parts == null) return null;
@@ -677,7 +677,8 @@ class SubscriptionParser {
     final query = parts.params;
     final carrier = (query['carrier'] ?? 'veil').trim().toLowerCase();
     if (carrier != 'veil' && carrier != 'drift' &&
-        carrier != 'cdn' && carrier != 'auto' && carrier != 'relay') {
+        carrier != 'cdn' && carrier != 'mosaic' && carrier != 'auto' &&
+        carrier != 'relay') {
       return null;
     }
     final remark = parts.remark.isEmpty
@@ -1465,7 +1466,8 @@ class SubscriptionParser {
         if (psk == null) return null;
         final carrier = (s('carrier') ?? 'veil').trim().toLowerCase();
         if (carrier != 'veil' && carrier != 'drift' &&
-        carrier != 'cdn' && carrier != 'auto' && carrier != 'relay') {
+        carrier != 'cdn' && carrier != 'mosaic' && carrier != 'auto' &&
+        carrier != 'relay') {
           return null;
         }
         return _identified(

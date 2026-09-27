@@ -63,7 +63,7 @@ type ClientConfig struct {
 	SNI       string   // TLS SNI (server domain)
 	ServerPub []byte   // server Ed25519 public key (32B)
 	PSK       []byte   // per-user PSK (32B)
-	Carrier   string   // "veil" (default), "drift", "cdn" (WS-shaped drift), "auto" (hedged), or "a,b" list
+	Carrier   string   // "veil" (default), "drift", "cdn" (WS-shaped drift), "mosaic" (tiled), "auto" (hedged), or "a,b" list
 	DriftPath string   // secret path when Carrier=drift
 	// InsecureSkipVerify disables chain verification on the carrier TLS layer.
 	// The KAL/2 inner handshake still authenticates the server by its Ed25519
@@ -206,6 +206,8 @@ func Serve(cfg ServerConfig) error {
 	mux := http.NewServeMux()
 	mux.Handle(driftPath, v.DriftHandler(driftPath))
 	mux.Handle(driftPath+"/", v.DriftHandler(driftPath))
+	mux.Handle(carrier.DefaultMosaicPath, v.MosaicHandler(carrier.DefaultMosaicPath))
+	mux.Handle(carrier.DefaultMosaicPath+"/", v.MosaicHandler(carrier.DefaultMosaicPath))
 	if cfg.DecoyDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(cfg.DecoyDir)))
 	} else {
@@ -269,14 +271,15 @@ func endpoints(cfg ClientConfig) []string {
 }
 
 // carriers expands the Carrier field into the concrete carriers to try.
-// "auto" (or empty) hedges across veil and drift: both are dialed in
-// parallel and the first session that completes wins — during throttling
-// windows one carrier usually still squeezes through (observed live: veil
-// dials timed out while drift completed).
+// "auto" (or empty) hedges across every carrier: all are dialed in parallel
+// and the first session that completes wins — during throttling windows one
+// carrier usually still squeezes through (observed live: veil dials timed
+// out while drift completed). Mosaic completes last on a clean path, so it
+// wins exactly when the connection-shaped carriers are being cut.
 func carriers(cfg ClientConfig) []string {
 	c := strings.TrimSpace(cfg.Carrier)
 	if c == "" || c == "auto" {
-		return []string{"veil", "drift", "cdn"}
+		return []string{"veil", "drift", "cdn", "mosaic"}
 	}
 	parts := strings.Split(c, ",")
 	out := parts[:0]
@@ -393,6 +396,11 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		return s, err
 	case "cdn":
 		s, _, err := carrier.DialDriftWS(ctx, cc, cfg.DriftPath)
+		return s, err
+	case "mosaic":
+		cc.Endpoints = endpoints(cfg)
+		cc.Logf = cfg.Logf
+		s, _, err := carrier.DialMosaic(ctx, cc, "")
 		return s, err
 	default:
 		return nil, fmt.Errorf("unknown carrier %q", cfg.Carrier)

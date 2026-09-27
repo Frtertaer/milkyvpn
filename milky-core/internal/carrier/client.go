@@ -51,6 +51,18 @@ type ClientConfig struct {
 	HandshakeTimeout time.Duration
 	// FirstFlightPadLen: -1 random, else explicit padding length.
 	FirstFlightPadLen int
+	// Endpoints lists every entry point (host:port) serving this server; the
+	// mosaic carrier spreads one session across all of them. Empty = Addr.
+	Endpoints []string
+	// Logf receives carrier diagnostics.
+	Logf func(string, ...any)
+}
+
+func (c *ClientConfig) logger() func(string, ...any) {
+	if c.Logf != nil {
+		return c.Logf
+	}
+	return func(string, ...any) {}
 }
 
 // utlsConfig is the outer TLS client config shared by every carrier: TLS 1.3

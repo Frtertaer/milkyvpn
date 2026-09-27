@@ -19,6 +19,7 @@ object Kal2Config {
             "drift" -> "drift"
             "veil" -> "veil"
             "cdn" -> "cdn"
+            "mosaic" -> "mosaic"
             else -> "auto"
         }
         return JSONObject()

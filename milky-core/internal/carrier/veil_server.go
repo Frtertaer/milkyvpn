@@ -83,6 +83,8 @@ type VeilListener struct {
 	// hijacks tracks WS-hijacked conns (key: remote addr) so serveHTTP keeps
 	// the conn alive until the WS session — not the HTTP request — ends.
 	hijacks sync.Map // string -> *hijackReg
+	// mosaics holds sessions carried by mosaic tiles.
+	mosaics mosaicTable
 }
 
 type hijackReg struct {
