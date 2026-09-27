@@ -8,7 +8,12 @@
 //	{"addr":"ip:443[,ip2:443,...]", "sni":"kal.example.dev",
 //	 "carrier":"auto|veil|drift", "path":"/api/v2/stream",
 //	 "pub":"<hex>", "psk":"<hex>", "socks":"127.0.0.1:10808",
-//	 "ech":"<base64 ECHConfigList>", "cover":true}
+//	 "ech":"<base64 ECHConfigList>", "cover":true,
+//	 "pin":"<b64 or hex sha256(SPKI)>[,...]", "insecure":false}
+//
+// The outer TLS certificate is verified against the system roots unless
+// "pin" is given (SPKI pin replaces CA verification) or "insecure" is true
+// (legacy devices whose root store lacks the server's CA).
 //
 // Point OS proxy / VPN routing at the returned SOCKS port.
 package kal2mobile
@@ -38,6 +43,8 @@ type mobileConfig struct {
 	Socks     string `json:"socks"`
 	ECH       string `json:"ech"`   // base64 ECHConfigList (link param ech=)
 	Cover     *bool  `json:"cover"` // default on: jittered chaff against timing DPI
+	Pin       string `json:"pin"`
+	Insecure  bool   `json:"insecure"`
 }
 
 var (
@@ -117,6 +124,14 @@ func Start(configJSON string) (int, error) {
 		}
 	}
 	cover := mc.Cover == nil || *mc.Cover
+	var pins [][]byte
+	for _, p := range splitComma(mc.Pin) {
+		b, err := kal2core.DecodeKey(p)
+		if err != nil {
+			return 0, fmt.Errorf("bad pin: %w", err)
+		}
+		pins = append(pins, b)
+	}
 
 	cfg := kal2core.ClientConfig{
 		Addr:               addrs[0],
@@ -127,7 +142,8 @@ func Start(configJSON string) (int, error) {
 		Carrier:            mc.Carrier,
 		DriftPath:          mc.DriftPath,
 		Logf:               logf,
-		InsecureSkipVerify: true,
+		InsecureSkipVerify: mc.Insecure,
+		PinSHA256:          pins,
 		ECHConfigList:      echList,
 		Cover:              cover,
 	}

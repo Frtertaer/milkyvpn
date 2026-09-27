@@ -66,11 +66,14 @@ type ClientConfig struct {
 	Carrier   string   // "veil" (default), "drift", "cdn" (WS-shaped drift), "auto" (hedged), or "a,b" list
 	DriftPath string   // secret path when Carrier=drift
 	// InsecureSkipVerify disables chain verification on the carrier TLS layer.
-	// Safe here: the KAL/2 inner handshake authenticates the server by its
-	// Ed25519 pubkey and binds to the TLS exporter (RFC 9266), so a MitM cannot
-	// forge the session. Needed on devices with stale CA stores (old Android
-	// system images lack newer roots like ISRG Root X1/X2).
+	// The KAL/2 inner handshake still authenticates the server by its Ed25519
+	// pubkey and (veil) binds to the TLS exporter, so an interceptor cannot
+	// relay the session — but it does see the inner first flight. Prefer
+	// PinSHA256 on devices with stale CA stores.
 	InsecureSkipVerify bool
+	// PinSHA256 pins the outer TLS leaf by SHA-256 of its SPKI instead of
+	// CA-chain verification (link param pin=).
+	PinSHA256 [][]byte
 	// ECHConfigList enables Encrypted Client Hello on the veil carrier
 	// (serialized ECHConfigList). On a veil dial failure it is retried once
 	// without ECH — availability beats the marginal stealth loss.
@@ -371,6 +374,7 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		DialContext:        cfg.DialContext,
 		HandshakeTimeout:   cfg.HandshakeTimeout,
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
+		PinSHA256:          cfg.PinSHA256,
 		ECHConfigList:      cfg.ECHConfigList,
 	}
 	switch cfg.Carrier {

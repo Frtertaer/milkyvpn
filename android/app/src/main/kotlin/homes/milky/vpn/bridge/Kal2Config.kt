@@ -1,5 +1,6 @@
 package homes.milky.vpn.bridge
 
+import android.os.Build
 import homes.milky.vpn.core.XrayConfigBuilder.ProfileSpec
 import org.json.JSONObject
 
@@ -31,5 +32,9 @@ object Kal2Config {
             .put("ech", p.ech ?: "")
             // cover defaults on in the native core; "0"/"false" disables it.
             .put("cover", !p.cover.equals("0") && !p.cover.equals("false", true))
+            // The core verifies the outer TLS chain; Android < 7.1.1 lacks
+            // ISRG Root X1, so only there it falls back to the KAL/2 identity
+            // key + exporter binding alone.
+            .put("insecure", Build.VERSION.SDK_INT < Build.VERSION_CODES.N_MR1)
     }
 }
