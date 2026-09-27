@@ -667,7 +667,7 @@ class SubscriptionParser {
     );
   }
 
-  /// `kal2://psk@host:port?sni=domain&pub=hex&carrier=veil|drift|cdn|mosaic&path=/p#remark`
+  /// `kal2://psk@host:port?sni=domain&pub=hex&carrier=veil|drift|cdn|mosaic&path=/p&pin=b64#remark`
   VpnProfile? _parseKal2(String line) {
     final parts = _split(line);
     if (parts == null) return null;
@@ -700,6 +700,7 @@ class SubscriptionParser {
         path: _nz(query['path']),
         ech: _nz(query['ech']),
         cover: _nz(query['cover']),
+        pin: _nz(query['pin']),
       ),
     );
   }
@@ -1485,6 +1486,7 @@ class SubscriptionParser {
             path: _nz(s('path')),
             ech: _nz(s('ech')),
             cover: _nz(s('cover')),
+            pin: _nz(s('pin')),
           ),
         );
       default:

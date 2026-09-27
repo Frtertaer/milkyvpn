@@ -31,6 +31,7 @@ object Kal2Config {
             .put("psk", p.secret)
             .put("socks", LOCAL_SOCKS)
             .put("ech", p.ech ?: "")
+            .put("pin", p.pin ?: "")
             // cover defaults on in the native core; "0"/"false" disables it.
             .put("cover", !p.cover.equals("0") && !p.cover.equals("false", true))
             // The core verifies the outer TLS chain; Android < 7.1.1 lacks

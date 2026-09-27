@@ -42,6 +42,7 @@ class VpnProfile {
     this.shortId,
     this.ech,
     this.cover,
+    this.pin,
     this.spiderX,
     this.flow,
     this.host,
@@ -75,6 +76,9 @@ class VpnProfile {
   /// cover name only). `cover`: "0"/"false" disables jittered chaff traffic.
   final String? ech;
   final String? cover;
+  /// kal2: comma-separated base64 SHA-256 SPKI pins of the outer TLS
+  /// certificate; a match replaces CA verification (self-signed servers).
+  final String? pin;
   final String? spiderX;
   final String? flow;
   final String? host;
@@ -156,6 +160,7 @@ class VpnProfile {
     'shortId': shortId,
     'ech': ech,
     'cover': cover,
+    'pin': pin,
     'spiderX': spiderX,
     'flow': flow,
     'host': host,
