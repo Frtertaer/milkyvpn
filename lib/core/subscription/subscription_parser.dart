@@ -336,6 +336,13 @@ class SubscriptionParser {
         : (_isIpLiteral(address) ? '' : address);
     final effectiveSni = explicitSni.isEmpty ? fallbackSni : explicitSni;
     final remark = profile.remark.trim();
+    // kal2-only fields are appended only when set so ids of every other
+    // profile stay stable.
+    final kal2Extras = [
+      _nz(profile.ech) ?? '',
+      _nz(profile.cover) ?? '',
+      _nz(profile.pin) ?? '',
+    ];
 
     return jsonEncode([
       2, // identity schema
@@ -362,6 +369,7 @@ class SubscriptionParser {
       _nz(profile.plugin) ?? '',
       remark,
       VpnProfile.locationFromRemark(remark).name,
+      if (kal2Extras.any((e) => e.isNotEmpty)) ...kal2Extras,
     ]);
   }
 
@@ -379,6 +387,9 @@ class SubscriptionParser {
     fingerprint: profile.fingerprint,
     publicKey: profile.publicKey,
     shortId: profile.shortId,
+    ech: profile.ech,
+    cover: profile.cover,
+    pin: profile.pin,
     spiderX: profile.spiderX,
     flow: profile.flow,
     host: profile.host,

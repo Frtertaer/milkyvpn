@@ -57,6 +57,21 @@ func TestMosaicStreamRetransmit(t *testing.T) {
 	}
 }
 
+// A tile fails after a later tile's ack already covered its range: the
+// rewind must not move the send cursor below the acknowledged base.
+func TestMosaicStreamRewindBelowAck(t *testing.T) {
+	s := newMosaicStream()
+	_, _ = s.Write([]byte("abcdefgh"))
+	off, _ := s.takeOut(4)
+	_, _ = s.takeOut(4)
+	s.ackOut(8)
+	_, _ = s.Write([]byte("ij"))
+	s.rewind(off)
+	if o, d := s.takeOut(100); o != 8 || string(d) != "ij" {
+		t.Fatalf("after stale rewind: %d %q", o, d)
+	}
+}
+
 func TestMosaicTileAuth(t *testing.T) {
 	psk := bytes.Repeat([]byte{7}, 32)
 	tl := &tile{upOff: 42, downAck: 7, data: []byte("payload")}

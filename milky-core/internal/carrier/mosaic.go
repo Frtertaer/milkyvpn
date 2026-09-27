@@ -365,6 +365,9 @@ func (s *mosaicStream) takeOut(max int) (uint64, []byte) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	end := s.outBase + uint64(len(s.out))
+	if s.sent < s.outBase {
+		s.sent = s.outBase
+	}
 	if s.sent >= end {
 		return s.sent, nil
 	}
@@ -398,6 +401,9 @@ func (s *mosaicStream) takeOutWait(max int, hold time.Duration) (uint64, []byte)
 // rewind returns a failed tile's range to the send queue.
 func (s *mosaicStream) rewind(off uint64) {
 	s.mu.Lock()
+	if off < s.outBase {
+		off = s.outBase // already acknowledged meanwhile
+	}
 	if off < s.sent {
 		s.sent = off
 	}
