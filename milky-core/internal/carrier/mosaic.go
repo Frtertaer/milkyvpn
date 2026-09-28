@@ -671,6 +671,7 @@ type mosaicClient struct {
 	eps     []string
 	path    string
 	epIdx   atomic.Uint32
+	health  mosaicHealth
 	lastOK  atomic.Int64 // unix nanos of the last completed tile
 	stop    chan struct{}
 	once    sync.Once
@@ -699,6 +700,7 @@ func DialMosaic(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessi
 		stop: make(chan struct{}),
 		logf: cfg.logger(),
 	}
+	mc.health.init(len(eps))
 	if _, err := rand.Read(mc.sid[:]); err != nil {
 		return nil, nil, err
 	}
@@ -736,8 +738,86 @@ func (m *mosaicClient) close() {
 	})
 }
 
+// nextEndpoint rotates over the endpoints, skipping ones cooling down
+// after failures; when every endpoint is cooling it still returns the next.
 func (m *mosaicClient) nextEndpoint() string {
-	return m.eps[int(m.epIdx.Add(1)%uint32(len(m.eps)))]
+	n := uint32(len(m.eps))
+	start := m.epIdx.Add(1)
+	now := time.Now()
+	for k := uint32(0); k < n; k++ {
+		i := int((start + k) % n)
+		if m.health.usable(i, now) {
+			if k > 0 {
+				m.epIdx.Store(start + k)
+			}
+			return m.eps[i]
+		}
+	}
+	return m.eps[int(start%n)]
+}
+
+func (m *mosaicClient) endpointIndex(addr string) int {
+	for i, e := range m.eps {
+		if e == addr {
+			return i
+		}
+	}
+	return -1
+}
+
+// mosaicHealth tracks per-endpoint failure streaks so blocked or dead
+// endpoints stop absorbing tiles; cooldown doubles per failure up to 30s.
+type mosaicHealth struct {
+	mu    sync.Mutex
+	fails []int
+	until []time.Time
+}
+
+func (h *mosaicHealth) init(n int) {
+	h.fails = make([]int, n)
+	h.until = make([]time.Time, n)
+}
+
+func (h *mosaicHealth) usable(i int, now time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return !now.Before(h.until[i])
+}
+
+func (h *mosaicHealth) failed(i int) {
+	if i < 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fails[i]++
+	d := time.Second << min(h.fails[i]-1, 5)
+	if d > 30*time.Second {
+		d = 30 * time.Second
+	}
+	h.until[i] = time.Now().Add(d)
+}
+
+func (h *mosaicHealth) ok(i int) {
+	if i < 0 {
+		return
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.fails[i] = 0
+	h.until[i] = time.Time{}
+}
+
+// healthy reports whether some endpoint is currently outside cooldown.
+func (h *mosaicHealth) healthy(now time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	for _, u := range h.until {
+		if !now.Before(u) {
+			return true
+		}
+	}
+	return false
 }
 
 // probe sends one empty tile to confirm some endpoint accepts the session.
@@ -815,6 +895,9 @@ func (m *mosaicClient) pump(poller bool) {
 				m.st.rewind(off)
 			}
 			m.logf("kal2: mosaic tile via %s failed: %v", addr, err)
+			if m.health.healthy(time.Now()) {
+				continue
+			}
 			select {
 			case <-m.stop:
 				return
@@ -833,6 +916,18 @@ func (m *mosaicClient) pump(poller bool) {
 }
 
 func (m *mosaicClient) exchange(ctx context.Context, addr string, t *tile) (*tileResp, error) {
+	r, err := m.exchangeOnce(ctx, addr, t)
+	if err != nil {
+		if !m.st.isClosed() {
+			m.health.failed(m.endpointIndex(addr))
+		}
+		return nil, err
+	}
+	m.health.ok(m.endpointIndex(addr))
+	return r, nil
+}
+
+func (m *mosaicClient) exchangeOnce(ctx context.Context, addr string, t *tile) (*tileResp, error) {
 	body := t.encode(m.psk)
 	tr := m.pool.transport(addr)
 	url := "https://" + m.cfg.SNI + m.path

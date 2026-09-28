@@ -318,6 +318,14 @@ func TestMosaicEndpointLoss(t *testing.T) {
 	bulkEcho(t, sess, 32<<10)
 	dark.Store(true)
 	bulkEcho(t, sess, 32<<10)
+	// Dead endpoints must be sidelined, not keep taxing every tile.
+	start := time.Now()
+	bulkEcho(t, sess, 256<<10)
+	el := time.Since(start)
+	t.Logf("256KiB echo with 2/3 endpoints down: %s", el)
+	if el > 15*time.Second {
+		t.Fatalf("degraded throughput: 256KiB took %s", el)
+	}
 }
 
 func TestMosaicRejectsProbes(t *testing.T) {
