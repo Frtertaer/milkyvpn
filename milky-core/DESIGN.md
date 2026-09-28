@@ -169,6 +169,13 @@ Defense layers against probing/scanning of the listener:
 - **Records inside TLS**: inner protocol bytes are AEAD ciphertext — DPI sees
   only the TLS record layer of an ordinary site; padding keeps record sizes
   bucket-quantized, writes are coalesced (above).
+- **Mimicry shaping** (`PadMimic`, default for new sessions): instead of a
+  per-session fixed padding bucket — a clean comb in the record-size
+  histogram — each record is padded to a size drawn from an HTTPS-bulk-like
+  distribution (headers/small-JSON, MTU segments, mid-size objects, full
+  16 KiB record chunks, bulk fallback), and the coalesced-write burst budget
+  varies per flush. Padding stays self-delimiting so peers need no matching
+  mode; `Session.SetPadMode(PadBucketMode)` restores the old strategy.
 - **Release builds stripped**: build server/client/relay with
   `-trimpath -ldflags "-s -w"` — no symbols, no paths, harder to reverse.
 
