@@ -120,8 +120,30 @@ class FfiVpnBridge implements VpnBridge {
       throw VpnBridgeException(code, e.detail);
     }
 
+    // 'Session up' is not proof of traffic: verify end-to-end by driving a
+    // real SOCKS5 CONNECT through the tunnel before reporting connected.
+    try {
+      await _verifySocks(port).timeout(const Duration(seconds: 12));
+    } on Object {
+      try {
+        core.stop();
+      } catch (_) {}
+      _set(
+        const VpnSnapshot(state: VpnState.error, errorCode: 'connect_verify'),
+      );
+      throw VpnBridgeException('connect_verify');
+    }
+
     if (!tun) {
-      await _applyProxy(port);
+      try {
+        await _applyProxy(port);
+      } on Object catch (e) {
+        try {
+          core.stop();
+        } catch (_) {}
+        _set(const VpnSnapshot(state: VpnState.error, errorCode: 'proxy_apply'));
+        throw VpnBridgeException('proxy_apply', '$e');
+      }
     }
     _set(
       VpnSnapshot(
@@ -129,9 +151,49 @@ class FfiVpnBridge implements VpnBridge {
         profileId: profile.id,
         profileRemark: profile.redactedRemark,
         connectedSince: DateTime.now(),
-        lastSuccessfulStage: tun ? 'tun' : 'session',
+        lastSuccessfulStage: tun ? 'tun' : 'verified',
       ),
     );
+  }
+
+  /// Minimal SOCKS5 liveness probe: greeting + CONNECT to a fixed public
+  /// host. Proves the whole path — tunnel, server relay, egress — without
+  /// any TLS handshake of its own.
+  static Future<void> _verifySocks(int port) async {
+    final s = await Socket.connect(
+      '127.0.0.1',
+      port,
+      timeout: const Duration(seconds: 8),
+    );
+    try {
+      final done = Completer<void>();
+      final buf = <int>[];
+      late StreamSubscription<List<int>> sub;
+      sub = s.listen(
+        (data) {
+          buf.addAll(data);
+          // greeting reply: 05 00 | connect reply: 05 00 00 <atyp>…
+          if (buf.length == 2 && buf[0] == 0x05 && buf[1] == 0x00) {
+            s.add([0x05, 0x01, 0x00, 0x01, 1, 1, 1, 1, 0, 443]);
+          } else if (buf.length >= 10 && buf[0] == 0x05) {
+            if (buf[1] == 0x00 && !done.isCompleted) {
+              done.complete();
+            } else if (!done.isCompleted) {
+              done.completeError(StateError('socks reply ${buf[1]}'));
+            }
+          }
+        },
+        onError: done.completeError,
+        onDone: () {
+          if (!done.isCompleted) done.completeError(StateError('eof'));
+        },
+      );
+      s.add([0x05, 0x01, 0x00]);
+      await done.future.timeout(const Duration(seconds: 10));
+      await sub.cancel();
+    } finally {
+      s.destroy();
+    }
   }
 
   @override
@@ -195,6 +257,7 @@ class FfiVpnBridge implements VpnBridge {
 
   Future<void> _applyProxy(int port) async {
     final host = _socksAddr.split(':').first;
+    var applied = false;
     if (Platform.isMacOS) {
       // Point every configured network service at the local SOCKS listener.
       final list = await Process.run('networksetup', const [
@@ -207,39 +270,56 @@ class FfiVpnBridge implements VpnBridge {
           .where((s) => s.isNotEmpty && !s.startsWith('*'))
           .toList();
       for (final s in services) {
-        await Process.run('networksetup', [
+        final a = await Process.run('networksetup', [
           '-setsocksfirewallproxy',
           s,
           host,
           '$port',
         ]);
-        await Process.run('networksetup', [
+        final b = await Process.run('networksetup', [
           '-setsocksfirewallproxystate',
           s,
           'on',
         ]);
+        if (a.exitCode == 0 && b.exitCode == 0) applied = true;
       }
       _proxyServices = services;
+      if (services.isEmpty) applied = false;
     } else if (Platform.isLinux) {
-      // GNOME system proxy (no-op on other DEs — best effort).
-      await Process.run('gsettings', [
-        'set',
-        'org.gnome.system.proxy',
-        'mode',
-        'manual',
+      // GNOME system proxy; no gsettings/schema → proxy stays unset (the
+      // local SOCKS still works for apps configured to use it).
+      final schema = await Process.run('gsettings', const [
+        'list-schemas',
       ]);
-      await Process.run('gsettings', [
-        'set',
-        'org.gnome.system.proxy.socks',
-        'host',
-        host,
-      ]);
-      await Process.run('gsettings', [
-        'set',
-        'org.gnome.system.proxy.socks',
-        'port',
-        '$port',
-      ]);
+      if (schema.exitCode == 0 &&
+          '${schema.stdout}'.contains('org.gnome.system.proxy')) {
+        final r = await Process.run('gsettings', [
+          'set',
+          'org.gnome.system.proxy',
+          'mode',
+          'manual',
+        ]);
+        if (r.exitCode == 0) {
+          await Process.run('gsettings', [
+            'set',
+            'org.gnome.system.proxy.socks',
+            'host',
+            host,
+          ]);
+          await Process.run('gsettings', [
+            'set',
+            'org.gnome.system.proxy.socks',
+            'port',
+            '$port',
+          ]);
+          applied = true;
+        }
+      }
+    } else {
+      applied = true; // windows/iOS paths don't reach this bridge
+    }
+    if (!applied) {
+      throw StateError('system proxy not applied');
     }
     _proxySet = true;
   }
