@@ -19,7 +19,7 @@ GOOS=${GOOS:-$(go env GOHOSTOS)}
 GOARCH=${GOARCH:-$(go env GOHOSTARCH)}
 API=${ANDROID_API:-34}
 OUT=${OUT:-dist/native}
-PKG=./cmd/milkynative
+PKG=${PKG:-./cmd/milkynative}
 
 CC_BIN=""
 case "$GOOS" in
