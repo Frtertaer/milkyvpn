@@ -1,0 +1,111 @@
+name: milky-core
+
+on:
+  push:
+    paths: ["milky-core/**", ".github/workflows/milky-core-ci.yml"]
+  pull_request:
+    paths: ["milky-core/**", ".github/workflows/milky-core-ci.yml"]
+  workflow_dispatch:
+
+defaults:
+  run:
+    working-directory: milky-core
+
+jobs:
+  unit-integration:
+    name: tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: milky-core/go.mod
+      - name: unit + integration (in-process e2e incl. cutproxy TSPU sim)
+        run: go test -count=1 -timeout 10m ./internal/... ./pkg/...
+
+  race:
+    name: race detector
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: milky-core/go.mod
+      - run: go test -race -count=1 -timeout 15m ./internal/... ./pkg/...
+
+  fuzz:
+    name: handshake/parser fuzzing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: milky-core/go.mod
+      - name: fuzz each target for a fixed window
+        run: |
+          set -e
+          for target in $(go test ./internal/kal2/ -list='^Fuzz' | grep '^Fuzz'); do
+            echo "== $target =="
+            go test -fuzz="^${target}$" -fuzztime=60s ./internal/kal2/
+          done
+
+  crossbuild:
+    name: compile ${{ matrix.goos }}/${{ matrix.goarch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { goos: linux,   goarch: amd64 }
+          - { goos: linux,   goarch: arm64 }
+          - { goos: windows, goarch: amd64 }
+          - { goos: darwin,  goarch: arm64 }
+          - { goos: android, goarch: arm64 }
+          - { goos: freebsd, goarch: amd64 }
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: milky-core/go.mod
+      - name: compile all non-cgo packages
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: go build ./internal/... ./pkg/... ./cmd/kal2-client ./cmd/kal2-server ./cmd/kal2-relay
+
+  cshared:
+    name: unified C ABI (linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: milky-core/go.mod
+      - name: build libmilky.so
+        run: OUT=dist/native ./scripts/build-cshared.sh
+      - name: smoke-link the ABI from C
+        run: |
+          so=$(ls dist/native/libmilky-*.so | head -1)
+          cat > /tmp/abicheck.c <<'EOF'
+          #include <stdio.h>
+          #include <string.h>
+          #include "milky.h"
+          int main(void) {
+              char buf[256] = {0};
+              printf("version=%s\n", milky_version());
+              int r = milky_start("{\"addr\":\"127.0.0.1:1\",\"pub\":\"00\",\"psk\":\"00\"}");
+              milky_last_error(buf, sizeof buf);
+              printf("start(bad)=%d err=%s alive=%d\n", r, buf, milky_alive());
+              if (r != -1 || buf[0] == 0 || milky_alive() != 0) return 1;
+              milky_stop();
+              return 0;
+          }
+          EOF
+          gcc -o /tmp/abicheck /tmp/abicheck.c -I include -L dist/native \
+              -l:"$(basename "$so")" -Wl,-rpath,"$PWD/dist/native"
+          /tmp/abicheck
