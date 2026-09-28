@@ -32,8 +32,11 @@ BURST=${CANARY_BURST:-15}
 emit() { printf '{"ts":"%s","probe":"%s",%s}\n' "$(date -u +%FT%TZ)" "$1" "$2" >>"$LOG"; }
 ms_now() { date +%s%3N; }
 
-(cd milky-core && go build -o "$CLIENT" ./cmd/kal2-client) \
-  || { echo "kal2-client build failed" >&2; exit 1; }
+# CANARY_CLIENT points at a prebuilt client (vantage hosts without go).
+if [ -n "${CANARY_CLIENT:-}" ]; then CLIENT=$CANARY_CLIENT; else
+  (cd milky-core && go build -o "$CLIENT" ./cmd/kal2-client) \
+    || { echo "kal2-client build failed" >&2; exit 1; }
+fi
 
 # ---------- 1. carrier matrix ----------
 for carrier in veil drift cdn; do
