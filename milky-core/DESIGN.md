@@ -94,7 +94,8 @@ ordinary long-poll API traffic.
 so whatever kills the connection (a reset, the ~16–20 KB per-flow cut on
 foreign hosting, a blackholed entry IP, a phone switching networks) kills the
 session. Mosaic separates the two: the KAL/2 byte streams are cut into
-offset-addressed *tiles* of at most 4 KiB, each carried by an independent
+offset-addressed *tiles* of at most 4 KiB on the wire (both ends currently
+fill 3 KiB), each carried by an independent
 HTTPS POST (request = uplink slice, response = downlink slice).
 
 - Tile body: `sid[16] | upOff[8] | downAck[8] | upLen[2] | padLen[2] |
@@ -109,8 +110,13 @@ HTTPS POST (request = uplink slice, response = downlink slice).
   reordering, duplication and replay are harmless (KAL/2 records carry their
   own sequence numbers and AEAD tags). Receive windows cap per-session memory
   at 256 KiB per direction; ended session ids are tombstoned.
-- Flow hygiene: the client retires each TLS connection after ~8 KiB of tile
-  bytes, so no single flow ever grows to the truncation threshold.
+- Flow hygiene: the client counts raw TCP bytes of each connection in both
+  directions (TLS handshake included) and only admits a tile when measured
+  bytes plus the worst case of every in-flight tile stay under 13 KiB, so no
+  flow grows to the ~16 KiB truncation threshold. Superseded connections are
+  closed as soon as their last tile finishes.
+- Endpoint health: an endpoint whose tile fails is skipped for 1 s, doubling
+  per consecutive failure up to 30 s, so dead entries stop taxing throughput.
 - Entry diversity: every tile picks the next endpoint from the whole `addr`
   list (relays, CDN edges, direct IPs of the same server). A dead or newly
   blocked entry costs retransmits, not the session; the session only ends

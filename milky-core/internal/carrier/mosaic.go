@@ -74,14 +74,31 @@ const (
 	// the size of an ordinary XHR, far below any observed truncation point.
 	MaxMosaicTile = 4 << 10
 
+	// mosaicChunk is the payload both ends actually put in one tile: small
+	// enough that a handshake plus one full-duplex tile, and whatever the
+	// peer still has in flight at close, fit well inside a 16 KiB flow.
+	mosaicChunk = 3 << 10
+
 	// mosaicWindow bounds in-flight unacknowledged bytes per direction, and
 	// with it the memory one session can pin on the server.
 	mosaicWindow = 1 << 18
 
-	// mosaicConnBudget retires a TLS connection once this many tile bytes
-	// have crossed it; with the TLS handshake on top every flow stays short
-	// of the cut threshold.
-	mosaicConnBudget = 8 << 10
+	// mosaicConnBudget bounds the wire bytes of one TCP flow in both
+	// directions, TLS handshake included: a tile is only admitted onto a
+	// connection when measured bytes plus reserved worst cases stay below it,
+	// so no flow grows into the ~16 KiB range where middleboxes truncate.
+	mosaicConnBudget = 13 << 10
+
+	// mosaicTileOverhead approximates HTTP/2 framing and TLS record bytes a
+	// tile exchange adds on the wire.
+	mosaicTileOverhead = 384
+
+	// mosaicHandshakeEst stands in for the TLS handshake bytes of a
+	// connection that has not finished dialing yet.
+	mosaicHandshakeEst = 5 << 10
+
+	// mosaicMaxResp is the largest response body a tile can return.
+	mosaicMaxResp = mosaicRespHdr + mosaicMACLen + MaxMosaicTile + 256
 
 	// mosaicHold is how long the server keeps a tile open waiting for
 	// downstream bytes — the request looks like a normal polling API call.
@@ -572,7 +589,7 @@ func (c *mosaicConn) Binding() kal2.ChannelBinding     { return nil }
 // ---------------------------------------------------------------------------
 
 // mosaicPool holds one short-lived HTTP/2 transport per entry point and
-// retires it once mosaicConnBudget bytes have crossed it, so no TLS flow
+// retires it once its flow would pass mosaicConnBudget, so no TLS flow
 // grows into the range where middleboxes truncate connections.
 type mosaicPool struct {
 	cfg  ClientConfig
@@ -582,40 +599,65 @@ type mosaicPool struct {
 }
 
 type pooledTransport struct {
-	tr    *http2.Transport
-	bytes int
+	tr       *http2.Transport
+	wire     *atomic.Int64 // raw TCP bytes both ways, handshake included
+	reserved int           // worst-case bytes of tiles still in flight
 }
 
 func newMosaicPool(cfg ClientConfig) *mosaicPool {
 	return &mosaicPool{cfg: cfg, tr: map[string]*pooledTransport{}}
 }
 
-func (p *mosaicPool) transport(addr string) *http2.Transport {
+// transport returns a transport for addr with reserve bytes of its budget
+// claimed for one exchange, so concurrent tiles cannot jointly overrun the
+// budget. A fresh transport always admits its first tile.
+func (p *mosaicPool) transport(addr string, reserve int) *http2.Transport {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	if pt, ok := p.tr[addr]; ok && pt.bytes < mosaicConnBudget {
+	if pt, ok := p.tr[addr]; ok && max(int(pt.wire.Load()), mosaicHandshakeEst)+pt.reserved+reserve <= mosaicConnBudget {
+		pt.reserved += reserve
 		return pt.tr
 	} else if ok {
 		go pt.tr.CloseIdleConnections()
 	}
 	cfg := p.cfg
 	cfg.Addr = addr
+	wire := new(atomic.Int64)
 	tr := &http2.Transport{
 		DialTLSContext: func(ctx context.Context, network, _ string, _ *tls.Config) (net.Conn, error) {
-			return dialMosaicTLS(ctx, cfg, network)
+			return dialMosaicTLS(ctx, cfg, network, wire)
 		},
 	}
-	p.tr[addr] = &pooledTransport{tr: tr}
+	p.tr[addr] = &pooledTransport{tr: tr, wire: wire, reserved: reserve}
 	return tr
 }
 
-// spend records tile bytes against an entry point's current transport.
-func (p *mosaicPool) spend(addr string, n int) {
+// settle drops a finished exchange's reservation; its real bytes are
+// already in the transport's wire count.
+func (p *mosaicPool) settle(addr string, tr *http2.Transport, reserved int) {
 	p.mu.Lock()
-	if pt, ok := p.tr[addr]; ok {
-		pt.bytes += n
+	if pt, ok := p.tr[addr]; ok && pt.tr == tr {
+		pt.reserved -= reserved
 	}
 	p.mu.Unlock()
+}
+
+// countingConn tallies every byte crossing a raw connection.
+type countingConn struct {
+	net.Conn
+	n *atomic.Int64
+}
+
+func (c countingConn) Read(b []byte) (int, error) {
+	k, err := c.Conn.Read(b)
+	c.n.Add(int64(k))
+	return k, err
+}
+
+func (c countingConn) Write(b []byte) (int, error) {
+	k, err := c.Conn.Write(b)
+	c.n.Add(int64(k))
+	return k, err
 }
 
 // release closes a transport's now-idle connections once it has been
@@ -624,7 +666,7 @@ func (p *mosaicPool) spend(addr string, n int) {
 func (p *mosaicPool) release(addr string, tr *http2.Transport) {
 	p.mu.Lock()
 	pt, ok := p.tr[addr]
-	stale := !ok || pt.tr != tr || pt.bytes >= mosaicConnBudget
+	stale := !ok || pt.tr != tr
 	p.mu.Unlock()
 	if stale {
 		tr.CloseIdleConnections()
@@ -651,7 +693,7 @@ func (p *mosaicPool) close() {
 	p.mu.Unlock()
 }
 
-func dialMosaicTLS(ctx context.Context, cfg ClientConfig, network string) (net.Conn, error) {
+func dialMosaicTLS(ctx context.Context, cfg ClientConfig, network string, wire *atomic.Int64) (net.Conn, error) {
 	dial := cfg.DialContext
 	if dial == nil {
 		d := &net.Dialer{Timeout: cfg.timeout()}
@@ -661,6 +703,7 @@ func dialMosaicTLS(ctx context.Context, cfg ClientConfig, network string) (net.C
 	if err != nil {
 		return nil, err
 	}
+	raw = countingConn{Conn: raw, n: wire}
 	spec, _ := utls.UTLSIdToSpec(pickHelloID(cfg.Fingerprint))
 	uc := utls.UClient(raw, cfg.utlsConfig("h2"), utls.HelloCustom)
 	if err := uc.ApplyPreset(&spec); err != nil {
@@ -883,9 +926,9 @@ func (m *mosaicClient) pump(poller bool) {
 		var off uint64
 		var data []byte
 		if poller {
-			off, data = m.st.takeOut(MaxMosaicTile)
+			off, data = m.st.takeOut(mosaicChunk)
 		} else {
-			off, data = m.st.takeOutWait(MaxMosaicTile, time.Second)
+			off, data = m.st.takeOutWait(mosaicChunk, time.Second)
 			if len(data) == 0 {
 				if m.st.isClosed() {
 					return
@@ -942,7 +985,8 @@ func (m *mosaicClient) exchange(ctx context.Context, addr string, t *tile) (*til
 
 func (m *mosaicClient) exchangeOnce(ctx context.Context, addr string, t *tile) (*tileResp, error) {
 	body := t.encode(m.psk)
-	tr := m.pool.transport(addr)
+	reserve := len(body) + mosaicRespHdr + mosaicMACLen + mosaicChunk + 256 + mosaicTileOverhead
+	tr := m.pool.transport(addr, reserve)
 	url := "https://" + m.cfg.SNI + m.path
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
@@ -962,11 +1006,11 @@ func (m *mosaicClient) exchangeOnce(ctx context.Context, addr string, t *tile) (
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("mosaic: status %d", resp.StatusCode)
 	}
-	out, err := io.ReadAll(io.LimitReader(resp.Body, int64(mosaicRespHdr+mosaicMACLen+MaxMosaicTile+512)))
+	out, err := io.ReadAll(io.LimitReader(resp.Body, int64(mosaicMaxResp+256)))
 	if err != nil {
 		m.pool.retire(addr, tr)
 		return nil, err
 	}
-	m.pool.spend(addr, len(body)+len(out))
+	m.pool.settle(addr, tr, reserve)
 	return parseTileResp(out, m.psk)
 }

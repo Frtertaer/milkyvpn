@@ -95,8 +95,9 @@ func TestMosaicTileAuth(t *testing.T) {
 }
 
 // cutProxy forwards TCP to upstream but kills every connection once limit
-// bytes have flowed server->client — the per-flow truncation observed on
-// Russian networks toward foreign hosting. It records the largest flow.
+// bytes have flowed in both directions combined (TLS handshake included) —
+// the per-flow truncation observed on Russian networks toward foreign
+// hosting. It records the largest flow.
 type cutProxy struct {
 	addr    string
 	limit   int64
@@ -133,31 +134,36 @@ func (p *cutProxy) handle(c net.Conn, upstream string) {
 		return
 	}
 	defer up.Close()
-	go func() { _, _ = io.Copy(up, c) }()
-	var n int64
-	buf := make([]byte, 4096)
-	for {
-		k, err := up.Read(buf)
-		if k > 0 {
-			if p.limit > 0 && n+int64(k) > p.limit {
-				p.cuts.Add(1)
-				return // truncate the flow
-			}
-			if _, werr := c.Write(buf[:k]); werr != nil {
-				return
-			}
-			n += int64(k)
-			for {
-				old := p.maxFlow.Load()
-				if n <= old || p.maxFlow.CompareAndSwap(old, n) {
-					break
+	var n atomic.Int64
+	pipe := func(dst, src net.Conn) {
+		defer dst.Close()
+		defer src.Close()
+		buf := make([]byte, 4096)
+		for {
+			k, err := src.Read(buf)
+			if k > 0 {
+				total := n.Add(int64(k))
+				if p.limit > 0 && total > p.limit {
+					p.cuts.Add(1)
+					return // truncate the flow
+				}
+				if _, werr := dst.Write(buf[:k]); werr != nil {
+					return
+				}
+				for {
+					old := p.maxFlow.Load()
+					if total <= old || p.maxFlow.CompareAndSwap(old, total) {
+						break
+					}
 				}
 			}
-		}
-		if err != nil {
-			return
+			if err != nil {
+				return
+			}
 		}
 	}
+	go pipe(up, c)
+	pipe(c, up)
 }
 
 // bulkEcho pushes size random bytes through an echo stream and checks them.
@@ -231,6 +237,8 @@ func TestMosaicSurvivesFlowTruncation(t *testing.T) {
 		t.Fatal("control: veil moved 64 KiB through a 16 KiB flow cut")
 	}
 	cut.cuts.Store(0)
+	cut.flows.Store(0)
+	cut.maxFlow.Store(0)
 
 	sess, _, err := DialMosaic(ctx, mosaicCfg(ts, cut.addr), "")
 	if err != nil {
@@ -239,7 +247,7 @@ func TestMosaicSurvivesFlowTruncation(t *testing.T) {
 	defer sess.Close()
 	bulkEcho(t, sess, 96<<10)
 	t.Logf("flows=%d largest=%dB cuts=%d", cut.flows.Load(), cut.maxFlow.Load(), cut.cuts.Load())
-	if c := cut.cuts.Load(); c > 2 {
+	if c := cut.cuts.Load(); c > 0 {
 		t.Fatalf("%d mosaic flows grew into the cut threshold", c)
 	}
 }

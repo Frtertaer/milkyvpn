@@ -82,7 +82,7 @@ func (v *VeilListener) MosaicHandler(base string) http.Handler {
 		if !created && len(t.data) == 0 {
 			hold = mosaicHold - time.Duration(mrand.Int64N(int64(mosaicHold/4)))
 		}
-		off, data := sess.st.takeOutWait(MaxMosaicTile, hold)
+		off, data := sess.st.takeOutWait(mosaicChunk, hold)
 		resp := (&tileResp{downOff: off, upAck: sess.st.inAck(), data: data}).encode(psk)
 		w.Header().Set("Content-Type", "application/octet-stream")
 		w.Header().Set("Cache-Control", "no-store")
