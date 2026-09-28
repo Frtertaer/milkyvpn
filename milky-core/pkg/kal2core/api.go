@@ -47,7 +47,14 @@ type ServerConfig struct {
 	// (carrier.SaveECHKeyFile format). Enables Encrypted Client Hello on the
 	// veil listener — the outer ClientHello then shows only the cover name.
 	ECHKeyFiles []string
-	Logf        func(string, ...any)
+	// UDPListen enables the quasar (UDP/KCP) listener, e.g. ":20443".
+	// Set Listen to "off" to run a UDP-only server without TLS material.
+	UDPListen string
+	// UDPFECData/UDPFECParity enable Reed-Solomon FEC on the quasar
+	// listener (e.g. 10,3). 0,0 = off.
+	UDPFECData   int
+	UDPFECParity int
+	Logf         func(string, ...any)
 }
 
 // User is a provisioned client credential pair.
@@ -78,6 +85,9 @@ type ClientConfig struct {
 	// Cover sends jittered randomized PING records while the session is up so
 	// idle periods don't read as a "quiet tunnel" timing signature.
 	Cover bool
+	// QuasarFEC sets Reed-Solomon FEC shards [data,parity] for the quasar
+	// carrier; [0,0] = off.
+	QuasarFEC [2]int
 	// DialContext overrides the base TCP dial (e.g. via HTTP CONNECT proxy).
 	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
 	HandshakeTimeout time.Duration
@@ -134,15 +144,16 @@ func Serve(cfg ServerConfig) error {
 			}
 		}
 	}
+	udpOnly := cfg.Listen == "off"
 	var cert *tls.Certificate
 	var autocertMgr *autocert.Manager
-	if cfg.CertFile != "" {
+	if !udpOnly && cfg.CertFile != "" {
 		c, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
 			return fmt.Errorf("load cert: %w", err)
 		}
 		cert = &c
-	} else if cfg.AutocertDir != "" {
+	} else if !udpOnly && cfg.AutocertDir != "" {
 		autocertMgr = &autocert.Manager{
 			Prompt: autocert.AcceptTOS,
 			// Whitelist the real domain plus ECH cover names so autocert
@@ -162,7 +173,7 @@ func Serve(cfg ServerConfig) error {
 			}))
 			_ = http.ListenAndServe(httpAddr, h)
 		}()
-	} else {
+	} else if !udpOnly {
 		return fmt.Errorf("need CertFile/KeyFile or AutocertDir")
 	}
 	driftPath := cfg.DriftPath
@@ -174,9 +185,13 @@ func Serve(cfg ServerConfig) error {
 		logf = func(string, ...any) {}
 	}
 
-	ln, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		return err
+	var ln net.Listener
+	if !udpOnly {
+		var lerr error
+		ln, lerr = net.Listen("tcp", cfg.Listen)
+		if lerr != nil {
+			return lerr
+		}
 	}
 
 	vc := carrier.VeilConfig{
@@ -213,6 +228,28 @@ func Serve(cfg ServerConfig) error {
 	}
 	v.SetMux(mux)
 
+	if cfg.UDPListen != "" {
+		wireKey := carrier.QuasarWireKey(ed25519.PrivateKey(cfg.Identity).Public().(ed25519.PublicKey))
+		ql, err := carrier.NewQuasarListener(v, &carrier.QuasarConfig{
+			WireKey:      wireKey,
+			DataShards:   cfg.UDPFECData,
+			ParityShards: cfg.UDPFECParity,
+		}, cfg.UDPListen)
+		if err != nil {
+			return fmt.Errorf("quasar listen: %w", err)
+		}
+		go func() {
+			if err := ql.Serve(); err != nil {
+				logf("core: quasar listener %s stopped: %v", cfg.UDPListen, err)
+			}
+		}()
+		logf("core: quasar udp on %s (fec %d,%d)", ql.Addr(), cfg.UDPFECData, cfg.UDPFECParity)
+	}
+
+	if udpOnly {
+		logf("core: udp-only server on %s", cfg.UDPListen)
+		select {}
+	}
 	logf("core: serving %s on %s", cfg.Domain, cfg.Listen)
 	return v.Serve(ln)
 }
@@ -389,6 +426,12 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		return s, err
 	case "cdn":
 		s, _, err := carrier.DialDriftWS(ctx, cc, cfg.DriftPath)
+		return s, err
+	case "quasar":
+		s, _, err := carrier.DialQuasar(ctx, cc, &carrier.QuasarConfig{
+			DataShards:   cfg.QuasarFEC[0],
+			ParityShards: cfg.QuasarFEC[1],
+		})
 		return s, err
 	default:
 		return nil, fmt.Errorf("unknown carrier %q", cfg.Carrier)
