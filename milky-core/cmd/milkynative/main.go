@@ -103,9 +103,11 @@ func milky_set_log_callback(cb C.milky_log_cb) {
 		return
 	}
 	kal2mobile.SetLogger(func(msg string) {
-		c := C.CString(msg)
-		C.milkyEmitLog(c)
-		C.free(unsafe.Pointer(c))
+		// The receiver decodes the pointer asynchronously (Dart FFI
+		// NativeCallable.listener posts it to an isolate) — the string must
+		// outlive this call. Log lines are rare (session events, not
+		// per-packet), so the bounded per-call allocation is intentional.
+		C.milkyEmitLog(C.CString(msg))
 	})
 }
 
