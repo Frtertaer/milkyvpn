@@ -618,6 +618,19 @@ func (p *mosaicPool) spend(addr string, n int) {
 	p.mu.Unlock()
 }
 
+// release closes a transport's now-idle connections once it has been
+// superseded or has spent its budget; otherwise a connection busy with a
+// parked long-poll when the transport was replaced would stay open forever.
+func (p *mosaicPool) release(addr string, tr *http2.Transport) {
+	p.mu.Lock()
+	pt, ok := p.tr[addr]
+	stale := !ok || pt.tr != tr || pt.bytes >= mosaicConnBudget
+	p.mu.Unlock()
+	if stale {
+		tr.CloseIdleConnections()
+	}
+}
+
 // retire drops a transport whose connection failed so the next tile to
 // that endpoint dials fresh.
 func (p *mosaicPool) retire(addr string, tr *http2.Transport) {
@@ -944,6 +957,7 @@ func (m *mosaicClient) exchangeOnce(ctx context.Context, addr string, t *tile) (
 		m.pool.retire(addr, tr)
 		return nil, err
 	}
+	defer m.pool.release(addr, tr)
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("mosaic: status %d", resp.StatusCode)
