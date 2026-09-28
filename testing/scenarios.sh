@@ -31,6 +31,17 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# debug builds carry a .debug applicationId suffix — detect the installed id
+PKG=${PKG:-}
+if [ -z "$PKG" ]; then
+  for _ in 1 2 3 4 5; do
+    PKG=$("${ADB[@]}" shell pm list packages 2>/dev/null | sed -n 's/^package:\(.*milky.*\)$/\1/p' | head -1 | tr -d '\r')
+    [ -n "$PKG" ] && break
+    sleep 2
+  done
+fi
+PKG=${PKG:-vpn.milky.app}
+
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "PASS  $*"; }
 bad()  { FAIL=$((FAIL+1)); echo "FAIL  $*"; }
@@ -50,9 +61,9 @@ wait_state() {  # wait_state CONNECTED|ERROR [timeout_s]
 clear_log() { "${ADB[@]}" logcat -c || true; }
 
 launch_app() {
-  "${ADB[@]}" shell am force-stop vpn.milky.app || true
+  "${ADB[@]}" shell am force-stop "$PKG" || true
   sleep 1
-  "${ADB[@]}" shell monkey -p vpn.milky.app -c android.intent.category.LAUNCHER 1 >/dev/null
+  "${ADB[@]}" shell monkey -p "$PKG" -c android.intent.category.LAUNCHER 1 >/dev/null
   sleep 5
 }
 
@@ -154,7 +165,7 @@ s_soak30() {
   local t0=$SECONDS drops=0
   while (( SECONDS - t0 < 1800 )); do
     verify_tunnel >/dev/null || drops=$((drops+1))
-    "${ADB[@]}" shell dumpsys activity processes 2>/dev/null | grep -q "vpn.milky.app:kal2" || drops=$((drops+1))
+    "${ADB[@]}" shell dumpsys activity processes 2>/dev/null | grep -q "$PKG:kal2" || drops=$((drops+1))
     sleep 60
   done
   [ "$drops" -le 3 ] && ok "soak 30min: $drops drops" || bad "soak 30min: $drops drops"
@@ -164,7 +175,7 @@ s_fgs_doze() {
   log "scenario: doze/FGS"
   "${ADB[@]}" shell dumpsys deviceidle force-idle 2>/dev/null || true
   sleep 10
-  "${ADB[@]}" shell dumpsys activity processes | grep -B2 -A6 "vpn.milky.app:kal2" | grep -q "fg" \
+  "${ADB[@]}" shell dumpsys activity processes | grep -B2 -A6 "$PKG:kal2" | grep -q "fg" \
     && ok "doze: :kal2 service still foreground" \
     || bad "doze: :kal2 not foreground"
   "${ADB[@]}" shell dumpsys deviceidle unforce 2>/dev/null || true
