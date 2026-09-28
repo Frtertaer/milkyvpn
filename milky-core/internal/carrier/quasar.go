@@ -7,10 +7,10 @@ import (
 	"sync"
 	"time"
 
+	"crypto/sha256"
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/kal2"
 	kcp "github.com/xtaci/kcp-go/v5"
 	"golang.org/x/crypto/hkdf"
-	"crypto/sha256"
 	"io"
 )
 
@@ -128,10 +128,10 @@ func DialQuasar(ctx context.Context, cfg ClientConfig, qc *QuasarConfig) (*kal2.
 // inner-handshake path as the veil listener (shared via the bound
 // VeilListener's authFlight/establishKAL).
 type QuasarListener struct {
-	v   *VeilListener
-	qc  *QuasarConfig
-	ln  *kcp.Listener
-	mu  sync.Mutex
+	v     *VeilListener
+	qc    *QuasarConfig
+	ln    *kcp.Listener
+	mu    sync.Mutex
 	conns map[*kcp.UDPSession]struct{}
 }
 
