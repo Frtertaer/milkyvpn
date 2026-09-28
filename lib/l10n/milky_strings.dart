@@ -384,6 +384,7 @@ class S {
   String get diagProfile => t('Профиль', 'Profile');
   String get diagAttempts => t('Попытки', 'Attempts');
   String get diagLastError => t('Последняя ошибка', 'Last error');
+  String get diagLastCrash => t('Последний сбой', 'Last crash');
   String get diagCategory => t('Категория', 'Category');
   String get diagCode => t('Код диагностики', 'Diagnostics code');
   String get diagSubscription => t('Подписка', 'Subscription');

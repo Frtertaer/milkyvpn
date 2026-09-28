@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 
 import 'app/app_settings.dart';
 import 'app/milky_device.dart';
+import 'core/diagnostics/crash_reporter.dart';
 import 'core/security/subscription_url_policy.dart';
 import 'core/storage/secure_store.dart';
 import 'core/subscription/subscription_repository.dart';
@@ -27,6 +28,7 @@ export 'app/app_info.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await CrashReporter.install();
   // Real system bars, edge-to-edge: the app paints its own backdrop under them.
   SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
   SystemChrome.setSystemUIOverlayStyle(
