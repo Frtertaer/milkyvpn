@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -43,6 +44,10 @@ type ClientConfig struct {
 	HandshakeTimeout time.Duration
 	// FirstFlightPadLen: -1 random, else explicit padding length.
 	FirstFlightPadLen int
+	// Resume, when non-nil, makes the dialer run a v2.1 resumption flight
+	// (KLDO-rs-) on the fresh transport instead of a full handshake — the
+	// frozen session keeps its streams across the carrier swap.
+	Resume *kal2.ResumeState
 }
 
 func (c *ClientConfig) timeout() time.Duration {
@@ -138,8 +143,12 @@ func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, 
 }
 
 // runClientHandshake performs the inner KAL/2 handshake over an established
-// carrier byte stream.
+// carrier byte stream — or, when cfg.Resume is set, a resumption flight
+// re-attaching the frozen session.
 func runClientHandshake(bc BoundConn, cfg ClientConfig) (*kal2.Session, error) {
+	if cfg.Resume != nil {
+		return runResumeHandshake(bc, cfg)
+	}
 	hs, err := kal2.NewClientHandshake(cfg.ServerPub, cfg.PSK, bc.Binding())
 	if err != nil {
 		return nil, err
@@ -171,6 +180,41 @@ func runClientHandshake(bc BoundConn, cfg ClientConfig) (*kal2.Session, error) {
 	}
 	sess.Attach(bc)
 	return sess, nil
+}
+
+// runResumeHandshake drives a v2.1 resumption: KLDO-rs- flight, server
+// flight + checkpoint trailer, then ResumeAttach — the frozen session's
+// streams migrate onto this transport.
+func runResumeHandshake(bc BoundConn, cfg ClientConfig) (*kal2.Session, error) {
+	s := cfg.Resume.Session
+	cr, err := cfg.Resume.BeginResumeFlight(bc, bc.Binding())
+	if err != nil {
+		return nil, err
+	}
+	head := make([]byte, kal2.ServerFlightSize)
+	if _, err := io.ReadFull(bc, head); err != nil {
+		return nil, fmt.Errorf("resume server flight: %w", err)
+	}
+	if err := cr.FinishResume(s, cfg.ServerPub, head, bc.Binding()); err != nil {
+		return nil, err
+	}
+	// Server checkpoint trailer: cpLen(2,LE) || checkpoint.
+	var clb [2]byte
+	if _, err := io.ReadFull(bc, clb[:]); err != nil {
+		return nil, fmt.Errorf("resume checkpoint: %w", err)
+	}
+	cpb := make([]byte, binary.LittleEndian.Uint16(clb[:]))
+	if _, err := io.ReadFull(bc, cpb); err != nil {
+		return nil, fmt.Errorf("resume checkpoint: %w", err)
+	}
+	cp, err := kal2.DecodeCheckpoint(cpb)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ResumeAttach(bc, cp); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 func subtleCompare(a, b []byte) int {

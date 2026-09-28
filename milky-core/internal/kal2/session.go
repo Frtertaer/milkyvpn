@@ -37,6 +37,33 @@ type Session struct {
 	// randomized per session so wire packet-size histograms differ run to run.
 	padBucket int
 
+	// --- resumption & migration (v2.1) -----------------------------------
+	// resumeSecret proves ownership of this session on a new transport
+	// without being a traffic key (PFS preserved).
+	resumeSecret []byte
+	sessionID    [8]byte
+	userID       [16]byte
+	ticket       []byte
+	migratable   bool // ticket issued (server) / received (client)
+	registry     *SessionRegistry
+	resumeTr     []byte
+	resumeSalt   []byte
+
+	sentWin    []sentRec     // recently emitted stream-affecting records
+	replayQ    []outRec      // migration replay lane — drained before channels
+	migMu      sync.Mutex    // guards sentWin/replayQ/ticket/sessionID/frozen/migrating
+	migCh      chan []byte   // inbound MIGRATE payloads
+	migrateCh  chan struct{} // closed when the transport froze (migration wanted)
+	migGate    chan struct{} // closed while normal records may flow
+	loopGen    int           // bumped per attach; stale record loops exit
+	loopStop   chan struct{} // closed to retire the current generation's loops
+	writeDone  chan struct{} // closed by writeLoop on exit
+	frozen     bool          // transport dead, session awaits resumption
+	gapLost    bool          // an unrecoverable replay gap was seen
+	freezeT    *time.Timer
+	migrateTTL time.Duration // frozen-session lifetime, default 2m
+	onCloseFns []func()      // listeners (registry unregister) run on real Close
+
 	// Outbound scheduler: control records (OPEN/ACK/CLOSE/RST/PING/PONG)
 	// go out ahead of queued DATA so stream control never starves behind
 	// bulk transfer. DATA senders block when dataCh is full — that is the
@@ -72,14 +99,21 @@ func (s *Session) Attach(rw io.ReadWriteCloser) {
 	s.readDone = make(chan struct{})
 	s.ctrlCh = make(chan outRec, 512)
 	s.dataCh = make(chan outRec, 1024)
+	s.migCh = make(chan []byte, 4)
+	s.migrateCh = make(chan struct{})
+	s.migGate = make(chan struct{})
+	s.loopStop = make(chan struct{})
+	s.writeDone = make(chan struct{})
+	close(s.migGate) // no migration in progress — sends flow
 	if s.isClient {
 		s.nextID = 1 // clients use odd stream ids
 	} else {
 		s.nextID = 2 // servers (only for server-initiated streams; unused now)
 	}
 	s.initAEAD()
-	go s.readLoop()
-	go s.writeLoop()
+	s.loopGen++
+	go s.readLoop(s.loopGen)
+	go s.writeLoop(s.loopGen, s.loopStop, s.writeDone)
 }
 
 func (s *Session) initAEAD() {
@@ -104,11 +138,33 @@ func (s *Session) Close() error {
 		if s.closed != nil {
 			close(s.closed)
 		}
-		if s.rw != nil {
-			err = s.rw.Close()
+		s.migMu.Lock()
+		rw := s.rw
+		if s.freezeT != nil {
+			s.freezeT.Stop()
+		}
+		s.migMu.Unlock()
+		if rw != nil {
+			err = rw.Close()
+		}
+		for _, fn := range s.onCloseFns {
+			fn()
 		}
 	})
 	return err
+}
+
+// isDead reports whether the session was finally closed (vs merely frozen).
+func (s *Session) isDead() bool {
+	if s.closed == nil {
+		return false
+	}
+	select {
+	case <-s.closed:
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Session) nonce(seq uint64) []byte {
@@ -134,6 +190,19 @@ func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
 	s.smu.RUnlock()
 	if err != nil {
 		return err
+	}
+	// During migration only session-lifecycle records flow; stream records
+	// wait for resync so replays never arrive after newer data.
+	switch t {
+	case MsgData, MsgClose, MsgOpen, MsgRst, MsgOpenAck:
+		s.migMu.Lock()
+		g := s.migGate
+		s.migMu.Unlock()
+		select {
+		case <-g:
+		case <-s.closed:
+			return ErrClosed
+		}
 	}
 	// Copy the payload before queueing: callers may reuse the buffer (e.g.
 	// io.CopyBuffer) before the writer goroutine encrypts it.
@@ -166,49 +235,84 @@ const writeBatchBytes = 1 << 14
 // record, then greedily drains whatever else is queued — control lane first,
 // then DATA — into one carrier write, so opens/acks/rsts/pongs never queue
 // behind bulk transfer and busy links emit few large writes.
-func (s *Session) writeLoop() {
+func (s *Session) writeLoop(gen int, stop <-chan struct{}, done chan struct{}) {
+	defer close(done)
 	for {
 		var first outRec
-		select {
-		case first = <-s.ctrlCh:
-		case first = <-s.dataCh:
-		case <-s.closed:
+		if r, ok := s.popReplay(); ok {
+			first = r
+		} else {
+			select {
+			case first = <-s.ctrlCh:
+			case first = <-s.dataCh:
+			case <-s.closed:
+				return
+			case <-stop:
+				return
+			}
+		}
+		buf, ok := s.appendFrame(nil, first, gen)
+		if !ok {
 			return
 		}
-		buf := s.appendFrame(nil, first)
 	batch:
 		for len(buf) < writeBatchBytes {
-			select {
-			case r := <-s.ctrlCh:
-				buf = s.appendFrame(buf, r)
+			if r, ok := s.popReplay(); ok {
+				if buf, ok = s.appendFrame(buf, r, gen); !ok {
+					return
+				}
 				continue
-			default:
 			}
 			select {
 			case r := <-s.ctrlCh:
-				buf = s.appendFrame(buf, r)
+				if buf, ok = s.appendFrame(buf, r, gen); !ok {
+					return
+				}
 			case r := <-s.dataCh:
-				buf = s.appendFrame(buf, r)
+				if buf, ok = s.appendFrame(buf, r, gen); !ok {
+					return
+				}
+			case <-stop:
+				return
 			default:
 				break batch
 			}
 		}
-		if !s.flushBuf(buf) {
+		if !s.flushBuf(buf, gen) {
 			return
 		}
 	}
 }
 
-// appendFrame encrypts one record into buf. Runs only on the writer goroutine;
-// an undeliverable payload is dropped (the session continues).
-func (s *Session) appendFrame(buf []byte, r outRec) []byte {
+// popReplay shifts the head of the migration replay lane.
+func (s *Session) popReplay() (outRec, bool) {
+	s.migMu.Lock()
+	defer s.migMu.Unlock()
+	if len(s.replayQ) == 0 {
+		return outRec{}, false
+	}
+	r := s.replayQ[0]
+	s.replayQ[0] = outRec{}
+	s.replayQ = s.replayQ[1:]
+	return r, true
+}
+
+// appendFrame encrypts one record into buf. The generation check runs
+// under migMu together with the sendSeq consume, so ResumeAttach's seq
+// rewind can never interleave with a stale loop mid-frame.
+func (s *Session) appendFrame(buf []byte, r outRec, gen int) ([]byte, bool) {
+	s.migMu.Lock()
+	defer s.migMu.Unlock()
+	if s.loopGen != gen {
+		return buf, false
+	}
 	bucket := s.padBucket
 	if bucket < MinPadBytes {
 		bucket = PadBucketSize
 	}
 	padded, err := PadBucket(r.p, bucket)
 	if err != nil {
-		return buf
+		return buf, true
 	}
 	seq := s.sendSeq
 	header := encodeHeader(r.t, seq, r.id, len(padded)+aeadTagSize)
@@ -216,25 +320,70 @@ func (s *Session) appendFrame(buf []byte, r outRec) []byte {
 	buf = append(buf, header...)
 	buf = append(buf, ct...)
 	s.sendSeq++
-	return buf
+	s.rememberSentLocked(seq, r)
+	return buf, true
+}
+
+// sentRec is a stream-affecting record retained for migration replay.
+type sentRec struct {
+	seq uint64
+	t   byte
+	id  uint32
+	p   []byte
+}
+
+// sentWinSize bounds the replay window; beyond it older records are dropped
+// (the peer's checkpoint older than the oldest retained seq makes the gap
+// unrecoverable — migrate() resets the affected streams).
+const sentWinSize = 2048
+
+// rememberSentLocked retains stream-affecting records for possible
+// replay. Caller must hold migMu.
+func (s *Session) rememberSentLocked(seq uint64, r outRec) {
+	switch r.t {
+	case MsgOpen, MsgData, MsgClose, MsgRst, MsgOpenAck:
+	default:
+		return
+	}
+	s.sentWin = append(s.sentWin, sentRec{seq: seq, t: r.t, id: r.id, p: r.p})
+	if len(s.sentWin) > sentWinSize {
+		s.sentWin = s.sentWin[len(s.sentWin)-sentWinSize:]
+	}
+}
+
+// sentWinOldest returns the oldest retained seq (0 if empty).
+func (s *Session) sentWinOldest() uint64 {
+	if len(s.sentWin) == 0 {
+		return 0
+	}
+	return s.sentWin[0].seq
 }
 
 // flushBuf writes one coalesced batch; failure marks the session dead.
-func (s *Session) flushBuf(buf []byte) bool {
-	if _, err := s.rw.Write(buf); err != nil {
-		s.smu.Lock()
-		s.writeErr = err
-		s.smu.Unlock()
-		s.fail(err)
+func (s *Session) flushBuf(buf []byte, gen int) bool {
+	// The generation check shares migMu with ResumeAttach's rw swap; the
+	// write itself runs unlocked so a blocked write can never deadlock
+	// freeze's conn close. A stale generation's failure is dropped by
+	// fail(err, gen) — it belongs to a dead transport, not this session.
+	s.migMu.Lock()
+	if s.loopGen != gen {
+		s.migMu.Unlock()
+		return false
+	}
+	rw := s.rw
+	s.migMu.Unlock()
+	if _, err := rw.Write(buf); err != nil {
+		s.fail(err, gen)
 		return false
 	}
 	return true
 }
 
-// readRecord reads and authenticates the next record.
-func (s *Session) readRecord() (*Record, error) {
+// readRecord reads and authenticates the next record from rw — the conn
+// captured by this generation's readLoop, immune to a resume swap.
+func (s *Session) readRecord(rw io.Reader) (*Record, error) {
 	header := make([]byte, RecordHeaderSize)
-	if _, err := io.ReadFull(s.rw, header); err != nil {
+	if _, err := io.ReadFull(rw, header); err != nil {
 		return nil, err
 	}
 	t, seq, streamID, ctLen, err := decodeHeader(header)
@@ -248,12 +397,12 @@ func (s *Session) readRecord() (*Record, error) {
 		return nil, ErrFraming
 	}
 	ct := make([]byte, ctLen)
-	if _, err := io.ReadFull(s.rw, ct); err != nil {
+	if _, err := io.ReadFull(rw, ct); err != nil {
 		return nil, err
 	}
 	// Ordered profile: sequence must equal expected counter.
 	if seq != s.recvSeq {
-		return nil, ErrReplay
+		return nil, Error(fmt.Sprintf("session: replay or out-of-order record seq=%d want=%d type=%d", seq, s.recvSeq, t))
 	}
 	padded, err := s.recvAEAD.Open(nil, s.nonce(seq), ct, header)
 	if err != nil {
@@ -267,12 +416,15 @@ func (s *Session) readRecord() (*Record, error) {
 	return &Record{Type: t, Seq: seq, StreamID: streamID, Payload: payload}, nil
 }
 
-func (s *Session) readLoop() {
+func (s *Session) readLoop(gen int) {
 	defer close(s.readDone)
+	s.migMu.Lock()
+	rw := s.rw
+	s.migMu.Unlock()
 	for {
-		rec, err := s.readRecord()
+		rec, err := s.readRecord(rw)
 		if err != nil {
-			s.fail(err)
+			s.fail(err, gen)
 			return
 		}
 		s.dispatch(rec)
@@ -289,6 +441,12 @@ func (s *Session) getStream(id uint32) (*stream, bool) {
 func (s *Session) dispatch(rec *Record) {
 	switch rec.Type {
 	case MsgOpen:
+		if _, ok := s.getStream(rec.StreamID); ok {
+			// Replayed OPEN after migration — the stream exists already;
+			// re-acknowledge it instead of redialing the target.
+			_ = s.sendRecord(MsgOpenAck, rec.StreamID, []byte{0x00})
+			return
+		}
 		st := newStream(s, rec.StreamID)
 		st.openPayload = rec.Payload
 		s.smu.Lock()
@@ -328,14 +486,102 @@ func (s *Session) dispatch(rec *Record) {
 			default:
 			}
 		}
+	case MsgTicket:
+		// Server-issued resumption ticket: sessionID(8) || ticket.
+		if s.isClient && len(rec.Payload) > 8 {
+			s.migMu.Lock()
+			copy(s.sessionID[:], rec.Payload[:8])
+			s.ticket = append(s.ticket[:0], rec.Payload[8:]...)
+			s.migratable = true
+			s.migMu.Unlock()
+		}
+	case MsgMigrate:
+		select {
+		case s.migCh <- rec.Payload:
+		default:
+		}
 	}
 }
 
-func (s *Session) fail(err error) {
+// fail handles a terminal read/write error. Protocol violations are always
+// fatal; transport errors freeze a migratable session so a resumption can
+// re-attach it without losing its streams.
+func (s *Session) fail(err error, gen int) {
+	if gen >= 0 {
+		s.migMu.Lock()
+		stale := s.loopGen != gen
+		s.migMu.Unlock()
+		if stale {
+			return // dead transport's error — a newer attach owns the session
+		}
+	}
+	if _, proto := err.(Error); !proto && s.migratable {
+		s.freeze()
+		return
+	}
 	s.smu.Lock()
 	s.writeErr = err
 	for _, st := range s.streams {
 		st.fail(err)
+	}
+	s.smu.Unlock()
+	s.Close()
+}
+
+// NeedsMigrate is closed when a migratable session's transport died: the
+// caller should re-dial a carrier and resume instead of losing the streams.
+func (s *Session) NeedsMigrate() <-chan struct{} { return s.migrateCh }
+
+// Frozen reports whether the session lost its transport but still holds
+// its streams awaiting resumption.
+func (s *Session) Frozen() bool {
+	s.migMu.Lock()
+	defer s.migMu.Unlock()
+	return s.frozen
+}
+
+// freeze parks a transport-dead session: loops exit, streams keep their
+// state, writers backpressure into the queues, and a TTL bounds the wait
+// for resumption.
+func (s *Session) freeze() {
+	s.migMu.Lock()
+	if s.frozen {
+		s.migMu.Unlock()
+		return
+	}
+	s.frozen = true
+	// Block stream records until resync completes.
+	s.migGate = make(chan struct{})
+	ttl := s.migrateTTL
+	if ttl == 0 {
+		ttl = 120 * time.Second
+	}
+	s.freezeT = time.AfterFunc(ttl, s.expireMigration)
+	rw := s.rw
+	s.migMu.Unlock()
+	if rw != nil {
+		_ = rw.Close()
+	}
+	select {
+	case <-s.migrateCh:
+	default:
+		close(s.migrateCh)
+	}
+}
+
+// expireMigration is the TTL shot: resumption never arrived — fail for real.
+func (s *Session) expireMigration() {
+	s.migMu.Lock()
+	frozen := s.frozen
+	s.frozen = false
+	s.migMu.Unlock()
+	if !frozen {
+		return
+	}
+	s.smu.Lock()
+	s.writeErr = ErrMigrate
+	for _, st := range s.streams {
+		st.fail(ErrMigrate)
 	}
 	s.smu.Unlock()
 	s.Close()
