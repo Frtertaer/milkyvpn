@@ -1,92 +1,103 @@
 # MilkyVPN
 
-> Простой VPN без ручной настройки серверов.
+> VPN, которому не нужен «список протоколов, которые уже заблокировали».
 
-Android VPN-клиент для подписки Milky (`https://sub.milky.homes/s/{token}`): Flutter UI + нативный Kotlin `VpnService` + движок **Xray-core** (через [AndroidLibXrayLite](https://github.com/2dust/AndroidLibXrayLite)).
+Клиент на подписку Milky (`https://sub.milky.homes/s/{token}`): Flutter UI + нативный VPN-сервис. По умолчанию ездит на **собственном протоколе KAL/2** (`milky-core`, Go) — спроектирован под враждебные сети с активным DPI/ТСПУ: маскировка под обычный HTTPS, автоматический обход деградации, живая сессия при смене сети. Xray-core остаётся запасным движком для внешних профилей (VLESS/Reality, Hysteria2, XHTTP).
 
-| | |
-|---|---|
-| Application ID | `homes.milky.vpn` |
-| Version | `0.1.0+1` |
-| minSdk / target / compile | 26 / 36 / 36 |
-| Flutter / Dart | 3.35.4 / 3.9.2 |
-| Kotlin / AGP / Gradle | 2.1.0 / 8.9.1 / 8.12 |
-| VPN core | Xray-core v1.260327.1 (MPL-2.0) via libv2ray.aar v26.8.20 (LGPL-3.0) |
-| Analytics / Ads / Billing | none |
+## Почему KAL/2, а не очередной VPN-протокол
 
-## Поддерживаемые протоколы
+| | **KAL/2** | Hysteria2 | VLESS+Reality | WireGuard | OpenVPN |
+|---|---|---|---|---|---|
+| Транспорт | TCP **и** UDP (выбор карьера) | только UDP | только TCP | только UDP | TCP/UDP |
+| UDP-полисинг глушит | нет — TCP-карьеры | **да, полностью** | нет | **да, полностью** | да (UDP) |
+| Ответ на активную пробу | настоящий decoy-сайт | отбой | чужой сайт (steal) | нет | нет |
+| Отпечаток TLS | uTLS Chrome + **ECH** | QUIC (браузерный) | Chrome/FF | своя сигнатура | своя сигнатура |
+| Выживание при смене сети | миграция сессии без разрыва стримов | переподключение | переподключение | переподключение | переподключение |
+| Запасной путь при деградации | авто-failover veil→mosaic→cdn→drift + score-quarantine | нет | нет | нет | нет |
+| Замедление «толстого» потока для интерактива | SFQ-планировщик записи | stream-мультиплекс | нет | — | — |
+| Параллельные линии к одному выходу | lanes-пул (least-loaded) | — | — | — | — |
+| Запас при полном убийстве UDP | quasar (KCP+AEAD+FEC) — запасной карьер | сам такой | — | — | — |
+
+Ключевая разница: **один протокол = несколько взаимозаменяемых карьеров**. Хендшейк и ключи общие; когда сеть режет один вид транспорта, сессия переезжает на другой карьер без разрыва ваших соединений.
+
+### Измерено, а не обещано
+
+Путь RU→US, входящий UDP на краю полисится 25–85% потерь (типичное «тревожное» состояние):
+
+| | KAL/2 (cdn, 4 линии) | Hysteria2 |
+|---|---|---|
+| Скачивание 256MB | **10.7–11.1 MB/s** | 0.03–5.6 MB/s |
+| Медиана TTFB | **0.31–0.37 с** | 0.66–2.18 с |
+
+Тот же стенд на чистом пути (UDP не тронут): KAL/2 veil **18.3–22.8 MB/s** против hy2 13.9–18.2 MB/s — обгон даже без полисинга. Методика и сырые таблицы — в PR [#15](https://github.com/Frtertaer/milkyvpn/pull/15).
+
+### Карьеры (carriers)
+
+| Карьер | Вид трафика | Когда нужен |
+|---|---|---|
+| `veil` | TLS-стрим с ECH, ответы decoy-сайта | по умолчанию — быстрый и незаметный |
+| `drift` | долгоживущий HTTP-туннель | сети, режущие «лишний» TLS |
+| `cdn` | через edge-кэш CDN | самые жёсткие фильтры: egress через IP CDN |
+| `mosaic` | сессия, нарезанная на короткие HTTPS-плитки | per-flow cutoff: длинные соединения режут |
+| `quasar` | UDP/KCP + ChaCha20-Poly1305 + FEC | запасной, когда TCP убит, а UDP чист |
+
+Выбор — вручную в настройках («Транспорт») или `Авто`: scorecard следит за здоровьем и сам уводит сессию на живой карьер.
+
+## Приложение
+
+- **Android**: API 24+ (проверено вживую на Android 7.0 — старые телефоны в поддержке), APK для arm64-v8a / armeabi-v7a / x86_64. FGS-сервис, выживание при смене Wi-Fi↔LTE.
+- **Windows**: установщик per-user (без админа), системный прокси или полный туннель через wintun (опционально, с UAC).
+- **Linux / macOS / iOS**: общий C ABI (`milky_start(config_json)`), TUN-режим — в активной доводке (см. `BUGS.md` и треки CI).
+
+## Как начать
+
+1. Скачать сборку под свою ОС из [Releases](https://github.com/Frtertaer/milkyvpn/releases).
+2. Вставить ссылку профиля `kal2://…` (или подписку Milky) в поле импорта.
+3. Нажать «Подключить». Всё.
+
+## Честное состояние подключения
+
+`CONNECTING → (prepare → resolve → establish TUN → engine start → measureDelay через туннель) → CONNECTED`. Любой сбой ⇒ teardown + `ERROR(code)` — без вечного «Подключение…».
+
+## Безопасность
+
+- URL подписки: только `https://sub.milky.homes/s/<token>`; `http`, `file`, `javascript`, `localhost`, приватные IP, `@userinfo`, редиректы — отклоняются.
+- Deep link `milkyvpn://import?url=…` → экран подтверждения, токен скрыт, автоподключения нет.
+- Секреты: только OS keystore (Android Keystore / Keychain); `allowBackup=false`.
+- Логи и диагностика проходят через `Redactor`/`SafeLog` — секреты не утекают в репорты.
+- KAL/2: X25519+Ed25519+HKDF, ChaCha20-Poly1305, PFS, replay-cache, TLS-exporter binding (RFC 9266), replay-safe optimistic open. Спека — `kaleido/SPEC.md` (ветка `kal2-protocol`).
+
+## Поддерживаемые внешние протоколы (через Xray)
 
 | Профиль из подписки | Статус | Как исполняется |
 |---|---|---|
-| VLESS + Reality + TCP (`flow=xtls-rprx-vision`) | **Приоритет, исполняется** | Xray `vless` outbound, `security=reality` |
-| VLESS + WS + TLS | Исполняется | Xray `vless` + `wsSettings` + `tlsSettings` |
-| VLESS + XHTTP (+TLS/Reality) | Исполняется | Xray `vless` + `xhttpSettings` |
-| Hysteria2 (`hysteria2://`, `hy2://`) | Исполняется | Xray `hysteria` outbound v2 (+ salamander obfs) |
-| Всё остальное (vmess, trojan, ss, grpc, kcp…) | Парсится, **игнорируется** | В диагностике показывается «N несовместимых» |
+| VLESS + Reality + TCP (`flow=xtls-rprx-vision`) | **Приоритет, исполняется** | Xray `vless`, `security=reality` |
+| VLESS + WS + TLS | Исполняется | Xray `vless` + `ws` + `tls` |
+| VLESS + XHTTP (+TLS/Reality) | Исполняется | Xray `vless` + `xhttp` |
+| Hysteria2 (`hysteria2://`, `hy2://`) | Исполняется | Xray `hysteria` v2 (+ salamander obfs) |
+| Остальное (vmess, trojan, ss, grpc, kcp…) | Парсится, игнорируется | «N несовместимых» в диагностике |
 
-Авто-режим ранжирует: Reality → XHTTP → WS → Hysteria2, максимум 4 попытки по 40 с, при неуспехе — понятная ошибка, а не вечное «Подключение…».
+Авто-режим ранжирует: Reality → XHTTP → WS → Hysteria2, до 4 попыток по 40 с.
 
 ## Дизайн — «Milky Glass»
 
-Полный редизайн UI (см. `UI_REDESIGN_RESULT.md`):
-
-- дизайн-система в `lib/design/` (стеклянные карточки, орб подключения, навигация, error-sheet);
-- шрифт Manrope (OFL 1.1) в `assets/fonts/`, полная кириллица;
-- визуальное ревю: `design/preview.html` и `design/screens/*.png`;
-- оригинальная иконка: `assets/brand/app_icon.svg` + адаптивные вектора в `android/app/src/main/res/`;
-- честные счётчики подписки («N профилей найдено / M совместимых», без «10 servers»);
-- человеко-читаемые ошибки; технические коды — только в «Диагностике».
-
-## Архитектура
-
-```
-lib/
-  main.dart                       UI: онбординг (3 экрана), главный, импорт, deep-link подтверждение,
-                                  подписка, настройки, диагностика
-  app/app_settings.dart           настройки (SharedPreferences) + строки RU/EN
-  core/subscription/              парсер Base64/URI (vless, hysteria2, прочее), модель профиля,
-                                  репозиторий (HTTPS, без редиректов, лимит 512 KB)
-  core/security/                  allowlist URL подписки, редактор секретов, FNV-id профилей
-  core/storage/secure_store.dart  Keystore-хранилище (flutter_secure_storage) + in-memory для тестов
-  core/vpn/                       MethodChannel-мост и контроллер с ограниченным fallback
-
-android/app/src/main/kotlin/homes/milky/vpn/
-  MainActivity.kt                 каналы homes.milky.vpn/vpn, /vpn_state, /links; prepare(); deep link
-  vpn/MilkyVpnService.kt          VpnService: FGS specialUse, TUN, маршруты, DNS, исключение себя,
-                                  запуск Xray, HTTPS-проверка через туннель, onRevoke, смена сети
-  vpn/KeystoreSealedStore.kt      AES-256-GCM (AndroidKeyStore) для активного профиля, noBackupFilesDir
-  vpn/VpnStateStore.kt            состояние → EventChannel
-  vpn/SafeLog.kt                  логи с редактированием секретов, классы ошибок
-  core/XrayConfigBuilder.kt       JSON-конфиг Xray для всех поддерживаемых транспортов
-android/app/libs/libv2ray.aar     движок (Go, gomobile)
-```
-
-### Честное состояние подключения
-`CONNECTING → (prepare → resolve → establish TUN → Xray startLoop → measureDelay https://www.gstatic.com/generate_204 через туннель) → CONNECTED`. Любой сбой ⇒ teardown + `ERROR(code)`.
-
-### Безопасность
-- URL подписки: только `https://sub.milky.homes/s/<token>`; `http`, `file`, `javascript`, `localhost`, приватные IP, `@userinfo`, редиректы — отклоняются.
-- Deep link `milkyvpn://import?url=…` → экран подтверждения, токен скрыт, автоподключения нет.
-- Секреты: только Android Keystore (`flutter_secure_storage` + `KeystoreSealedStore`); `allowBackup=false`, `backup_rules.xml`, `data_extraction_rules.xml`.
-- Логи и диагностика проходят через `Redactor` / `SafeLog`.
+Стеклянная дизайн-система в `lib/design/` (орб подключения, error-sheets), шрифт Manrope с кириллицей, честные счётчики подписки («N найдено / M совместимых»). Превью: `design/preview.html`, `design/screens/*.png`.
 
 ## Сборка
 
 ```bash
 flutter pub get
 flutter analyze
-flutter test                                   # 27 тестов
-(cd android && ./gradlew :app:testDebugUnitTest)   # 10 Kotlin-тестов
-flutter build appbundle --release              # build/app/outputs/bundle/release/app-release.aab
+flutter test                                   # Dart-тесты
+(cd android && ./gradlew :app:testDebugUnitTest)
+flutter build appbundle --release
+# ядро: scripts/check.sh  (unit+race+fuzz-smoke+crossbuild)
 ```
-Без `android/key.properties` AAB подписывается debug-ключом (для internal testing нужен upload-key — см. `docs/SIGNING.md`).
 
-## Тестовые данные
-`test/fixtures/subscription_16_fake.{txt,b64}` — 16 синтетических профилей (9 FI / 7 US) с **фальшивыми** ключами. Реальных токенов в репозитории нет.
+Без `android/key.properties` AAB подписывается debug-ключом (см. `docs/SIGNING.md`).
 
 ## Документы для Google Play
-`docs/PRIVACY_POLICY_RU.md`, `PRIVACY_POLICY_EN.md`, `PLAY_STORE_LISTING_RU.md`, `PLAY_STORE_LISTING_EN.md`, `VPN_SERVICE_DECLARATION.md`, `DATA_SAFETY_DRAFT.md` (**OWNER MUST VERIFY**), `PLAY_RELEASE_CHECKLIST.md`, `PLAY_REVIEW_VIDEO_SCRIPT.md`, `SIGNING.md`, `THIRD_PARTY_LICENSES.md`.
 
-Статус сборки и блокеры — в `BUILD_RESULT.md`.
+`docs/PRIVACY_POLICY_RU.md`, `PRIVACY_POLICY_EN.md`, `PLAY_STORE_LISTING_*.md`, `VPN_SERVICE_DECLARATION.md`, `DATA_SAFETY_DRAFT.md` (**OWNER MUST VERIFY**), `PLAY_RELEASE_CHECKLIST.md`, `SIGNING.md`, `THIRD_PARTY_LICENSES.md`.
 
-Поддержка: https://t.me/MilkyVPNbot
+Баги — через [Issues](https://github.com/Frtertaer/milkyvpn/issues) (шаблон: платформа/severity/repro); реестр известных — `BUGS.md`. Поддержка: https://t.me/MilkyVPNbot

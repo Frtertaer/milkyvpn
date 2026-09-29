@@ -1,0 +1,73 @@
+name: Bug report
+description: Сообщить о баге MilkyVPN / KAL/2
+title: "[BUG] "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Платформа
+      options:
+        - Android
+        - iOS
+        - Windows
+        - Linux
+        - macOS
+        - Core (milky-core)
+        - Protocol (KAL/2 spec)
+    validations:
+      required: true
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      options:
+        - block — VPN/приложение не работает вообще
+        - major — функция сломана, есть обход
+        - minor — косметика/редкий случай
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Шаги воспроизведения
+      description: Минимальный набор действий от запуска до проявления
+      placeholder: |
+        1. Установить build …
+        2. Импортировать профиль …
+        3. Нажать «Подключить»
+        4. Ожидалось: CONNECTED; получено: …
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Ожидаемое поведение
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Логи
+      description: |
+        Прикрепите логи, ПРОПУЩЕННЫЕ через SafeLog/Redactor —
+        без PSK, паролей, IP-серверов и токенов подписки.
+      render: text
+    validations:
+      required: false
+  - type: textarea
+    id: env
+    attributes:
+      label: Окружение
+      placeholder: |
+        Версия приложения/build:
+        ОС и версия (Android API / Windows / …):
+        Carrier (veil/drift/cdn/mosaic/quasar):
+        Сеть (домашний Wi-Fi / LTE / публичный):
+  - type: checkboxes
+    id: regression
+    attributes:
+      label: Правило закрытия
+      options:
+        - label: Понимаю, что баг не закроется без регрессионного теста на фикс
+          required: true
