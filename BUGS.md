@@ -114,6 +114,41 @@ this change set), **OPEN**, **DOC** (documented limitation).
 - Fix: toggles run `|| true` (assertions decide pass/fail), whitelist
   check greps the package directly, dns/grep assignments guarded the same.
 
+## BUG-10 — `svc wifi`/`svc data` throw SecurityException on API <=28 — FIXED
+
+- On API 26 the shell user (2000) lacks `CHANGE_WIFI_STATE`, so
+  `svc wifi disable` dies with
+  `SecurityException: WifiService: Neither user 2000 nor current process has
+  android.permission.CHANGE_WIFI_STATE` — wifi stayed up, the tunnel never
+  dropped, and `wifi_lte` reported a fake "session never recovered".
+- Fix: `wifi_toggle` tries `svc wifi`, verifies the real state via
+  `dumpsys wifi` ("Wi-Fi is enabled/disabled"), and falls back to the legacy
+  `settings put global wifi_on 0/1` (writable by shell, still honored on
+  API <29). `mobile_data` gets the same fallback. If neither path toggles,
+  the scenario logs SKIP honestly instead of failing.
+
+## BUG-11 — data→wifi asserted a fresh CONNECTED that never comes — FIXED
+
+- Re-enabling wifi after running on cellular does NOT kill the VPN session:
+  the carrier socket either migrates or keeps running, so no redial and no
+  new `CONNECTED` line is logged. Requiring `wait_state CONNECTED` made the
+  second half of `wifi_lte` fail even on a perfectly healthy tunnel
+  (seen on API 35, run 36525073239).
+- Fix: the data→wifi half now asserts only that traffic still passes
+  (`verify_tunnel_wait 75`). The wifi→data half keeps the CONNECTED
+  requirement — losing the underlay really does force a redial.
+
+## BUG-12 — fgs_doze checked the wrong dumpsys section — FIXED
+
+- `dumpsys activity processes | grep -B2 -A6 :kal2` lands on the LRU
+  `*APP* UID ... ProcessRecord` block which carries no fg/svc label — the
+  check could never see "fg" and reported ":kal2 not foreground" although
+  `ActivityManager` had logged `Background started FGS: Allowed` for
+  Kal2Service.
+- Fix: assert on `isForeground=true` inside the Kal2Service record of
+  `dumpsys activity services $PKG` (authoritative for FGS state), with
+  `dumpsys activity lru` `fg` as fallback; both dumps print on failure.
+
 ## OPEN / documented limitations
 
 - **API 29 uiautomator empty-tree flake** (run 36515454841): Flutter renders,
@@ -122,6 +157,11 @@ this change set), **OPEN**, **DOC** (documented limitation).
   empty-dump diagnostics (window focus dump). If it still fires, the run log
   now distinguishes "empty tree" from "wrong screen".
 - **`on_revoke` on API 26**: `ACTIVATE_VPN` appop doesn't exist there — SKIP.
+- **`on_revoke` on API 31 (and any API without the framework
+  OnOpChangedListener)**: `appops set ACTIVATE_VPN deny` is only consulted
+  at `prepare()` time — denying a live session does not call
+  `VpnService.onRevoke()` and the tunnel stays up. The scenario detects the
+  missing signal and records a SKIP instead of a fake fail.
 - **`dns_leak`** remains partially observational: it asserts the VPN link
   carries the tunnel resolvers (1.1.1.1/8.8.8.8) and that resolution through
   the tunnel works; the raw `dumpsys connectivity` snapshot is also logged
