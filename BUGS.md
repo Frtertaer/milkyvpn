@@ -54,6 +54,27 @@
 - Issue: —  PR: —  Regression test: `tool/check_installer.py`,
   `milky-core/cmd/kal2-client/main_test.go::TestCtlMirrorAndStop`
 
+### BUG-2026-09-29-04 — Windows: Android-only строка «Always-on VPN» в настройках
+- Severity: minor (misleading UI; на Windows tap открывал ms-settings:network-proxy)
+- Platform: windows (+ любые non-Android платформы)
+- Status: fixed-in-PR
+- Repro: Настройки → группа «Подключение» → строка «Always-on VPN /
+  Системные настройки Android» показана и на Windows
+- Fix: строка рендерится только на `Platform.isAndroid`
+- Found by: windows-track verification session (build 25)
+- Issue: —  PR: —  Regression test: `test/features/settings_refresh_test.dart`
+
+### BUG-2026-09-29-05 — «Обновить» на link-only профиле показывает «Подписка не добавлена»
+- Severity: minor (misleading UX: профили есть, обновлять просто нечего)
+- Platform: all (android | ios | windows | macos | linux)
+- Status: fixed-in-PR
+- Repro: импортировать kal2:// ссылку текстом → Настройки/Подписка → «Обновить»
+  → snackbar «Подписка не добавлена», хотя профили есть
+- Fix: при `refresh()==null` различаем «вообще ничего не импортировано»
+  (`noSubscription`) и «профили из ссылки, обновлять нечего» (`notRefreshable`)
+- Found by: windows-track verification session (build 25)
+- Issue: —  PR: —  Regression test: `test/features/settings_refresh_test.dart`
+
 ## Закрытые
 
 (перенос сюда после merge фикса с регрессионным тестом)
