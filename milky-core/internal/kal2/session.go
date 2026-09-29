@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -230,6 +231,12 @@ func (s *Session) nonce(seq uint64) []byte {
 // priority lane; DATA senders block on the bounded data lane (write
 // backpressure). Actual write failures surface via s.fail.
 func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
+	return s.sendRecordDeadline(t, streamID, payload, nil)
+}
+
+// sendRecordDeadline is sendRecord with a caller-supplied timeout channel
+// for the blocking queue points (the net.Conn write deadline path).
+func (s *Session) sendRecordDeadline(t byte, streamID uint32, payload []byte, timeout <-chan time.Time) error {
 	if len(payload) > MaxPayload {
 		return ErrFraming
 	}
@@ -250,6 +257,8 @@ func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
 		case s.data.slots <- struct{}{}:
 		case <-s.closed:
 			return ErrClosed
+		case <-timeout:
+			return os.ErrDeadlineExceeded
 		}
 		s.data.enqueue(rec)
 		return nil
@@ -259,6 +268,8 @@ func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
 		return nil
 	case <-s.closed:
 		return ErrClosed
+	case <-timeout:
+		return os.ErrDeadlineExceeded
 	}
 }
 
@@ -696,6 +707,11 @@ type stream struct {
 	closed      bool // guards the once-only close transition (mu)
 	recvBuf     []byte
 	openPayload []byte
+	// net.Conn deadline contract (unix ns, 0 = none). These were no-op
+	// placeholders: callers relying on them (SOCKS idle timeouts, the mux
+	// soak churn) blocked forever.
+	readDeadline  atomic.Int64
+	writeDeadline atomic.Int64
 }
 
 func newStream(s *Session, id uint32) *stream {
@@ -857,14 +873,32 @@ type Stream struct {
 // Read implements net.Conn.
 func (st *Stream) Read(b []byte) (int, error) {
 	for len(st.rbuf) == 0 {
+		var timer *time.Timer
+		var timeout <-chan time.Time
+		if dl := st.readDeadline.Load(); dl != 0 {
+			if rem := time.Until(time.Unix(0, dl)); rem > 0 {
+				timer = time.NewTimer(rem)
+				timeout = timer.C
+			} else {
+				return 0, os.ErrDeadlineExceeded
+			}
+		}
 		select {
 		case chunk, ok := <-st.recvCh:
+			if timer != nil {
+				timer.Stop()
+			}
 			if !ok {
 				return 0, io.EOF
 			}
 			st.rbuf = chunk
 		case <-st.closedCh:
+			if timer != nil {
+				timer.Stop()
+			}
 			return 0, io.EOF
+		case <-timeout:
+			return 0, os.ErrDeadlineExceeded
 		}
 	}
 	n := copy(b, st.rbuf)
@@ -872,15 +906,27 @@ func (st *Stream) Read(b []byte) (int, error) {
 	return n, nil
 }
 
-// Write implements net.Conn.
+// Write implements net.Conn. The write deadline covers the whole call
+// across chunks (a deadline is a point in time, not a per-chunk budget).
 func (st *Stream) Write(b []byte) (int, error) {
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	if dl := st.writeDeadline.Load(); dl != 0 {
+		if rem := time.Until(time.Unix(0, dl)); rem > 0 {
+			timer = time.NewTimer(rem)
+			timeout = timer.C
+			defer timer.Stop()
+		} else {
+			return 0, os.ErrDeadlineExceeded
+		}
+	}
 	total := 0
 	for total < len(b) {
 		n := len(b) - total
 		if n > MaxPayload {
 			n = MaxPayload
 		}
-		if err := st.write(b[total : total+n]); err != nil {
+		if err := st.s.sendRecordDeadline(MsgData, st.id, b[total:total+n], timeout); err != nil {
 			return total, err
 		}
 		total += n
@@ -896,12 +942,26 @@ func (st *Stream) Close() error {
 	return st.close()
 }
 
-// LocalAddr / RemoteAddr / deadlines are placeholders (carrier-level).
-func (st *Stream) LocalAddr() net.Addr                { return nil }
-func (st *Stream) RemoteAddr() net.Addr               { return nil }
-func (st *Stream) SetDeadline(t time.Time) error      { return nil }
-func (st *Stream) SetReadDeadline(t time.Time) error  { return nil }
-func (st *Stream) SetWriteDeadline(t time.Time) error { return nil }
+// LocalAddr / RemoteAddr are placeholders (carrier-level).
+func (st *Stream) LocalAddr() net.Addr  { return nil }
+func (st *Stream) RemoteAddr() net.Addr { return nil }
+
+// SetDeadline implements net.Conn: real read/write deadline semantics —
+// the previous placeholders returned nil and silently discarded deadlines,
+// so any caller relying on them blocked indefinitely.
+func (st *Stream) SetDeadline(t time.Time) error {
+	st.readDeadline.Store(t.UnixNano())
+	st.writeDeadline.Store(t.UnixNano())
+	return nil
+}
+func (st *Stream) SetReadDeadline(t time.Time) error {
+	st.readDeadline.Store(t.UnixNano())
+	return nil
+}
+func (st *Stream) SetWriteDeadline(t time.Time) error {
+	st.writeDeadline.Store(t.UnixNano())
+	return nil
+}
 
 // Accept returns the next inbound stream (server side).
 func (s *Session) Accept() (*Stream, error) {

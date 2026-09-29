@@ -40,6 +40,24 @@ BUG-2026-09-29-01…12 — Windows-трек, заведены в BUGS.md на в
 - Issue: —  PR: —  Regression test:
   `milky-core/internal/kal2/stress_test.go::TestMuxConcurrentPings`
 
+### BUG-2026-09-29-16 — mux: SetReadDeadline/SetWriteDeadline были no-op
+- Severity: major (net.Conn-контракт сломан: любой код, полагающийся на
+  deadline — SOCKS idle timeout, churn-читатели — блокируется навсегда;
+  15-мин soak завис именно так: ReadFull в churn-воркере никогда не
+  возвращался)
+- Platform: core (kal2 mux — все платформы)
+- Status: fixed-in-PR
+- Repro: `st.SetReadDeadline(now+300ms); st.Read(buf)` без входящих данных
+  → блок навсегда вместо timeout-ошибки; `SetWriteDeadline` + переполненная
+  data-lane → блок навсегда на slot-токене
+- Fix: `readDeadline`/`writeDeadline` (atomic ns) на stream; Read ждёт
+  recvCh/closedCh/timer → `os.ErrDeadlineExceeded`; Write гонит чанки через
+  `sendRecordDeadline` — timeout-селект на slot/ctrlCh enqueue
+- Found by: carrier-track mux -race soak (hang at ~20m dump)
+- Issue: —  PR: —  Regression test:
+  `milky-core/internal/kal2/stress_test.go::TestMuxReadDeadlineReal`,
+  `TestMuxWriteDeadlineReal`
+
 ### BUG-2026-09-29-15 — mux: карта streams течёт на remote close
 - Severity: major (unbounded leak: долгоживущая сессия накапливает zombie-
   entry на каждый закрытый пиром стрим → рост RSS на длинном soak'е;

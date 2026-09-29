@@ -1,6 +1,8 @@
 package kal2
 
 import (
+	"crypto/ed25519"
+	"crypto/rand"
 	"fmt"
 	"io"
 	"os"
@@ -120,6 +122,143 @@ func TestMuxRemoteCloseEvicts(t *testing.T) {
 			t.Fatalf("%d zombie streams left on the server after remote close", left)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+// SetReadDeadline was a no-op placeholder: a read with a deadline set must
+// return within the deadline, not block forever — app-level deadlock vector
+// (the 15-min soak hung exactly this way in a churn worker's ReadFull).
+func TestMuxReadDeadlineReal(t *testing.T) {
+	client, server := pipeSessions(t)
+	accepted := serveLoop(t, server)
+
+	st, err := client.Open("deadline.example", 443, 3*time.Second)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	<-accepted
+	_ = st.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
+	start := time.Now()
+	_, err = io.ReadFull(st, make([]byte, 4))
+	el := time.Since(start)
+	if err == nil {
+		t.Fatal("read with no inbound data must fail at the deadline")
+	}
+	if !os.IsTimeout(err) {
+		t.Fatalf("want a timeout error, got %v", err)
+	}
+	if el > 2*time.Second {
+		t.Fatalf("read ignored the deadline (%s)", el)
+	}
+	// Deadline clears: data arriving later is still deliverable.
+	_ = st.SetReadDeadline(time.Time{})
+	if _, err := st.Write([]byte("x")); err != nil {
+		t.Fatalf("write after cleared deadline: %v", err)
+	}
+	_ = server
+}
+
+// hangRW is a carrier that never makes progress: reads and writes block
+// until Close. The session's writeLoop wedges in flushBuf, so the data lane
+// fills to its slot cap and senders backpressure-block.
+type hangRW struct{ closed chan struct{} }
+
+func newHangRW() *hangRW { return &hangRW{closed: make(chan struct{})} }
+func (h *hangRW) Read(b []byte) (int, error) {
+	<-h.closed
+	return 0, io.EOF
+}
+func (h *hangRW) Write(p []byte) (int, error) {
+	<-h.closed
+	return 0, io.ErrClosedPipe
+}
+func (h *hangRW) Close() error {
+	select {
+	case <-h.closed:
+	default:
+		close(h.closed)
+	}
+	return nil
+}
+
+// clientOnHangRW builds a client session attached to a wedged carrier.
+func clientOnHangRW(t *testing.T) (*Session, *hangRW) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	sh, err := NewServerHandshake(priv)
+	if err != nil {
+		t.Fatalf("server hs: %v", err)
+	}
+	ch, err := NewClientHandshake(pub, []byte("test-psk"), nil)
+	if err != nil {
+		t.Fatalf("client hs: %v", err)
+	}
+	ff, err := ch.FirstFlight(0)
+	if err != nil {
+		t.Fatalf("first flight: %v", err)
+	}
+	eph := ff[len(Magic)+1 : len(Magic)+1+ephemeralKeySize]
+	srvFlight, err := sh.Start(eph, nil)
+	if err != nil {
+		t.Fatalf("server flight: %v", err)
+	}
+	cs, err := ch.ServerFlight(srvFlight)
+	if err != nil {
+		t.Fatalf("client session: %v", err)
+	}
+	if _, err := sh.Finish(); err != nil {
+		t.Fatalf("server session: %v", err)
+	}
+	h := newHangRW()
+	cs.Attach(h)
+	t.Cleanup(func() { cs.Close(); h.Close() })
+	return cs, h
+}
+
+// Write deadline: when the carrier itself is wedged the data lane fills and
+// senders block on slots — a deadline must release them, not block forever.
+func TestMuxWriteDeadlineReal(t *testing.T) {
+	client, _ := clientOnHangRW(t)
+
+	// Fill the lane to its slot cap: every sendRecord blocks once exhausted.
+	// openStream (no waitDial) — the wedged carrier never answers OPEN_ACK.
+	raw, err := client.openStream("tcp", "wdeadline.example", 443)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	st := &Stream{stream: raw}
+	go func() {
+		chunk := make([]byte, 16*1024)
+		for {
+			if _, err := st.Write(chunk); err != nil {
+				return
+			}
+		}
+	}()
+
+	// Wait until the lane is full — the flooder blocked on slots.
+	for i := 0; i < 200 && len(client.data.slots) < cap(client.data.slots); i++ {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if len(client.data.slots) < cap(client.data.slots) {
+		t.Fatalf("data lane not full after %d slots", len(client.data.slots))
+	}
+
+	_ = st.SetWriteDeadline(time.Now().Add(400 * time.Millisecond))
+	start := time.Now()
+	_, err = st.Write(make([]byte, 16*1024*10))
+	el := time.Since(start)
+	if err == nil {
+		t.Fatal("write behind a full lane must fail at the deadline")
+	}
+	if !os.IsTimeout(err) {
+		t.Fatalf("want a timeout error, got %v", err)
+	}
+	if el > 3*time.Second {
+		t.Fatalf("write ignored the deadline (%s)", el)
 	}
 }
 
