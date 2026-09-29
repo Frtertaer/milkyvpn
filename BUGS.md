@@ -84,7 +84,9 @@
   ProxyEnable=0 и ProxyServer=оставлен наш `socks=127.0.0.1:11808`
 - Fix: при connect снимок `ProxyEnable`/`ProxyServer` через `reg query`;
   на disconnect `restoreProxyPlan` возвращает прежние значения (или
-  удаляет наш `ProxyServer`, если его не было); PAC/AutoConfigURL не трогаем
+  удаляет наш `ProxyServer`, если его не было); PAC/AutoConfigURL не трогаем.
+  Снапшот равный нашему `socks=` значению = маркер утечки после краша —
+  считается «не было прокси» (delete + enable=0), иначе утечка вечная
 - Found by: static review windows_vpn_bridge (windows track)
 - Issue: —  PR: —  Regression test:
   `test/core/windows_vpn_bridge_test.dart::proxy restore plan`
