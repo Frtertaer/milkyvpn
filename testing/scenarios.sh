@@ -88,7 +88,7 @@ verify_tunnel() {  # SOCKS liveness: real bytes through the tunnel
   curl -s -m 12 --socks5-hostname 127.0.0.1:11808 https://ifconfig.me/ip 2>/dev/null
 }
 
-s_connected() {
+s_connect() {
   log "scenario: connect"
   launch_app; import_link; tap_connect
   if wait_state CONNECTED 90; then
@@ -182,7 +182,7 @@ s_fgs_doze() {
 }
 
 run_all() {
-  s_connected
+  s_connect
   s_wifi_lte
   s_net_loss
   s_dns_change
