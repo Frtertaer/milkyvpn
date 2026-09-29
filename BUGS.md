@@ -58,9 +58,14 @@ this change set), **OPEN**, **DOC** (documented limitation).
 ## BUG-4 — wait_state matched stale logcat lines — FIXED (test-stand)
 
 - `wait_state CONNECTED` grepped the whole `logcat -d` buffer — a CONNECTED
-  line written by an earlier scenario matched instantly after a disruption.
-- Fix: `clear_log` before each disruptive wait; pattern requires a leading
-  space (`' CONNECTED'`) so `DISCONNECTED` can never match.
+  line written by an earlier scenario matched instantly after a disruption;
+  `logcat -c` then destroyed the evidence the failure report needed, and the
+  device ring buffer wraps MilkyVPN lines out on noisy APIs anyway.
+- Fix: `run_emu_ci.sh` streams `adb logcat -v threadtime` into
+  `ci-artifacts/logcat-full.txt` for the whole job; waits run on byte-offset
+  marks (`mark_log`/`log_since`) into that file — fresh lines only, nothing
+  lost. Pattern is `'[= ]CONNECTED'` so `stage=CONNECTED` and
+  `attempt=N CONNECTED` both match but `DISCONNECTED` never does.
 
 ## BUG-5 — `adb install` raced emulator boot — FIXED (test-stand)
 
