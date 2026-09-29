@@ -214,7 +214,7 @@ func TestVectorRecord(t *testing.T) {
 	go func() {
 		_, _ = c2.Write(rec)
 	}()
-	got, err := mk.readRecord()
+	got, err := mk.readRecord(mk.rw)
 	if err != nil {
 		t.Fatalf("readRecord: %v", err)
 	}
@@ -390,15 +390,15 @@ func TestForwardCompatTypes(t *testing.T) {
 	mk.initAEAD()
 	mk.rw = rawRWC{bytes.NewReader(wire)}
 
-	r1, err := mk.readRecord()
+	r1, err := mk.readRecord(mk.rw)
 	if err != nil || r1.Type != 0x40 {
 		t.Fatalf("record1: type=%x err=%v", r1.Type, err)
 	}
-	r2, err := mk.readRecord()
+	r2, err := mk.readRecord(mk.rw)
 	if err != nil || r2.Type != MsgTicket {
 		t.Fatalf("record2 (TICKET): type=%x err=%v", r2.Type, err)
 	}
-	r3, err := mk.readRecord()
+	r3, err := mk.readRecord(mk.rw)
 	if err != nil || r3.Type != MsgData || !bytes.Equal(r3.Payload, []byte("ok")) {
 		t.Fatalf("record3: type=%x payload=%q err=%v", r3.Type, r3.Payload, err)
 	}
@@ -411,7 +411,7 @@ func TestForwardCompatTypes(t *testing.T) {
 	}
 	mk2.initAEAD()
 	mk2.rw = rawRWC{bytes.NewReader(wire2)}
-	if _, err := mk2.readRecord(); err != ErrFraming {
+	if _, err := mk2.readRecord(mk2.rw); err != ErrFraming {
 		t.Fatalf("mandatory unknown type: got %v want ErrFraming", err)
 	}
 }
@@ -431,10 +431,10 @@ func TestRecordReplayRejected(t *testing.T) {
 
 	mk.initAEAD()
 	mk.rw = rawRWC{bytes.NewReader(append(frame, frame...))}
-	if _, err := mk.readRecord(); err != nil {
+	if _, err := mk.readRecord(mk.rw); err != nil {
 		t.Fatalf("first read: %v", err)
 	}
-	if _, err := mk.readRecord(); err != ErrReplay {
+	if _, err := mk.readRecord(mk.rw); err != ErrReplay {
 		t.Fatalf("replayed record: got %v want ErrReplay", err)
 	}
 }

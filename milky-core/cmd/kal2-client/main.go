@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,7 @@ func main() {
 	socks := flag.String("socks", "127.0.0.1:10808", "local socks listen")
 	tunName := flag.String("tun", "", "create a wintun adapter with this name and tunnel all device traffic (Windows, needs admin)")
 	ctlAddr := flag.String("ctl", "", "control socket: log lines are mirrored here and 'stop' exits (used when spawned elevated)")
+	logPath := flag.String("log", "", "append logs to this file as well (rolls to .1 past ~1MB; parent dirs are created)")
 	fetch := flag.String("fetch", "", "fetch URL through tunnel and exit")
 	fetchMax := flag.Int64("fetchmax", 32<<20, "max bytes to read for -fetch")
 	proxyURL := flag.String("proxy", "", "base-dial proxy (http://user:pass@host:port)")
@@ -57,6 +59,19 @@ func main() {
 	lanes := flag.Int("lanes", 0, "number of parallel carrier sessions (multi-lane stream spreading)"); qlanes := flag.Int("qlanes", 1, "quasar parallel sessions; streams round-robin across lanes")
 	qwnd := flag.Int("qwnd", 0, "quasar receive window in segments; paces the server's offered rate to ~wnd*mtu/RTT (0 = 16384)")
 	flag.Parse()
+
+	var logFile *os.File
+	if *logPath != "" {
+		f, err := openLogFile(*logPath, 1<<20)
+		if err != nil {
+			log.Printf("kal2: cannot open -log %s: %v", *logPath, err)
+		} else {
+			logFile = f
+			defer logFile.Close()
+			log.SetOutput(io.MultiWriter(failsoft{os.Stderr}, failsoft{logFile}))
+			log.Printf("kal2: logging to %s", *logPath)
+		}
+	}
 
 	serverPub, err := kal2core.DecodeKey(*pub)
 	if err != nil {
@@ -170,10 +185,16 @@ func main() {
 			log.Fatalf("ctl: %v", err)
 		}
 		defer ctl.close()
-		log.SetOutput(io.MultiWriter(os.Stderr, ctl))
+		outs := []io.Writer{failsoft{os.Stderr}, failsoft{ctl}}
+		if logFile != nil {
+			outs = append(outs, failsoft{logFile})
+		}
+		log.SetOutput(io.MultiWriter(outs...))
 		ctl.echo("kal2: session up via " + *carrier)
 	}
 
+	var tunCancel context.CancelFunc
+	var tunDone <-chan struct{}
 	if *tunName != "" {
 		// Full-device mode: the TUN adapter routes all traffic into kal2
 		// streams. Still serves SOCKS5 alongside — both paths stay live
@@ -221,31 +242,67 @@ func main() {
 				return sess.OpenNet("udp", "0.0.0.0", 0, 15*time.Second)
 			},
 		}
+		tctx, tcancel := context.WithCancel(context.Background())
+		tunCancel = tcancel
+		done := make(chan struct{})
+		tunDone = done
 		go func() {
-			if err := tun.Run(context.Background(), tcfg); err != nil {
+			defer close(done)
+			if err := tun.Run(tctx, tcfg); err != nil {
 				log.Printf("kal2: tun stopped: %v", err)
 			}
 		}()
 		log.Printf("kal2: tun requested (%s)", *tunName)
 	}
 	if ctl != nil {
-		// 'stop' on the control channel exits cleanly (defers restore routes).
+		// 'stop' on the control channel exits cleanly: the tun goroutine owns
+		// route/adapter teardown — returning early would kill it mid-flight
+		// and orphan the /32 server-bypass routes.
 		select {
 		case <-ctl.stopCh:
+			waitForTun(tunCancel, tunDone, 15*time.Second)
 			return
 		}
 	}
 	select {}
 }
 
-// ctlServer is a one-shot TCP control channel: the client mirrors its log
-// lines to the peer and exits when the peer sends "stop".
+// failsoft swallows Write errors so a dead sink cannot starve the rest of
+// the MultiWriter chain — an elevated GUI-subsystem spawn has an invalid
+// stderr handle, and without this every line died on the first Write.
+type failsoft struct{ io.Writer }
+
+func (f failsoft) Write(p []byte) (int, error) {
+	_, _ = f.Writer.Write(p)
+	return len(p), nil
+}
+
+// waitForTun cancels the tun goroutine and waits for its deferred teardown
+// (route restore + adapter close); false on timeout.
+func waitForTun(cancel context.CancelFunc, done <-chan struct{}, d time.Duration) bool {
+	if cancel == nil || done == nil {
+		return true
+	}
+	cancel()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// ctlServer is a TCP control channel: the client mirrors its log lines to
+// the connected peer and exits when a peer sends "stop". Accepts repeatedly —
+// an orphaned elevated helper must still answer a later peer's 'stop' (a new
+// client respawns cannot bind :11909 while the orphan holds it).
 type ctlServer struct {
-	ln     net.Listener
-	conn   net.Conn
-	mu     sync.Mutex
-	stopCh chan struct{}
-	echoed []string
+	ln       net.Listener
+	conn     net.Conn
+	mu       sync.Mutex
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	echoed   []string
 }
 
 func startCtl(addr string) (*ctlServer, error) {
@@ -259,27 +316,32 @@ func startCtl(addr string) (*ctlServer, error) {
 }
 
 func (c *ctlServer) accept() {
-	conn, err := c.ln.Accept()
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	c.conn = conn
-	for _, l := range c.echoed {
-		_, _ = fmt.Fprintln(conn, l)
-	}
-	c.echoed = nil
-	c.mu.Unlock()
-	go func() {
-		sc := bufio.NewScanner(conn)
-		for sc.Scan() {
-			if strings.TrimSpace(sc.Text()) == "stop" {
-				close(c.stopCh)
-				return
-			}
+	for {
+		conn, err := c.ln.Accept()
+		if err != nil {
+			return
 		}
-		// Peer vanished — keep running; the tunnel is still up.
-	}()
+		c.mu.Lock()
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+		c.conn = conn
+		for _, l := range c.echoed {
+			_, _ = fmt.Fprintln(conn, l)
+		}
+		c.echoed = nil
+		c.mu.Unlock()
+		go func() {
+			sc := bufio.NewScanner(conn)
+			for sc.Scan() {
+				if strings.TrimSpace(sc.Text()) == "stop" {
+					c.stopOnce.Do(func() { close(c.stopCh) })
+					return
+				}
+			}
+			// Peer vanished — keep running; the tunnel is still up.
+		}()
+	}
 }
 
 // Write mirrors log lines to the control peer (io.Writer for log output).
@@ -297,6 +359,27 @@ func (c *ctlServer) Write(p []byte) (int, error) {
 func (c *ctlServer) echo(line string) { _, _ = c.Write([]byte(line + "\n")) }
 
 func (c *ctlServer) close() { c.ln.Close() }
+
+// openLogFile rolls path to path.1 once it exceeds maxBytes — one backlog
+// generation is kept, enough for field diagnostics without unbounded growth
+// on long soaks — then opens it for appending with a start banner.
+func openLogFile(path string, maxBytes int64) (*os.File, error) {
+	if st, err := os.Stat(path); err == nil && st.Size() > maxBytes {
+		_ = os.Remove(path + ".1")
+		_ = os.Rename(path, path+".1")
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(f, "=== kal2-client started %s ===\n", time.Now().Format(time.RFC3339))
+	return f, nil
+}
 
 func openURL(cli *kal2core.Client, raw string) (io.ReadCloser, error) {
 	u, err := url.Parse(raw)

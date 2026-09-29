@@ -345,19 +345,55 @@ func deriveSessionKeys(transcriptBytes, salt []byte) (*Session, error) {
 	if err != nil {
 		return nil, err
 	}
+	rs, err := hkdfDerive(labelResumeSecret, salt, transcriptBytes, 32)
+	if err != nil {
+		return nil, err
+	}
 	// Keys are role-relative at the call sites: caller flips send/recv on the
 	// server side (Finish) so each side decrypts what the peer encrypts.
 	s := &Session{
-		transcript: transcriptBytes,
-		sendKey:    ck,
-		recvKey:    sk,
-		nonceBase:  nb,
-		verify:     v,
-		streams:    map[uint32]*stream{},
-		padBucket:  sessionPadBucket(),
-		padMode:    PadMimicMode,
+		transcript:   transcriptBytes,
+		sendKey:      ck,
+		recvKey:      sk,
+		nonceBase:    nb,
+		verify:       v,
+		resumeSecret: rs,
+		streams:      map[uint32]*stream{},
+		padBucket:    sessionPadBucket(),
+		padMode:      PadMimicMode,
 	}
 	return s, nil
+}
+
+// rekey replaces the session's traffic keys from a resumption transcript
+// (fresh ephemeral X25519 per resume); direction roles are preserved.
+func (s *Session) rekey(salt, transcriptBytes []byte) error {
+	ck, err := hkdfDerive(labelClientRecord, salt, transcriptBytes, chacha20poly1305.KeySize)
+	if err != nil {
+		return err
+	}
+	sk, err := hkdfDerive(labelServerRecord, salt, transcriptBytes, chacha20poly1305.KeySize)
+	if err != nil {
+		return err
+	}
+	nb, err := hkdfDerive(labelNonceBase, salt, transcriptBytes, 8)
+	if err != nil {
+		return err
+	}
+	v, err := hkdfDerive(labelHandshakeVer, salt, transcriptBytes, 32)
+	if err != nil {
+		return err
+	}
+	if s.isClient {
+		s.sendKey, s.recvKey = ck, sk
+	} else {
+		s.sendKey, s.recvKey = sk, ck
+	}
+	s.nonceBase = nb
+	s.verify = v
+	s.transcript = transcriptBytes
+	s.initAEAD()
+	return nil
 }
 
 // sessionPadBucket picks the record padding multiple for this session:
@@ -367,6 +403,17 @@ func sessionPadBucket() int {
 	var b [1]byte
 	_, _ = rand.Read(b[:])
 	return PadBucketSize * (1 + int(b[0]&3)) // 256/512/768/1024 — see MaxSessionPadBucket
+}
+
+// HKDFDerive exports the raw HKDF primitive for ancillary keys (ticket
+// codec keys, descriptor helpers) — labels stay internal to the handshake.
+func HKDFDerive(salt, ikm, info []byte, n int) ([]byte, error) {
+	r := hkdf.New(sha256.New, ikm, salt, info)
+	out := make([]byte, n)
+	if _, err := io.ReadFull(r, out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func genX25519() (priv, pub []byte, err error) {

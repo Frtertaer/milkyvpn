@@ -62,6 +62,9 @@ type VeilConfig struct {
 	// could export keying material (SPEC: "носитель без binding →
 	// binding=∅"). For mixed fleets where some clients cannot bind.
 	IgnoreBinding bool
+	// Resumer enables v2.1 session resumption: the listener accepts KLDO-rs-
+	// flights and re-attaches frozen sessions (registry + ticket codec).
+	Resumer *kal2.SessionRegistry
 }
 
 func (c *VeilConfig) logf(f string, a ...any) {
@@ -264,6 +267,10 @@ func (v *VeilListener) handle(c net.Conn) bool {
 		v.penalize(ip)
 		return false
 	}
+	if bytesEqual(magic, kal2.ResumeMagic) {
+		_ = bc.SetReadDeadline(time.Time{})
+		return v.acceptResume(bc, magic)
+	}
 	if !bytesEqual(magic, kal2.Magic) {
 		_ = bc.SetReadDeadline(time.Time{})
 		v.serveHTTP(WrapPrefix2(bc, magic))
@@ -357,6 +364,14 @@ func (v *VeilListener) establishKAL(bc BoundConn, eph, psk []byte, binding kal2.
 	_ = bc.SetReadDeadline(time.Time{})
 	sess.Attach(bc)
 	v.clearFails(remoteIPConn(bc))
+	if v.cfg.Resumer != nil {
+		var uid [16]byte
+		h := sha256.Sum256(psk)
+		copy(uid[:], h[:16])
+		if err := v.cfg.Resumer.Adopt(sess, uid); err != nil {
+			v.cfg.logf("kal2: resumer adopt: %v", err)
+		}
+	}
 	if v.cfg.OnSession != nil {
 		v.cfg.OnSession(sess)
 	}
@@ -379,6 +394,49 @@ func (v *VeilListener) firstFlightDeadline() time.Duration {
 		return v.cfg.FirstFlightDeadline
 	}
 	return 10 * time.Second
+}
+
+// acceptResume handles a KLDO-rs- flight: registry Accept → server flight
+// + checkpoint trailer → rekey → ResumeAttach on the frozen session. Any
+// failure falls through to the cover site exactly like a bad full flight.
+func (v *VeilListener) acceptResume(bc BoundConn, magic []byte) bool {
+	rest := make([]byte, kal2.ResumeFixedSize-len(kal2.ResumeMagic))
+	if _, err := io.ReadFull(bc, rest); err != nil {
+		return false
+	}
+	head := append(magic, rest...)
+	if v.cfg.Resumer == nil {
+		v.serveHTTP(WrapPrefix2(bc, head))
+		return false
+	}
+	res, err := v.cfg.Resumer.Accept(head, bc, bc.Binding())
+	if err != nil {
+		v.cfg.logf("veil: bad resume %s: %v", remoteIPConn(bc), err)
+		v.serveHTTP(WrapPrefix2(bc, head))
+		return false
+	}
+	flight, _, err := res.ServerResume(v.cfg.Identity, bc.Binding())
+	if err != nil {
+		v.serveHTTP(WrapPrefix2(bc, head))
+		return false
+	}
+	cp := res.Session.Checkpoint().Encode()
+	out := append(flight, byte(len(cp)), byte(len(cp)>>8))
+	out = append(out, cp...)
+	if _, err := bc.Write(out); err != nil {
+		return false
+	}
+	if err := res.Finish(); err != nil {
+		return false
+	}
+	if err := res.Session.ResumeAttach(bc, res.Checkpoint); err != nil {
+		return false
+	}
+	if err := v.cfg.Resumer.Refresh(res.Session); err != nil {
+		v.cfg.logf("veil: refresh ticket: %v", err)
+	}
+	v.clearFails(remoteIPConn(bc))
+	return true
 }
 
 // serveHTTP hands an inner byte stream (post-TLS) to the HTTP mux: h2 via
