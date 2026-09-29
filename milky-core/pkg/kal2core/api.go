@@ -48,6 +48,10 @@ type ServerConfig struct {
 	// (carrier.SaveECHKeyFile format). Enables Encrypted Client Hello on the
 	// veil listener — the outer ClientHello then shows only the cover name.
 	ECHKeyFiles []string
+	// Resume enables v2.1 session resumption (KLDO-rs-): the listener keeps
+	// frozen sessions for migration and issues one-time tickets. Ticket keys
+	// derive from Identity so they survive restarts.
+	Resume bool
 	// UDPListen enables the quasar (UDP/KCP) listener, e.g. ":20443".
 	// Set Listen to "off" to run a UDP-only server without TLS material.
 	UDPListen string
@@ -127,6 +131,9 @@ type ClientConfig struct {
 	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
 	HandshakeTimeout time.Duration
 	Logf             func(string, ...any)
+	// Resume, set internally by the migration path, makes dialers run a
+	// KLDO-rs- resumption flight on the fresh transport.
+	Resume *kal2.ResumeState
 }
 
 // Client is an established kal2 tunnel end. When EnableReconnect is running,
@@ -146,6 +153,7 @@ type Client struct {
 	// Ping method): the session routes each PONG to a single registered
 	// channel, so concurrent Pings would steal each other's replies.
 	pingMu sync.Mutex
+	scores   *core.Scorecard
 }
 
 // Session returns a live session, or nil between loss and redial.
@@ -266,6 +274,15 @@ func Serve(cfg ServerConfig) error {
 			}()
 		},
 	}
+	if cfg.Resume {
+		// Ticket AEAD keys derive from the server identity — resumable
+		// sessions survive process restarts without extra state.
+		tk, _ := kal2.HKDFDerive([]byte("kal2-ticket-key"), cfg.Identity, []byte("v1"), 32)
+		var k1 [32]byte
+		copy(k1[:], tk)
+		codec := kal2.NewTicketCodec(k1)
+		vc.Resumer = kal2.NewSessionRegistry(codec, 0)
+	}
 	if cert != nil {
 		vc.Cert = *cert
 	}
@@ -321,11 +338,12 @@ func Serve(cfg ServerConfig) error {
 // Dial establishes a kal2 session using the configured carrier, trying each
 // endpoint in Addrs (or Addr) in order.
 func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
+	scores := core.NewScorecard()
 	logf := cfg.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	cli := &Client{cfg: cfg, logf: logf, stop: make(chan struct{})}
+	cli := &Client{cfg: cfg, logf: logf, stop: make(chan struct{}), scores: scores}
 	n := cfg.Lanes
 	if n <= 0 {
 		n = cfg.QuasarLanes
@@ -338,7 +356,7 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				s, err := dialAny(ctx, cfg, i)
+				s, err := dialAny(ctx, cfg, i, scores)
 				if err == nil {
 					cli.lanes[i].Store(s)
 				}
@@ -362,7 +380,7 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 			logf("core: %d/%d carrier lanes up at dial", up, n)
 		}
 	} else {
-		sess, err := dialAny(ctx, cfg, 0)
+		sess, err := dialAny(ctx, cfg, 0, scores)
 		if err != nil {
 			return nil, err
 		}
@@ -432,26 +450,47 @@ func carriers(cfg ClientConfig) []string {
 
 // dialHedged races the candidate carriers for one endpoint and returns the
 // first successful session; losing sessions are closed when they finish.
-func dialHedged(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+// Candidate order comes from the scorecard (failover ordering); the race
+// starts staggered so the healthiest carrier usually wins.
+func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (*kal2.Session, error) {
 	cs := carriers(cfg)
+	if scores != nil {
+		cs = scores.Order(cs)
+	}
 	if len(cs) == 1 {
 		c2 := cfg
 		c2.Carrier = cs[0]
-		return dialOneFn(ctx, c2)
+		t0 := time.Now()
+		s, err := dialOneFn(ctx, c2)
+		if scores != nil {
+			scores.ReportDial(cs[0], err == nil, time.Since(t0).Seconds())
+		}
+		return s, err
 	}
 	type result struct {
-		s   *kal2.Session
-		err error
+		name string
+		s    *kal2.Session
+		err  error
+		secs float64
 	}
 	ch := make(chan result, len(cs))
 	sub, cancel := context.WithCancel(ctx)
-	for _, name := range cs {
-		go func(name string) {
+	for i, name := range cs {
+		go func(name string, delay time.Duration) {
+			if delay > 0 {
+				select {
+				case <-sub.Done():
+					ch <- result{name: name, err: sub.Err()}
+					return
+				case <-time.After(delay):
+				}
+			}
 			c2 := cfg
 			c2.Carrier = name
+			t0 := time.Now()
 			s, err := dialOneFn(sub, c2)
-			ch <- result{s, err}
-		}(name)
+			ch <- result{name: name, s: s, err: err, secs: time.Since(t0).Seconds()}
+		}(name, time.Duration(i)*150*time.Millisecond)
 	}
 	var lastErr error
 	pending := len(cs)
@@ -459,6 +498,9 @@ func dialHedged(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		select {
 		case r := <-ch:
 			pending--
+			if scores != nil && r.err != context.Canceled {
+				scores.ReportDial(r.name, r.err == nil, r.secs)
+			}
 			if r.err == nil {
 				cancel()
 				// Drain late completions so a slow winner's session is closed.
@@ -483,13 +525,13 @@ func dialHedged(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 
 // dialAny walks the endpoint list starting at index start, returning the
 // first session that completes the handshake (hedged across carriers).
-func dialAny(ctx context.Context, cfg ClientConfig, start int) (*kal2.Session, error) {
+func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scorecard) (*kal2.Session, error) {
 	addrs := endpoints(cfg)
 	var lastErr error
 	for i := range addrs {
 		c2 := cfg
 		c2.Addr = addrs[(start+i)%len(addrs)]
-		s, err := dialHedged(ctx, c2)
+		s, err := dialHedged(ctx, c2, scores)
 		if err == nil {
 			return s, nil
 		}
@@ -515,6 +557,7 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
 		PinSHA256:          cfg.PinSHA256,
 		ECHConfigList:      cfg.ECHConfigList,
+		Resume:             cfg.Resume,
 	}
 	switch cfg.Carrier {
 	case "", "veil":
@@ -573,16 +616,29 @@ func (c *Client) reconnectLoop() {
 		if sess == nil {
 			return
 		}
+		migrated := false
 		select {
 		case <-sess.WaitClosed():
+		case <-sess.NeedsMigrate():
+			migrated = true
 		case <-c.stop:
 			return
+		}
+		if migrated {
+			c.logf("core: transport lost; migrating session")
+			if c.tryMigrate(sess) {
+				c.scores.ReportMigrate(true)
+				continue // same session object, new transport — re-watch
+			}
+			c.scores.ReportMigrate(false)
+			c.logf("core: migration failed; falling back to redial")
 		}
 		c.mu.Lock()
 		if c.Sess == sess {
 			c.Sess = nil
 		}
 		c.mu.Unlock()
+		_ = sess.Close() // frozen remnants die now; streams are lost
 		c.logf("core: session lost; redialing")
 		backoff := time.Second
 		for {
@@ -592,7 +648,7 @@ func (c *Client) reconnectLoop() {
 			case <-time.After(backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))):
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)))
+			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)), c.scores)
 			cancel()
 			if err == nil {
 				c.mu.Lock()
@@ -683,6 +739,25 @@ func (c *Client) probe(s *kal2.Session, pongTimeout, slack time.Duration) error 
 	}
 }
 
+// tryMigrate attempts one resumption of the frozen session over a fresh
+// carrier (hedged race across the carrier list — the server's single-use
+// ticket makes exactly one attempt stick). False means fall back to redial.
+func (c *Client) tryMigrate(sess *kal2.Session) bool {
+	rs, ok := sess.TicketState()
+	if !ok {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+	defer cancel()
+	cfg := c.cfg
+	cfg.Resume = rs
+	s, err := dialAny(ctx, cfg, int(c.rrIdx.Add(1)), c.scores)
+	return err == nil && s == sess
+}
+
+// Scores exposes the live carrier scorecard for reporting.
+func (c *Client) Scores() *core.Scorecard { return c.scores }
+
 // reconnectLane watches one quasar lane, keeps it warm with pings, and
 // redials into its slot when it dies. Contract with failover scoring (PR #7
 // scorecard, when merged): this watchdog only kills *dead* lanes — a ping
@@ -733,7 +808,7 @@ func (c *Client) reconnectLane(i int) {
 			case <-time.After(backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))):
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)))
+			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)), c.scores)
 			cancel()
 			if err == nil {
 				c.lanes[i].Store(s)
