@@ -1,9 +1,14 @@
-# KAL/2 — спецификация протокола (wire spec)
+# Pandora (KAL/2) — спецификация протокола (wire spec)
+
+Публичное имя протокола — **Pandora** (share-ссылки `pandora://`). В коде и на
+проводе действует внутреннее имя KAL/2: magic `KLDO-in-`, пакеты `kal2`/`kal2core`,
+бинарники `kal2-client`/`kal2-server`, алиас схемы `kal2://`. Спецификация
+описывает провод — имена API/пакетов даны как есть в эталонной реализации.
 
 Версия протокола: **2** (`Version = 0x02`, magic `KLDO-in-`).
 Статус: реализовано в Mirage core (`milky-core/`, эталонная реализация на Go).
 
-KAL/2 — транспорт для обхода цензуры: один TLS- или h2-канал несёт
+Pandora — транспорт для обхода цензуры: один TLS- или h2-канал несёт
 мультиплексированные зашифрованные потоки с взаимной аутентификацией
 (сервер — по Ed25519-ключу, клиент — по PSK). Поверх сессии работают
 SOCKS5 (CONNECT + UDP ASSOCIATE) и любой TCP/UDP трафик.
@@ -344,7 +349,7 @@ descriptorPlain =
   endpoints[] = {
     addrLen[1] addr[addrLen]          — домен или IP-литерал
     port[2,BE]
-    carriers[1] bitmap: bit0 veil, bit1 drift, bit2 cdn, bit3 mosaic
+    carriers[1] bitmap: bit0 veil, bit1 drift, bit2 cdn, bit3 mosaic, bit4 quasar
     sniLen[1] sni[sniLen]
     echLen[1] ech[echLen]             — ECHConfigList, может быть пустым
     flags[1]                          — bit0: preferred, bit1: relay-hop
@@ -430,7 +435,7 @@ key reuse) исключено конструкцией.
 
 | Возможность | v2 (Version=0x02) | v2.1 |
 |---|---|---|
-| first flight, записи, потоки, veil/drift/cdn/mosaic | ✓ | ✓ |
+| first flight, записи, потоки, veil/drift/cdn/mosaic/quasar | ✓ | ✓ |
 | TICKET + `KLDO-rs-` + MIGRATE | — | ✓ |
 | подписанные дескрипторы, rendezvous | — | ✓ |
 
