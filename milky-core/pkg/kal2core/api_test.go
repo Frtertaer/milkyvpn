@@ -57,7 +57,7 @@ func TestDialHedgedPicksWinner(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s, err := dialHedged(ctx, ClientConfig{Carrier: "auto"})
+	s, err := dialHedged(ctx, ClientConfig{Carrier: "auto"}, nil)
 	if err != nil {
 		t.Fatalf("hedged dial: %v", err)
 	}
@@ -88,7 +88,7 @@ func TestDialHedgedAllFail(t *testing.T) {
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	s, err := dialHedged(ctx, ClientConfig{Carrier: "auto"})
+	s, err := dialHedged(ctx, ClientConfig{Carrier: "auto"}, nil)
 	if err == nil || s != nil {
 		t.Fatalf("want failure, got s=%v err=%v", s, err)
 	}
