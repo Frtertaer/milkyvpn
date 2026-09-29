@@ -606,7 +606,16 @@ func (c *Client) reconnectLane(i int) {
 				for {
 					select {
 					case <-t.C:
-						_ = s.Ping([]byte("k"), 10*time.Second)
+						// A ping failure means the session is silently dead
+						// (e.g. the server forgot it): close so WaitClosed
+						// fires and this lane gets redialed. Two strikes —
+						// a single lost pong must not kill a live session.
+						if err := s.Ping([]byte("k"), 10*time.Second); err != nil {
+							if err2 := s.Ping([]byte("k"), 5*time.Second); err2 != nil {
+								_ = s.Close()
+								return
+							}
+						}
 					case <-s.WaitClosed():
 						return
 					case <-c.stop:
@@ -621,7 +630,7 @@ func (c *Client) reconnectLane(i int) {
 				return
 			}
 		}
-		c.logf("core: quasar lane %d lost; redialing", i)
+		c.logf("core: lane %d lost; redialing", i)
 		backoff := time.Second
 		for {
 			select {
@@ -634,10 +643,10 @@ func (c *Client) reconnectLane(i int) {
 			cancel()
 			if err == nil {
 				c.lanes[i].Store(s)
-				c.logf("core: quasar lane %d restored", i)
+				c.logf("core: lane %d restored", i)
 				break
 			}
-			c.logf("core: quasar lane %d redial failed: %v", i, err)
+			c.logf("core: lane %d redial failed: %v", i, err)
 			if backoff < 30*time.Second {
 				backoff *= 2
 			}
