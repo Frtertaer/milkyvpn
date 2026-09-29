@@ -75,6 +75,20 @@
 - Found by: windows-track verification session (build 25)
 - Issue: —  PR: —  Regression test: `test/features/settings_refresh_test.dart`
 
+### BUG-2026-09-29-06 — Windows: disconnect затирает чужой системный прокси
+- Severity: major (для пользователей за корпоративным прокси: их прокси
+  теряется безвозвратно после первого disconnect)
+- Platform: windows
+- Status: fixed-in-PR
+- Repro: иметь ProxyEnable=1 + ProxyServer=corp → connect → disconnect →
+  ProxyEnable=0 и ProxyServer=оставлен наш `socks=127.0.0.1:11808`
+- Fix: при connect снимок `ProxyEnable`/`ProxyServer` через `reg query`;
+  на disconnect `restoreProxyPlan` возвращает прежние значения (или
+  удаляет наш `ProxyServer`, если его не было); PAC/AutoConfigURL не трогаем
+- Found by: static review windows_vpn_bridge (windows track)
+- Issue: —  PR: —  Regression test:
+  `test/core/windows_vpn_bridge_test.dart::proxy restore plan`
+
 ## Закрытые
 
 (перенос сюда после merge фикса с регрессионным тестом)
