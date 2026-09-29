@@ -102,8 +102,12 @@ final class VpnPlugin: NSObject {
     private func prepare(_ result: @escaping FlutterResult) {
         loadManager { manager in
             guard let manager = manager else { result(false); return }
+            // NE rejects a save whose protocolConfiguration has no serverAddress
+            // ("Missing server address"), so the first-save consent prompt can
+            // never appear unless the proto is fully configured. connect()
+            // overwrites this placeholder with the real config.
             if manager.protocolConfiguration == nil {
-                manager.protocolConfiguration = NETunnelProviderProtocol()
+                manager.protocolConfiguration = Self.placeholderProtocol()
             }
             manager.localizedDescription = "MilkyVPN"
             manager.isEnabled = true
@@ -113,8 +117,33 @@ final class VpnPlugin: NSObject {
         }
     }
 
+    /// A minimal but NE-valid tunnel-provider config used only to trigger the
+    /// "Add VPN Configuration" consent on the first saveToPreferences.
+    static func placeholderProtocol() -> NETunnelProviderProtocol {
+        let proto = NETunnelProviderProtocol()
+        proto.providerBundleIdentifier = providerBundleID
+        proto.serverAddress = "milkyvpn.invalid"
+        proto.providerConfiguration = [:]
+        proto.includeAllNetworks = true
+        return proto
+    }
+
+    /// The real provider config for a connect attempt.
+    static func configuredProtocol(configJSON: String, profile: [String: Any]) -> NETunnelProviderProtocol {
+        let proto = NETunnelProviderProtocol()
+        proto.providerBundleIdentifier = providerBundleID
+        proto.serverAddress = "\(profile["address"] ?? ""):\(profile["port"] ?? "")"
+        proto.providerConfiguration = [
+            "configJSON": configJSON,
+            "profileId": profile["id"] as? String ?? "",
+            "profileRemark": profile["remark"] as? String ?? "",
+        ]
+        proto.includeAllNetworks = true
+        return proto
+    }
+
     private func connect(_ profile: [String: Any], _ result: @escaping FlutterResult) {
-        guard let configJSON = kal2ConfigJSON(profile) else {
+        guard let configJSON = Self.kal2ConfigJSON(profile) else {
             result(FlutterError(code: "error", message: "unsupported_profile", details: nil))
             return
         }
@@ -124,16 +153,8 @@ final class VpnPlugin: NSObject {
                 result(FlutterError(code: "error", message: "no_manager", details: nil))
                 return
             }
-            let proto = NETunnelProviderProtocol()
-            proto.providerBundleIdentifier = Self.providerBundleID
-            proto.serverAddress = "\(profile["address"] ?? ""):\(profile["port"] ?? "")"
-            proto.providerConfiguration = [
-                "configJSON": configJSON,
-                "profileId": profile["id"] as? String ?? "",
-                "profileRemark": profile["remark"] as? String ?? "",
-            ]
-            proto.includeAllNetworks = true
-            manager.protocolConfiguration = proto
+            manager.protocolConfiguration = Self.configuredProtocol(
+                configJSON: configJSON, profile: profile)
             manager.localizedDescription = "MilkyVPN"
             manager.isEnabled = true
             manager.saveToPreferences { error in
@@ -232,14 +253,17 @@ final class VpnPlugin: NSObject {
     }
 
     /// Same JSON shape the Android side builds in `Kal2Config.toJson`.
-    private func kal2ConfigJSON(_ p: [String: Any]) -> String? {
+    static func kal2ConfigJSON(_ p: [String: Any]) -> String? {
         guard let address = p["address"] as? String, !address.isEmpty,
               let secret = p["secret"] as? String, !secret.isEmpty else {
             return nil
         }
         let port = (p["port"] as? NSNumber)?.intValue ?? 0
         let network = (p["network"] as? String ?? "").lowercased()
-        let carrier = (network == "drift" || network == "veil") ? network : "auto"
+        let knownCarriers: Set<String> = ["drift", "veil", "cdn", "mosaic", "quasar"]
+        let carrier = knownCarriers.contains(network) ? network : "auto"
+        // cover defaults on in the native core; "0"/"false" disables it.
+        let coverOff = (p["cover"] as? String)?.lowercased()
         let cfg: [String: Any] = [
             "addr": "\(address):\(port)",
             "sni": p["sni"] as? String ?? "",
@@ -248,6 +272,8 @@ final class VpnPlugin: NSObject {
             "pub": p["publicKey"] as? String ?? "",
             "psk": secret,
             "socks": "127.0.0.1:11808",
+            "ech": p["ech"] as? String ?? "",
+            "cover": coverOff != "0" && coverOff != "false",
         ]
         guard JSONSerialization.isValidJSONObject(cfg),
               let data = try? JSONSerialization.data(withJSONObject: cfg),
