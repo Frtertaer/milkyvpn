@@ -16,3 +16,7 @@ func openDevice(cfg *Config) (Device, error) {
 
 // VpnService authorization replaces admin rights on Android.
 func IsElevated() bool { return true }
+
+// DefaultEgress is unused on Android — VpnService.protect() owns carrier
+// socket bypass.
+func DefaultEgress() string { return "" }

@@ -14,7 +14,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"io"
-	"net"
 	"os"
 	"strconv"
 	"testing"
@@ -204,16 +203,10 @@ func TestVectorRecord(t *testing.T) {
 	// The vector record is client→server: read it as the server role.
 	mk.sendKey, mk.recvKey = mk.recvKey, mk.sendKey
 	mk.isClient = false
-	// Feed the vector record through the real read path.
-	c1, c2 := net.Pipe()
-	defer c1.Close()
-	defer c2.Close()
-	mk.Attach(c1)
-	defer mk.Close()
-	rec := vhex(t, v["record"]["openStream1Bytes"])
-	go func() {
-		_, _ = c2.Write(rec)
-	}()
+	// Feed the vector record through the real read path (Attach would start
+	// readLoop — a competing reader on the same conn; feed the fd directly).
+	mk.initAEAD()
+	mk.rw = rawRWC{bytes.NewReader(vhex(t, v["record"]["openStream1Bytes"]))}
 	got, err := mk.readRecord(mk.rw)
 	if err != nil {
 		t.Fatalf("readRecord: %v", err)

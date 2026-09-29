@@ -35,12 +35,11 @@ func TestCarriersExpansion(t *testing.T) {
 // A dead carrier must not block the dial: with Carrier=auto the surviving
 // carrier's session wins even when the other fails fast or hangs.
 func TestDialHedgedPicksWinner(t *testing.T) {
-	orig := dialOneFn
-	defer func() { dialOneFn = orig }()
+	defer dialOneFn.Store(dialFunc(dialOne))
 
 	var mu sync.Mutex
 	attempted := map[string]int{}
-	dialOneFn = func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		mu.Lock()
 		attempted[cfg.Carrier]++
 		mu.Unlock()
@@ -54,7 +53,7 @@ func TestDialHedgedPicksWinner(t *testing.T) {
 			}
 		}
 		return &kal2.Session{}, nil // drift wins quickly
-	}
+	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -83,11 +82,10 @@ func TestDialHedgedPicksWinner(t *testing.T) {
 }
 
 func TestDialHedgedAllFail(t *testing.T) {
-	orig := dialOneFn
-	defer func() { dialOneFn = orig }()
-	dialOneFn = func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		return nil, errors.New("dead")
-	}
+	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	s, err := dialHedged(ctx, ClientConfig{Carrier: "auto"}, nil)

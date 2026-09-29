@@ -350,7 +350,7 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 	to := cfg.timeout()
 	dial := cfg.DialContext
 	if dial == nil {
-		d := &net.Dialer{Timeout: to}
+		d := &net.Dialer{Timeout: to, Control: cfg.DialControl}
 		dial = d.DialContext
 	}
 
@@ -527,7 +527,7 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 	to := cfg.timeout()
 	dial := cfg.DialContext
 	if dial == nil {
-		d := &net.Dialer{Timeout: to}
+		d := &net.Dialer{Timeout: to, Control: cfg.DialControl}
 		dial = d.DialContext
 	}
 	raw, err := dial(ctx, "tcp", cfg.Addr)
