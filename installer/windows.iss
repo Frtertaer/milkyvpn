@@ -39,13 +39,29 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 Filename: "{app}\{#MyAppExe}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: postinstall nowait skipifsilent
 
 [Code]
+// Drain before replace: kal2-client gets 'stop' on its ctl socket (it closes
+// sessions, restores routes, unloads the wintun adapter and exits), then we
+// WAIT for it — force-kill is only a fallback for a wedged process, otherwise
+// an abrupt kill mid-restore leaves orphaned /1 routes and a stale adapter.
+// milkyvpn.exe gets a graceful WM_CLOSE first (taskkill without /F) for the
+// same reason: let the app tear down its child and the system proxy cleanly.
 function PrepareToInstall(var NeedsRestart: Boolean): String;
 var
   ResultCode: Integer;
 begin
-  Exec('powershell.exe', '-NoProfile -WindowStyle Hidden -Command "try { $c = New-Object System.Net.Sockets.TcpClient(''127.0.0.1'',11909); $w = New-Object System.IO.StreamWriter($c.GetStream()); $w.WriteLine(''stop''); $w.Flush(); Start-Sleep -Seconds 2; $c.Close() } catch {}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('powershell.exe', '-NoProfile -WindowStyle Hidden -Command "try { $c = New-Object System.Net.Sockets.TcpClient(''127.0.0.1'',11909); $w = New-Object System.IO.StreamWriter($c.GetStream()); $w.WriteLine(''stop''); $w.Flush(); $c.Close() } catch {}; try { Wait-Process -Name kal2-client -Timeout 20 } catch {}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('taskkill.exe', '/F /IM kal2-client.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Still alive after the fallback means an elevated -tun helper we cannot
+  // kill (installer runs non-elevated). Aborting is loud but honest — writing
+  // files over a running exe would leave a mixed old/new install.
+  Exec('powershell.exe', '-NoProfile -WindowStyle Hidden -Command "if (Get-Process kal2-client -ErrorAction SilentlyContinue) { exit 3 } else { exit 0 }"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if ResultCode <> 0 then begin
+    Result := 'Milky VPN tunnel is still active — disconnect and run setup again.';
+    exit;
+  end;
+  Exec('taskkill.exe', '/IM milkyvpn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  Exec('powershell.exe', '-NoProfile -WindowStyle Hidden -Command "try { Wait-Process -Name milkyvpn -Timeout 15 } catch {}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('taskkill.exe', '/F /IM milkyvpn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
-  Sleep(1500);
+  Sleep(500);
   Result := '';
 end;

@@ -55,6 +55,9 @@ type VeilConfig struct {
 	FirstFlightDeadline time.Duration
 	// HandshakeTimeout caps the TLS handshake.
 	HandshakeTimeout time.Duration
+	// RequireBinding rejects veil flights not keyed to the TLS exporter
+	// (RFC 9266). Leave off while pre-binding clients are still deployed.
+	RequireBinding bool
 	// Resumer enables v2.1 session resumption: the listener accepts KLDO-rs-
 	// flights and re-attaches frozen sessions (registry + ticket codec).
 	Resumer *kal2.SessionRegistry
@@ -83,6 +86,8 @@ type VeilListener struct {
 	// hijacks tracks WS-hijacked conns (key: remote addr) so serveHTTP keeps
 	// the conn alive until the WS session — not the HTTP request — ends.
 	hijacks sync.Map // string -> *hijackReg
+	// mosaics holds sessions carried by mosaic tiles.
+	mosaics mosaicTable
 }
 
 type hijackReg struct {
@@ -271,7 +276,7 @@ func (v *VeilListener) handle(c net.Conn) bool {
 		return false
 	}
 	flightPrefix := append(magic, rest...)
-	eph, totalLen, psk, err := v.authFlight(flightPrefix, bc.binding)
+	eph, totalLen, psk, binding, err := v.authFlight(flightPrefix, bc.binding)
 	if err != nil {
 		// Cover: rewind and hand to the decoy mux.
 		_ = bc.SetReadDeadline(time.Time{})
@@ -286,7 +291,7 @@ func (v *VeilListener) handle(c net.Conn) bool {
 		}
 	}
 	_ = bc.SetReadDeadline(time.Time{})
-	if err := v.establishKAL(bc, eph, psk, flightPrefix); err != nil {
+	if err := v.establishKAL(bc, eph, psk, binding); err != nil {
 		v.cfg.logf("veil: handshake fail %s: %v", c.RemoteAddr(), err)
 		return false
 	}
@@ -294,29 +299,40 @@ func (v *VeilListener) handle(c net.Conn) bool {
 }
 
 // authFlight validates the fixed flight prefix against all users; returns the
-// accepted PSK and client ephemeral. Replay rejection included.
-func (v *VeilListener) authFlight(prefix []byte, binding kal2.ChannelBinding) (eph []byte, totalLen int, psk []byte, err error) {
-	for _, u := range v.cfg.Users {
-		e, tl, err2 := kal2.ParseClientFirstFlight(prefix, u.PSK, binding)
-		if err2 == nil {
+// accepted PSK, client ephemeral and the channel binding the flight was keyed
+// to. Replay rejection included. A flight keyed without the exporter is
+// accepted unless RequireBinding is set, so clients predating exporter
+// binding keep working; a bound client's flight can never verify against a
+// different TLS leg, so the fallback gives an interceptor nothing.
+func (v *VeilListener) authFlight(prefix []byte, binding kal2.ChannelBinding) (eph []byte, totalLen int, psk []byte, used kal2.ChannelBinding, err error) {
+	candidates := []kal2.ChannelBinding{binding}
+	if len(binding) > 0 && !v.cfg.RequireBinding {
+		candidates = append(candidates, nil)
+	}
+	for _, b := range candidates {
+		for _, u := range v.cfg.Users {
+			e, tl, err2 := kal2.ParseClientFirstFlight(prefix, u.PSK, b)
+			if err2 != nil {
+				continue
+			}
 			h := sha256.Sum256(prefix)
 			if v.replay.seen(h[:]) {
-				return nil, 0, nil, kal2.ErrReplay
+				return nil, 0, nil, nil, kal2.ErrReplay
 			}
-			return e, tl, u.PSK, nil
+			return e, tl, u.PSK, b, nil
 		}
 	}
-	return nil, 0, nil, kal2.ErrPreauth
+	return nil, 0, nil, nil, kal2.ErrPreauth
 }
 
 // establishKAL completes the inner handshake and hands the session to the
 // registered OnSession callback. Shared by veil and drift paths.
-func (v *VeilListener) establishKAL(bc BoundConn, eph, psk, flightPrefix []byte) error {
+func (v *VeilListener) establishKAL(bc BoundConn, eph, psk []byte, binding kal2.ChannelBinding) error {
 	hs, err := kal2.NewServerHandshake(v.cfg.Identity)
 	if err != nil {
 		return err
 	}
-	serverFlight, err := hs.Start(eph, bc.Binding())
+	serverFlight, err := hs.Start(eph, binding)
 	if err != nil {
 		return err
 	}
@@ -502,19 +518,14 @@ type tlsBoundConn struct {
 
 func (t *tlsBoundConn) Binding() kal2.ChannelBinding { return t.binding }
 
-// tlsExporter extracts the RFC 9266 exporter when the TLS stack exposes it.
+// tlsExporter extracts the RFC 9266 exporter (TLS 1.3).
 func tlsExporter(c *tls.Conn) kal2.ChannelBinding {
-	type exporter interface {
-		ExportKeyingMaterial(label string, context []byte, length int) ([]byte, error)
-	}
 	st := c.ConnectionState()
-	if e, ok := any(st).(exporter); ok {
-		b, err := e.ExportKeyingMaterial("mxs-bind", nil, 32)
-		if err == nil {
-			return b
-		}
+	b, err := st.ExportKeyingMaterial(exporterLabel, nil, 32)
+	if err != nil {
+		return nil
 	}
-	return nil
+	return b
 }
 
 // WrapPrefix2 wraps a BoundConn with consumed prefix bytes.

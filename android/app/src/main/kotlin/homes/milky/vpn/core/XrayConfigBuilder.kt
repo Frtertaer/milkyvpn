@@ -27,7 +27,7 @@ object XrayConfigBuilder {
 
     /** Transports that are genuinely executable by this engine. */
     val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2", "vmess", "trojan", "ss", "shadowsocks", "kal2")
-    val SUPPORTED_KAL2_CARRIERS = setOf("veil", "drift", "relay")
+    val SUPPORTED_KAL2_CARRIERS = setOf("veil", "drift", "relay", "cdn", "mosaic", "auto")
     val SUPPORTED_VLESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
     val SUPPORTED_VLESS_SECURITY = setOf("reality", "tls", "none")
     val SUPPORTED_VMESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
@@ -83,6 +83,7 @@ object XrayConfigBuilder {
         val shortId: String? = null,
         val ech: String? = null,
         val cover: String? = null,
+        val pin: String? = null,
         val spiderX: String? = null,
         val flow: String? = null,
         val host: String? = null,
@@ -111,6 +112,7 @@ object XrayConfigBuilder {
                     shortId = s("shortId"),
                     ech = s("ech"),
                     cover = s("cover"),
+                    pin = s("pin"),
                     spiderX = s("spiderX"),
                     flow = s("flow"),
                     host = s("host"),

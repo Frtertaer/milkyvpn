@@ -36,7 +36,12 @@ func (u *userFlags) Set(v string) error {
 }
 
 func main() {
-	listen := flag.String("listen", ":443", "listen addr")
+	listen := flag.String("listen", ":443", "listen addr (or \"off\" for a UDP-only server)")
+	udpListen := flag.String("udp-listen", "", "quasar UDP/KCP listen addr (e.g. :20443)")
+	udpFEC := flag.String("udp-fec", "0,0", "quasar Reed-Solomon FEC shards data,parity (e.g. 10,3)")
+	udpWnd := flag.Int("udp-sndwnd", 0, "quasar KCP send window in segments; bounds the in-flight backlog (0 = 16384)")
+	udpRes := flag.Int("udp-resend", 0, "quasar KCP dup-ack fast-retransmit threshold (0 = RTO only)")
+	udpRate := flag.Int("udp-rate", 0, "quasar packet output rate cap in Mbit/s (0 = unlimited)")
 	domain := flag.String("domain", "", "our TLS domain")
 	cert := flag.String("cert", "", "fullchain PEM")
 	key := flag.String("key", "", "private key PEM")
@@ -78,8 +83,15 @@ func main() {
 		fmt.Println("pub:", pub)
 		return
 	}
-	if *domain == "" || *identity == "" || len(users) == 0 || (*cert == "" && *autocertDir == "") {
-		log.Fatal("need -domain, -identity, at least one -user and (-cert/-key or -autocert)")
+	fecD, fecP := 0, 0
+	if *udpFEC != "0,0" {
+		if _, err := fmt.Sscanf(*udpFEC, "%d,%d", &fecD, &fecP); err != nil || fecD < 0 || fecP < 0 {
+			log.Fatalf("bad -udp-fec %q (want data,parity)", *udpFEC)
+		}
+	}
+	udpOnly := *listen == "off"
+	if *identity == "" || len(users) == 0 || (*udpListen == "" && *domain == "") || (!udpOnly && *cert == "" && *autocertDir == "") {
+		log.Fatal("need -identity, at least one -user, and (-udp-listen or -domain); -cert/-key or -autocert unless -listen off")
 	}
 	idKey, err := hex.DecodeString(*identity)
 	if err != nil || len(idKey) != ed25519.PrivateKeySize {
@@ -114,6 +126,12 @@ func main() {
 	}
 	err = kal2core.Serve(kal2core.ServerConfig{
 		Listen:           *listen,
+		UDPListen:        *udpListen,
+		UDPFECData:       fecD,
+		UDPFECParity:     fecP,
+		UDPSndWnd:        *udpWnd,
+		UDPResend:        *udpRes,
+		UDPRate:          *udpRate * 125000,
 		Domain:           *domain,
 		CertFile:         *cert,
 		KeyFile:          *key,
