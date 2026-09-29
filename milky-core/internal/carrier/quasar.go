@@ -31,6 +31,20 @@ type QuasarConfig struct {
 	// bursts without retransmit delay.
 	DataShards   int
 	ParityShards int
+	// SndWnd/RcvWnd are KCP window sizes in segments; 0 = tuned default.
+	// The receive window also throttles the peer's offered rate to ~wnd*mtu/RTT.
+	SndWnd, RcvWnd int
+	// Resend is the dup-ack fast-retransmit threshold (KCP resend): 0 =
+	// retransmit only on RTO (~RTT+ tail), N = resend after N duplicate
+	// ACKs. Ordered delivery makes every byte wait on the oldest lost
+	// segment, so >0 cuts head-of-line delay under loss — at the cost of
+	// extra wire bytes on reordering-heavy paths.
+	Resend int
+	// RateLimit caps the packet output rate in bytes/s. Policed links
+	// collapse delivery when offered far past their budget — measured
+	// ~175 Mbit offered → ~9% delivered vs ~73 Mbit offered → ~62%.
+	// Capping near the link's sweet spot beats flooding it. 0 = unlimited.
+	RateLimit int
 	// WireKey scrambles every datagram (salsa20). nil = plaintext KCP.
 	WireKey []byte
 }
@@ -57,14 +71,27 @@ func QuasarWireKey(serverPub []byte) []byte {
 }
 
 // tuneKCP applies the fast-loss profile shared by client and listener.
-func tuneKCP(s *kcp.UDPSession) {
-	s.SetStreamMode(true)    // byte stream, no per-write packetization
-	s.SetNoDelay(1, 5, 0, 1) // nodelay, 5ms flush, no dup-ack resend (reordering path), NC off
-	s.SetWindowSize(16384, 16384)
+// rcvWnd caps the peer's offered rate: a path whose policer caps inbound UDP
+// around ~40 Mbit/s drops everything beyond it, so we advertise a receive
+// window just under the cap (~wnd*mtu/RTT) instead of offering 60+ Mbit and
+// losing ~40%. Returns the session for chaining.
+func tuneKCP(s *kcp.UDPSession, sndWnd, rcvWnd, resend, rateLimit int) {
+	if sndWnd <= 0 {
+		sndWnd = 16384
+	}
+	if rcvWnd <= 0 {
+		rcvWnd = 16384
+	}
+	s.SetStreamMode(true) // byte stream, no per-write packetization
+	s.SetNoDelay(1, 2, resend, 1) // nodelay, 2ms flush, NC off
+	s.SetWindowSize(sndWnd, rcvWnd)
 	s.SetMtu(1400)
 	s.SetACKNoDelay(true)
 	_ = s.SetWriteBuffer(16 << 20)
 	_ = s.SetReadBuffer(16 << 20)
+	if rateLimit > 0 {
+		s.SetRateLimit(uint32(rateLimit))
+	}
 }
 
 // quasarBound adapts *kcp.UDPSession to BoundConn.
@@ -108,7 +135,9 @@ func DialQuasar(ctx context.Context, cfg ClientConfig, qc *QuasarConfig) (*kal2.
 	case <-time.After(to):
 		return nil, nil, fmt.Errorf("quasar dial timeout")
 	}
-	tuneKCP(sess)
+	// Small advertised receive window: paces the server's offered rate to
+	// just under the path policer instead of offering 2x and losing ~40%.
+	tuneKCP(sess, qc.SndWnd, qc.RcvWnd, qc.Resend, qc.RateLimit)
 	_ = sess.SetDeadline(time.Now().Add(to))
 	bc := &quasarBound{UDPSession: sess}
 	inner, err := runClientHandshake(bc, cfg)
@@ -177,7 +206,7 @@ func (q *QuasarListener) handle(s *kcp.UDPSession) bool {
 	if to == 0 {
 		to = 10 * time.Second
 	}
-	tuneKCP(s)
+	tuneKCP(s, q.qc.SndWnd, q.qc.RcvWnd, q.qc.Resend, q.qc.RateLimit)
 	// Deadline covers only the auth window — it must be cleared before the
 	// session is adopted, or every read/write starts failing once it expires.
 	_ = s.SetReadDeadline(time.Now().Add(to))

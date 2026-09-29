@@ -1,6 +1,7 @@
 package kal2
 
 import (
+	"container/heap"
 	"crypto/cipher"
 	"encoding/binary"
 	"fmt"
@@ -39,10 +40,14 @@ type Session struct {
 
 	// Outbound scheduler: control records (OPEN/ACK/CLOSE/RST/PING/PONG)
 	// go out ahead of queued DATA so stream control never starves behind
-	// bulk transfer. DATA senders block when dataCh is full — that is the
-	// per-stream write backpressure.
+	// bulk transfer. DATA records queue per stream and the writer emits
+	// from the stream that has sent the fewest bytes so far (start-time
+	// fair queueing): a fresh stream's first records leave in the next
+	// batch even while bulk streams hold deep queues — on lossy carriers
+	// the queue tail is seconds of wire time, so a plain FIFO would pin
+	// interactive TTFB to it. DATA senders block when the lane cap fills.
 	ctrlCh chan outRec
-	dataCh chan outRec
+	data   *dataLane
 
 	smu       sync.RWMutex // guards streams
 	streams   map[uint32]*stream
@@ -61,6 +66,93 @@ type outRec struct {
 	p  []byte
 }
 
+// dataLane is the per-stream fair queue behind the writer's DATA lane:
+// each stream's records stay FIFO, streams interleave by least emitted
+// bytes. slots bounds total pending records (senders block), wake
+// signals the writer when work arrives.
+type dataLane struct {
+	mu      sync.Mutex
+	heap    dataHeap
+	queues  map[uint32][]outRec
+	emitted map[uint32]uint64
+	slots   chan struct{}
+	wake    chan struct{}
+}
+
+// dataLaneCap bounds records pending in the data lane across streams.
+const dataLaneCap = 1024
+
+func newDataLane() *dataLane {
+	return &dataLane{
+		queues:  map[uint32][]outRec{},
+		emitted: map[uint32]uint64{},
+		slots:   make(chan struct{}, dataLaneCap),
+		wake:    make(chan struct{}, 1),
+	}
+}
+
+// enqueue appends rec to its stream's FIFO. The caller must already
+// hold a slot token; pop releases it when the record is emitted.
+func (l *dataLane) enqueue(rec outRec) {
+	l.mu.Lock()
+	if len(l.queues[rec.id]) == 0 {
+		heap.Push(&l.heap, dataItem{id: rec.id, emitted: l.emitted[rec.id]})
+	}
+	l.queues[rec.id] = append(l.queues[rec.id], rec)
+	l.mu.Unlock()
+	select {
+	case l.wake <- struct{}{}:
+	default:
+	}
+}
+
+// pop removes the head record of the stream that has emitted the fewest
+// bytes so far and releases its slot token.
+func (l *dataLane) pop() (outRec, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for l.heap.Len() > 0 {
+		it := heap.Pop(&l.heap).(dataItem)
+		q := l.queues[it.id]
+		if len(q) == 0 {
+			continue // the heap only holds non-empty queues
+		}
+		rec := q[0]
+		l.emitted[it.id] += uint64(len(rec.p))
+		if len(q) > 1 {
+			l.queues[it.id] = q[1:]
+			heap.Push(&l.heap, dataItem{id: it.id, emitted: l.emitted[it.id]})
+		} else {
+			delete(l.queues, it.id)
+			delete(l.emitted, it.id)
+		}
+		<-l.slots
+		return rec, true
+	}
+	return outRec{}, false
+}
+
+// dataItem is a ready (non-empty) stream in the fair queue, ordered by
+// total bytes the stream has emitted.
+type dataItem struct {
+	id      uint32
+	emitted uint64
+}
+
+type dataHeap []dataItem
+
+func (h dataHeap) Len() int           { return len(h) }
+func (h dataHeap) Less(i, j int) bool { return h[i].emitted < h[j].emitted }
+func (h dataHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *dataHeap) Push(x any)        { *h = append(*h, x.(dataItem)) }
+func (h *dataHeap) Pop() any {
+	old := *h
+	n := len(old)
+	it := old[n-1]
+	*h = old[:n-1]
+	return it
+}
+
 // Transcript returns the handshake transcript (for PSK proofs).
 func (s *Session) Transcript() []byte { return s.transcript }
 
@@ -71,7 +163,7 @@ func (s *Session) Attach(rw io.ReadWriteCloser) {
 	s.closed = make(chan struct{})
 	s.readDone = make(chan struct{})
 	s.ctrlCh = make(chan outRec, 512)
-	s.dataCh = make(chan outRec, 1024)
+	s.data = newDataLane()
 	if s.isClient {
 		s.nextID = 1 // clients use odd stream ids
 	} else {
@@ -143,11 +235,12 @@ func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
 	// peer sees close before trailing data).
 	if t == MsgData || t == MsgClose {
 		select {
-		case s.dataCh <- rec:
-			return nil
+		case s.data.slots <- struct{}{}:
 		case <-s.closed:
 			return ErrClosed
 		}
+		s.data.enqueue(rec)
+		return nil
 	}
 	select {
 	case s.ctrlCh <- rec:
@@ -169,13 +262,33 @@ const writeBatchBytes = 1 << 14
 func (s *Session) writeLoop() {
 	for {
 		var first outRec
+		haveFirst := false
 		select {
 		case first = <-s.ctrlCh:
-		case first = <-s.dataCh:
-		case <-s.closed:
-			return
+			haveFirst = true
+		default:
+			if r, ok := s.data.pop(); ok {
+				first = r
+				haveFirst = true
+			}
 		}
-		buf := s.appendFrame(nil, first)
+		if !haveFirst {
+			select {
+			case first = <-s.ctrlCh:
+				haveFirst = true
+			case <-s.data.wake:
+				if r, ok := s.data.pop(); ok {
+					first = r
+					haveFirst = true
+				}
+			case <-s.closed:
+				return
+			}
+		}
+		var buf []byte
+		if haveFirst {
+			buf = s.appendFrame(buf, first)
+		}
 	batch:
 		for len(buf) < writeBatchBytes {
 			select {
@@ -187,11 +300,16 @@ func (s *Session) writeLoop() {
 			select {
 			case r := <-s.ctrlCh:
 				buf = s.appendFrame(buf, r)
-			case r := <-s.dataCh:
-				buf = s.appendFrame(buf, r)
 			default:
+				if r, ok := s.data.pop(); ok {
+					buf = s.appendFrame(buf, r)
+					continue
+				}
 				break batch
 			}
+		}
+		if len(buf) == 0 {
+			continue // spurious wake
 		}
 		if !s.flushBuf(buf) {
 			return

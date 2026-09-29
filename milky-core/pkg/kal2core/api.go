@@ -54,7 +54,17 @@ type ServerConfig struct {
 	// listener (e.g. 10,3). 0,0 = off.
 	UDPFECData   int
 	UDPFECParity int
-	Logf         func(string, ...any)
+	// UDPSndWnd caps the KCP send window (segments) the server applies to
+	// quasar sessions. It bounds the in-flight backlog — at 16384 segs the
+	// tail is ~22 MB (~6 s of added latency for new streams under load),
+	// so ~4096 keeps bulk rate near the path cap while control stays fast.
+	// 0 = 16384.
+	UDPSndWnd int
+	// UDPResend is the dup-ack fast-retransmit threshold for quasar sessions.
+	UDPResend int
+	// UDPRate caps the quasar packet output rate in bytes/s (0 = unlimited).
+	UDPRate int
+	Logf      func(string, ...any)
 }
 
 // User is a provisioned client credential pair.
@@ -88,6 +98,27 @@ type ClientConfig struct {
 	// QuasarFEC sets Reed-Solomon FEC shards [data,parity] for the quasar
 	// carrier; [0,0] = off.
 	QuasarFEC [2]int
+	// QuasarRcvWnd caps the KCP receive window the client advertises to the
+	// server, throttling its offered rate to ~wnd*mtu/RTT — paths that police
+	// inbound UDP to a fixed rate drop everything above the cap, so a window
+	// just under it beats a big window that loses ~40%. 0 = 16384.
+	QuasarRcvWnd int
+	// QuasarResend is the dup-ack fast-retransmit threshold (0 = RTO only).
+	QuasarResend int
+	// QuasarLanes is the number of parallel quasar sessions (>1 = multi
+	// lane). KCP delivers an ordered byte stream, so anything written lands
+	// behind every earlier byte — a bulk download makes the tail of its
+	// lane's stream seconds deep. Spreading streams round-robin across
+	// lanes keeps interactive streams on nearly-empty ordered streams.
+	// 0/1 = single session.
+	// Lanes pools N parallel sessions over the configured carrier and
+	// round-robins new streams across them: a single ordered transport
+	// (KCP stream, TCP byte stream) makes every stream wait behind bulk
+	// backlogs, so spreading streams over several connections keeps
+	// interactive traffic on nearly-empty lanes.
+	Lanes    int
+	// Deprecated: same as Lanes (kept for older CLI flags).
+	QuasarLanes int
 	// DialContext overrides the base TCP dial (e.g. via HTTP CONNECT proxy).
 	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
 	HandshakeTimeout time.Duration
@@ -102,13 +133,27 @@ type Client struct {
 	cfg      ClientConfig
 	logf     func(string, ...any)
 	mu       sync.Mutex
+	lanes    []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
+	laneRR   atomic.Uint32
 	stop     chan struct{}
 	stopOnce sync.Once
 	rrIdx    atomic.Int32
 }
 
-// Session returns the current session, or nil between loss and redial.
+// Session returns a live session, or nil between loss and redial.
+// With quasar lanes it round-robins over them so each new stream lands
+// on a different ordered stream.
 func (c *Client) Session() *kal2.Session {
+	if len(c.lanes) > 0 {
+		n := uint32(len(c.lanes))
+		start := c.laneRR.Add(1)
+		for k := uint32(0); k < n; k++ {
+			if s := c.lanes[(start+k)%n].Load(); s != nil {
+				return s
+			}
+		}
+		return nil
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Sess
@@ -234,6 +279,9 @@ func Serve(cfg ServerConfig) error {
 			WireKey:      wireKey,
 			DataShards:   cfg.UDPFECData,
 			ParityShards: cfg.UDPFECParity,
+			SndWnd:       cfg.UDPSndWnd,
+			Resend:       cfg.UDPResend,
+			RateLimit:    cfg.UDPRate,
 		}, cfg.UDPListen)
 		if err != nil {
 			return fmt.Errorf("quasar listen: %w", err)
@@ -257,15 +305,53 @@ func Serve(cfg ServerConfig) error {
 // Dial establishes a kal2 session using the configured carrier, trying each
 // endpoint in Addrs (or Addr) in order.
 func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
-	sess, err := dialAny(ctx, cfg, 0)
-	if err != nil {
-		return nil, err
-	}
 	logf := cfg.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	cli := &Client{Sess: sess, cfg: cfg, logf: logf, stop: make(chan struct{})}
+	cli := &Client{cfg: cfg, logf: logf, stop: make(chan struct{})}
+	n := cfg.Lanes
+	if n <= 0 {
+		n = cfg.QuasarLanes
+	}
+	if n > 1 {
+		cli.lanes = make([]atomic.Pointer[kal2.Session], n)
+		errs := make([]error, n)
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				s, err := dialAny(ctx, cfg, i)
+				if err == nil {
+					cli.lanes[i].Store(s)
+				}
+				errs[i] = err
+			}(i)
+		}
+		wg.Wait()
+		var firstErr error
+		up := 0
+		for i := 0; i < n; i++ {
+			if cli.lanes[i].Load() != nil {
+				up++
+			} else if firstErr == nil {
+				firstErr = errs[i]
+			}
+		}
+		if up == 0 {
+			return nil, firstErr
+		}
+		if up < n {
+			logf("core: %d/%d carrier lanes up at dial", up, n)
+		}
+	} else {
+		sess, err := dialAny(ctx, cfg, 0)
+		if err != nil {
+			return nil, err
+		}
+		cli.Sess = sess
+	}
 	if cfg.Cover {
 		go cli.coverLoop()
 	}
@@ -431,6 +517,8 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		s, _, err := carrier.DialQuasar(ctx, cc, &carrier.QuasarConfig{
 			DataShards:   cfg.QuasarFEC[0],
 			ParityShards: cfg.QuasarFEC[1],
+			RcvWnd:       cfg.QuasarRcvWnd,
+			Resend:       cfg.QuasarResend,
 		})
 		return s, err
 	default:
@@ -448,6 +536,13 @@ func (c *Client) EnableReconnect() {
 }
 
 func (c *Client) reconnectLoop() {
+	if len(c.lanes) > 0 {
+		for i := range c.lanes {
+			go c.reconnectLane(i)
+		}
+		<-c.stop
+		return
+	}
 	for {
 		sess := c.Session()
 		if sess == nil {
@@ -493,6 +588,57 @@ func (c *Client) reconnectLoop() {
 	}
 }
 
+// reconnectLane watches one quasar lane, keeps it warm with pings, and
+// redials into its slot when it dies.
+func (c *Client) reconnectLane(i int) {
+	for {
+		sess := c.lanes[i].Load()
+		if sess != nil {
+			go func(s *kal2.Session) {
+				t := time.NewTicker(15 * time.Second)
+				defer t.Stop()
+				for {
+					select {
+					case <-t.C:
+						_ = s.Ping([]byte("k"), 10*time.Second)
+					case <-s.WaitClosed():
+						return
+					case <-c.stop:
+						return
+					}
+				}
+			}(sess)
+			select {
+			case <-sess.WaitClosed():
+				c.lanes[i].CompareAndSwap(sess, nil)
+			case <-c.stop:
+				return
+			}
+		}
+		c.logf("core: quasar lane %d lost; redialing", i)
+		backoff := time.Second
+		for {
+			select {
+			case <-c.stop:
+				return
+			case <-time.After(backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))):
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)))
+			cancel()
+			if err == nil {
+				c.lanes[i].Store(s)
+				c.logf("core: quasar lane %d restored", i)
+				break
+			}
+			c.logf("core: quasar lane %d redial failed: %v", i, err)
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+		}
+	}
+}
+
 // ServeSocks exposes a local SOCKS5 proxy that forwards through whichever
 // session is live — survives reconnects.
 func (c *Client) ServeSocks(laddr string) (net.Listener, error) {
@@ -513,12 +659,22 @@ func (c *Client) Ping(ctx context.Context) error {
 	return core.PingSession(ctx, s)
 }
 
-// Close ends the session and stops the reconnect watchdog.
+// Close ends the session(s) and stops the reconnect watchdog.
 func (c *Client) Close() error {
 	var err error
 	c.stopOnce.Do(func() {
 		if c.stop != nil {
 			close(c.stop)
+		}
+		if len(c.lanes) > 0 {
+			for i := range c.lanes {
+				if s := c.lanes[i].Swap(nil); s != nil {
+					if e := s.Close(); e != nil {
+						err = e
+					}
+				}
+			}
+			return
 		}
 		if s := c.Session(); s != nil {
 			err = s.Close()
