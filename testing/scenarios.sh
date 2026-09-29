@@ -218,7 +218,7 @@ s_connect() {
   for i in 1 2; do
     m=$(mark_log)
     tap_connect
-    if wait_state ' CONNECTED' 150 "$m"; then
+    if wait_state '[= ]CONNECTED' 150 "$m"; then
       if ip=$(verify_tunnel_wait 45); then
         ok "connected (attempt $i), real traffic through tunnel, exit $ip"
         return
@@ -245,7 +245,7 @@ s_wifi_lte() {
   "${ADB[@]}" shell svc data enable
   # kal2 must redial over cellular and the app must re-verify — the CONNECTED
   # wait only sees lines appended after the mark (fresh, not stale).
-  if wait_state ' CONNECTED' 90 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+  if wait_state '[= ]CONNECTED' 90 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
     ok "wifi→data: session re-established (exit $ip)"
   else
     bad "wifi→data: session never recovered"
@@ -254,7 +254,7 @@ s_wifi_lte() {
   m=$(mark_log)
   "${ADB[@]}" shell svc wifi enable
   sleep 6
-  if wait_state ' CONNECTED' 60 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+  if wait_state '[= ]CONNECTED' 60 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
     ok "data→wifi: tunnel alive (exit $ip)"
   else
     bad "data→wifi: tunnel dead"
@@ -272,7 +272,7 @@ s_net_loss() {
   # The kal2 carrier socket dies or blackholes with the underlay; the session
   # must be killed by liveness probes and redialed, then the app re-verifies.
   sleep 5
-  if wait_state ' CONNECTED' 90 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+  if wait_state '[= ]CONNECTED' 90 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
     ok "net loss: session recovered (exit $ip)"
   else
     bad "net loss: no recovery in 90s"
@@ -354,7 +354,7 @@ s_on_revoke() {
   sleep 6
   if log_since "$m" | grep -q "onRevoke"; then
     ok "revoke: onRevoke fired and logged"
-  elif wait_state 'DISCONNECTED|ERROR' 15 "$m"; then
+  elif wait_state 'result=FAILED|connect failed' 15 "$m"; then
     ok "revoke: tunnel torn down (state DISCONNECTED/ERROR)"
   else
     bad "revoke: no onRevoke / teardown signal in 20s"
