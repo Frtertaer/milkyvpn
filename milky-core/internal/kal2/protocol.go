@@ -75,6 +75,7 @@ const (
 	MsgRst       byte = 0x07 // RST: reset a stream (error teardown)
 	MsgOpenAck   byte = 0x08 // OPEN_ACK: server reports dial result (payload = code)
 	MsgChallenge byte = 0x09 // CHALLENGE: reserved anti-replay extension
+	MsgTicket    byte = 0x0A // TICKET (v2.1): resumption ticket, control stream
 )
 
 func validMsgType(t byte) bool {
@@ -106,6 +107,8 @@ func MsgName(t byte) string {
 		return "OPEN_ACK"
 	case MsgChallenge:
 		return "CHALLENGE"
+	case MsgTicket:
+		return "TICKET"
 	}
 	return fmt.Sprintf("UNKNOWN(%#x)", t)
 }

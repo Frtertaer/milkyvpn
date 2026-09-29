@@ -381,7 +381,10 @@ func (s *Session) readRecord() (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !validMsgType(t) {
+	// Forward-compat (SPEC §12): unknown record types below 0x80 are
+	// authenticated, decrypted, and skipped; types ≥0x80 are mandatory —
+	// an unknown one tears the session down.
+	if !validMsgType(t) && t >= 0x80 {
 		return nil, ErrFraming
 	}
 	if ctLen < aeadTagSize+2 || ctLen > MaxRecordCiphertext {

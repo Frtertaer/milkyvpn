@@ -54,6 +54,12 @@ type ClientConfig struct {
 	// Endpoints lists every entry point (host:port) serving this server; the
 	// mosaic carrier spreads one session across all of them. Empty = Addr.
 	Endpoints []string
+	// AllowUnboundFallback permits one redial with an empty channel binding
+	// when the KAL/2 handshake fails while bound (SPEC: "носитель без
+	// binding → binding=∅"). Needed against servers that ignore the TLS
+	// exporter. Off by default: a stripping middlebox could otherwise force
+	// the session unbound — enable only for compatibility with known peers.
+	AllowUnboundFallback bool
 	// Logf receives carrier diagnostics.
 	Logf func(string, ...any)
 }
@@ -156,7 +162,24 @@ func mapHelloID(name string) (utls.ClientHelloID, bool) {
 	return utls.HelloCustom, false
 }
 
+// handshakeStageError marks a failure after the outer TLS session came up —
+// i.e. inside the KAL/2 handshake itself. Only these justify an unbound retry.
+type handshakeStageError struct{ err error }
+
+func (e handshakeStageError) Error() string { return e.err.Error() }
+func (e handshakeStageError) Unwrap() error { return e.err }
+
 func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, error) {
+	sess, bc, bound, err := dialVeilOnce(ctx, cfg, false)
+	var hse handshakeStageError
+	if err != nil && bound && cfg.AllowUnboundFallback && errors.As(err, &hse) {
+		cfg.logger()("binding-keyed handshake failed; retrying unbound: %v", err)
+		sess, bc, _, err = dialVeilOnce(ctx, cfg, true)
+	}
+	return sess, bc, err
+}
+
+func dialVeilOnce(ctx context.Context, cfg ClientConfig, forceUnbound bool) (*kal2.Session, BoundConn, bool, error) {
 	to := cfg.timeout()
 	dial := cfg.DialContext
 	if dial == nil {
@@ -165,7 +188,7 @@ func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, 
 	}
 	raw, err := dial(ctx, "tcp", cfg.Addr)
 	if err != nil {
-		return nil, nil, fmt.Errorf("tcp dial: %w", err)
+		return nil, nil, false, fmt.Errorf("tcp dial: %w", err)
 	}
 	_ = raw.SetDeadline(time.Now().Add(to))
 
@@ -184,22 +207,24 @@ func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, 
 	uconn := utls.UClient(raw, ucfg, utls.HelloCustom)
 	if err := uconn.ApplyPreset(&spec); err != nil {
 		_ = raw.Close()
-		return nil, nil, fmt.Errorf("utls preset: %w", err)
+		return nil, nil, false, fmt.Errorf("utls preset: %w", err)
 	}
 	if err := uconn.HandshakeContext(ctx); err != nil {
 		_ = raw.Close()
-		return nil, nil, fmt.Errorf("tls handshake: %w", err)
+		return nil, nil, false, fmt.Errorf("tls handshake: %w", err)
 	}
 
 	bc := &utlsBoundConn{UConn: uconn}
-	bc.binding = utlsExporter(uconn, ucfg)
+	if !forceUnbound {
+		bc.binding = utlsExporter(uconn, ucfg)
+	}
 	sess, err := runClientHandshake(bc, cfg)
 	if err != nil {
 		_ = bc.Close()
-		return nil, nil, err
+		return nil, nil, bc.binding != nil, handshakeStageError{err}
 	}
 	_ = bc.SetDeadline(time.Time{})
-	return sess, bc, nil
+	return sess, bc, bc.binding != nil, nil
 }
 
 // runClientHandshake performs the inner KAL/2 handshake over an established

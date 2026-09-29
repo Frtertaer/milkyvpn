@@ -58,6 +58,10 @@ type VeilConfig struct {
 	// RequireBinding rejects veil flights not keyed to the TLS exporter
 	// (RFC 9266). Leave off while pre-binding clients are still deployed.
 	RequireBinding bool
+	// IgnoreBinding runs the KAL/2 layer unbound even though the carrier
+	// could export keying material (SPEC: "носитель без binding →
+	// binding=∅"). For mixed fleets where some clients cannot bind.
+	IgnoreBinding bool
 }
 
 func (c *VeilConfig) logf(f string, a ...any) {
@@ -247,7 +251,9 @@ func (v *VeilListener) handle(c net.Conn) bool {
 	}
 	_ = tconn.SetDeadline(time.Time{})
 	bc := &tlsBoundConn{Conn: tconn}
-	bc.binding = tlsExporter(tconn)
+	if !v.cfg.IgnoreBinding {
+		bc.binding = tlsExporter(tconn)
+	}
 
 	// Demux first inner bytes: KAL magic → veil session; else → HTTP mux.
 	magic := make([]byte, len(kal2.Magic))

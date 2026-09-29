@@ -134,6 +134,19 @@ func NewServerHandshake(identity ed25519.PrivateKey) (*ServerHandshake, error) {
 	return &ServerHandshake{identity: identity, ephPriv: priv, ephPub: pub}, nil
 }
 
+// newServerHandshakeFixed creates a server handshake with a caller-supplied
+// ephemeral (conformance vectors, tests).
+func newServerHandshakeFixed(identity ed25519.PrivateKey, ephPriv []byte) (*ServerHandshake, error) {
+	if len(ephPriv) != curve25519.ScalarSize {
+		return nil, ErrHandshake
+	}
+	pub, err := curve25519.X25519(ephPriv, curve25519.Basepoint)
+	if err != nil {
+		return nil, err
+	}
+	return &ServerHandshake{identity: identity, ephPriv: append([]byte(nil), ephPriv...), ephPub: pub}, nil
+}
+
 // Start accepts the client's ephemeral public key and returns the server
 // flight: ephemeral(32) || Ed25519 signature(64). binding is the carrier's
 // channel binding (may be nil).
@@ -178,6 +191,19 @@ func NewClientHandshake(serverPub ed25519.PublicKey, psk []byte, binding Channel
 		return nil, err
 	}
 	return &ClientHandshake{serverPub: serverPub, psk: psk, binding: binding, ephPriv: priv, ephPub: pub}, nil
+}
+
+// newClientHandshakeFixed creates a client handshake with a caller-supplied
+// ephemeral (conformance vectors, tests).
+func newClientHandshakeFixed(serverPub ed25519.PublicKey, psk []byte, binding ChannelBinding, ephPriv []byte) (*ClientHandshake, error) {
+	if len(ephPriv) != curve25519.ScalarSize {
+		return nil, ErrHandshake
+	}
+	pub, err := curve25519.X25519(ephPriv, curve25519.Basepoint)
+	if err != nil {
+		return nil, err
+	}
+	return &ClientHandshake{serverPub: serverPub, psk: psk, binding: binding, ephPriv: append([]byte(nil), ephPriv...), ephPub: pub}, nil
 }
 
 // FirstFlight returns magic || version || eph || preauth || padLen(2) || pad.
