@@ -76,7 +76,12 @@
         <service
             android:name=".kal2.Kal2Service"
             android:exported="false"
-            android:process=":kal2" />
+            android:foregroundServiceType="specialUse"
+            android:process=":kal2">
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Hosts the KAL/2 tunnel session for the app's VPN connection: kept foreground only while a session is live so Android's device-idle does not demote the process and silently freeze the tunnel's SOCKS uplink." />
+        </service>
 
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

@@ -143,6 +143,9 @@ func Start(configJSON string) (int, error) {
 		return 0, err
 	}
 	cli.EnableReconnect()
+	// Carrier blackouts (packets dropped without RST) leave WaitClosed
+	// silent; the watchdog retires dead sessions so reconnectLoop redials.
+	cli.EnableLiveness(4*time.Second, 4*time.Second, 2)
 	client = cli
 	socksLn = ln
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
