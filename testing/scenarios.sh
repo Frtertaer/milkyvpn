@@ -237,6 +237,19 @@ ui_tap_class() {  # tap first node of a class (e.g. android.widget.EditText)
 }
 
 onboarding_and_import() {
+  # The ghost-tree flake can hit mid-flow: retry the whole path once — the
+  # repo dedupes a re-imported profile, and a persisted profile makes the
+  # second pass land on home directly.
+  local attempt
+  for attempt in 1 2; do
+    _onboarding_and_import_once && return 0
+    log "import attempt $attempt: no success sheet — relaunching app"
+    launch_app
+  done
+  return 1
+}
+
+_onboarding_and_import_once() {
   # fresh install → 3-page onboarding, then ImportScreen paste+confirm.
   ui_ready || log "ui: no view tree yet — continuing anyway"
   ui_heal || log "ui: tree still ghosted — falls back to pct taps"
@@ -247,8 +260,7 @@ onboarding_and_import() {
   ui_tap_class android.widget.EditText; sleep 1   # focus the url field
   # The link must land verbatim: `input text` truncates long strings silently
   # (ech= links are ~300+ chars), so chunk + shorten to a param boundary +
-  # verify against the field content. Fragment (#remark) is dropped — it is
-  # display-only and may be untypable (Cyrillic).
+  # verify the typed LENGTH (the field is obscured → dump shows bullets).
   local paste want typed try
   paste=$(short_link "$LINK")
   [ "$paste" != "$LINK" ] && log "link ${#LINK} chars → typing ${#paste} (tail params dropped at & boundary)"
@@ -257,16 +269,14 @@ onboarding_and_import() {
     type_text "$paste" || true
     sleep 1
     typed=$(ui_edittext_value)
-    if [ "$typed" = "$want" ]; then
+    if [ ${#typed} -eq ${#want} ]; then
       break
     fi
     log "link field mismatch (try $try): want ${#want} chars, got ${#typed} — clear+retry"
     clear_field $((${#typed} + 8))
     ui_tap_class android.widget.EditText 2>/dev/null || true; sleep 1
   done
-  if [ "$typed" != "$want" ]; then
-    # The dump's text= may itself truncate; a mismatch is a warning, not a
-    # verdict — the import/connect path validates for real.
+  if [ ${#typed} -ne ${#want} ]; then
     log "WARN: url field reads ${#typed} chars vs want ${#want} — proceeding; connect will judge"
   fi
   "${ADB[@]}" shell input keyevent 111 2>/dev/null || true  # close keyboard
