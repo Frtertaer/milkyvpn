@@ -441,6 +441,7 @@
 
 ## Carrier/mux (carrier-stress трек, PR #29)
 
+
 ### BUG-2026-09-29-13 — mux: конкурентные Ping гонятся за pongReg → ложный pong-timeout
 - Severity: major (сторож lanes читает таймаут как смерть lane →
   ложный kill живого лейна; под -race — data race на поле сессии)
@@ -527,6 +528,106 @@
 - Found by: carrier-track `go test -race` suite rerun после merge universal
 - Issue: —  PR: —  Regression test: `go test -race ./internal/carrier/`
   (ранее флаковал DATA RACE на testing.(*common).destination)
+
+## Трек PROTOCOL — conformance SPEC v2.1
+
+### BUG-2026-09-29-13 — vectors.json: ключевой материал выведен не по формуле §2
+
+- **Severity:** High (test oracle)
+- **Platform:** all
+- **Status:** FIXED (spec-side)
+- **Found by:** `TestVectorHandshakeKeys` / `TestVectorFlights`
+- **Issue:** в testdata/vectors.json все HKDF-производные (signature,
+  clientRecordKey, serverRecordKey, nonceBase, handshakeVerify, finished,
+  resumeSecret, record ciphertext, resume.*, ticket) вычислены с
+  `info = mxs-in-v2/transcript/<label>` — без суффикса `/<transcript>`,
+  который прямо записан в §2 (`info = mxs-in-v2/transcript/<label>/<transcript>`).
+  Реализация соответствует тексту спеки → вектор-файл был непригоден как
+  conformance-оракул (любая корректная реализация «не проходила» его).
+- **Fix:** `milky-core/cmd/genvec` — генератор векторов по формулам спеки
+  (восстановлен удалённый «временный» генератор); vectors.json регенерирован.
+  Дескриптор/openTargets/transcript/preauth/migrate совпали байт-в-байт.
+- **PR:** spec-side PR в `devin/1790623610-kal2-spec-v2`
+- **Regression test:** conformance_test.go — все `keys.*` сверяются с
+  спек-формулой в тестовом коде (независимая реализация HKDF).
+
+### BUG-2026-09-29-14 — vectors.json: ticketLen закодирован big-endian
+
+- **Severity:** Medium (test oracle)
+- **Status:** FIXED (spec-side)
+- **Issue:** `resume.resumeFlight` содержит `ticketLen = 0x004e` (BE 78),
+  спека §9.2 требует `[2,LE]` (`0x4e00`). Код PR #7 (`ParseResumeHead`)
+  читает LE — вектор непарсабелен спек-имплементацией.
+- **Fix:** регенерация vectors.json с LE.
+- **Regression test:** `TestVectorResume` — парсинг полёта по LE.
+
+### BUG-2026-09-29-15 — спека §3: порядок payload/padLen/pad в тексте неверен
+
+- **Severity:** Medium (spec text)
+- **Status:** FIXED (spec-side)
+- **Issue:** текст §3: `ct = AEAD(payload || padLen[2,LE] || pad[padLen])`.
+  Имплементация и вектор кладут длину **в конец**: `payload || pad || padLen`.
+  Реальное значение несовместимо с текстом.
+- **Fix:** правка SPEC.md §3 (spec-side PR).
+- **Regression test:** `TestVectorRecord` — impl дешифрует векторную запись.
+
+### BUG-2026-09-29-16 — спека §9.2/9.4: nStreams помечен LE, вектор+код — BE
+
+- **Severity:** Low (spec text)
+- **Status:** FIXED (spec-side)
+- **Issue:** `nStreams[2,LE]` в тексте против BE в vectors.json
+  (`migrate.payload`) и коде PR #7 (checkpoint). Весь wire-формат BE —
+  правим текст, не байты.
+- **Fix:** SPEC.md §9.2, §9.4 → `[2,BE]`/`[4,BE]`.
+- **Regression test:** `TestVectorResume`/`TestVectorMigrate` — BE-парсинг.
+
+### BUG-2026-09-29-17 — неизвестные типы записей <0x80 убивали сессию
+
+- **Severity:** High (forward-compat)
+- **Status:** FIXED (code)
+- **Issue:** `readRecord` возвращал `ErrFraming` на любой неизвестный тип →
+  v2.1-записи (TICKET 0x0A, будущие <0x80) рвали v2-сессию. §12 требует:
+  <0x80 — пропускать (AEAD+seq-учёт сохраняется), ≥0x80 — разрыв.
+- **Fix:** `session.go` — пропуск неизвестных <0x80 после AEAD-open;
+  `protocol.go` — `MsgTicket = 0x0A`.
+- **PR:** code PR → `devin/1790199091-kal2-universal-subscriptions`
+- **Regression test:** `TestForwardCompatTypes` (0x40/0x0A skip, 0x81 kill).
+
+### BUG-2026-09-29-18 — bound-клиент против unbound-сервера: разрыв вместо фолбэка
+
+- **Severity:** High (interop, проверка (d))
+- **Status:** FIXED (code)
+- **Issue:** клиент всегда биндил к TLS-exporter; сервер с `binding=∅`
+  (спека: «носитель без binding → binding=∅») выдавал signature/handshake
+  mismatch → разрыв. Фолбэка на клиенте не было вовсе.
+- **Fix:** `ClientConfig.AllowUnboundFallback` (opt-in, дефолт строгий —
+  иначе stripping-MitM мог бы молча понизить binding) — один redial
+  unbound при падении KAL/2-рукопожатия; `VeilConfig.IgnoreBinding` —
+  серверный unbound-режим для смешанных флитов.
+- **Regression test:** `TestDialVeilBoundClientUnboundServer`,
+  `TestDialVeilUnboundClient` (tolerant / RequireBinding).
+
+### BUG-2026-09-29-19 — §9/§10: resumption/migration и descriptor-публикация не реализованы на impl-ветке
+
+- **Severity:** High (feature gap; проверки (b-resumption), (c), (e-server))
+- **Status:** fixed-in-PR #7 (merged) для resumption/migration —
+  resume.go, TICKET/MIGRATE, `ResumeAttach`, freeze/migGate/replay
+  присутствуют на базе; проверки (b-resumption), (c) выполняются там.
+  Остаётся OPEN: §10 server-publish/fetch descriptor'ов (rendezvous
+  серверная часть) нигде не реализована.
+- **Частично закрыто здесь:** `descriptor.go` — §10.1 парсер (подпись/pin/TTL)
+  + `RendezvousPath` (§10.2 keyed path) + тесты против векторов; билет-
+  формат и re-key проверены `TestVectorResume` по спек-формулам.
+
+### BUG-2026-09-29-20 — спека: третий полёт (ClientAuthFlight) не описан; §10.2 epoch-энкодинг не определён
+
+- **Severity:** Low (spec text)
+- **Status:** FIXED (spec-side)
+- **Issue:** impl шлёт `pskMAC(32) || finished(32)` после server flight —
+  в §2 не задокументировано; `epoch` в `kal2-rdvs/` || epoch без типа
+  сериализации. Обе дыры делают cross-impl conformance недетерминированным.
+- **Fix:** SPEC.md — описание третьего полёта + `epoch` как десятичное ASCII.
+||||||| ab374d4
 
 ---
 
@@ -702,3 +803,4 @@ this change set), **OPEN**, **DOC** (documented limitation).
   host-side cutproxy); runnable manually via `--proxy`.
 - **`soak30`** stays out of CI (30 min vs the 45-min job budget); runnable
   manually.
+

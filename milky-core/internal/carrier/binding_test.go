@@ -128,3 +128,68 @@ func TestVeilSPKIPin(t *testing.T) {
 		t.Fatal("self-signed cert accepted without pin or insecure")
 	}
 }
+
+// Bound client vs a server that runs unbound (VeilConfig.IgnoreBinding):
+// the spec wants a graceful fallback to binding=∅, not a teardown.
+func TestDialVeilBoundClientUnboundServer(t *testing.T) {
+	ts := newTestServerCfg(t, func(c *VeilConfig) { c.IgnoreBinding = true })
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	cc := ClientConfig{
+		Addr:               ts.ln.Addr().String(),
+		SNI:                "kal.test",
+		ServerPub:          ts.pub,
+		PSK:                ts.psk,
+		InsecureSkipVerify: true,
+	}
+	// Strict default: bound client must fail against the unbound server,
+	// not silently downgrade.
+	if s, _, err := DialVeil(ctx, cc); err == nil {
+		_ = s.Close()
+		t.Fatal("bound client accepted by unbound server without fallback opt-in")
+	}
+	// Opt-in fallback: retry unbound succeeds — the spec's "binding=∅" path.
+	cc.AllowUnboundFallback = true
+	sess, _, err := DialVeil(ctx, cc)
+	if err != nil {
+		t.Fatalf("unbound fallback dial: %v", err)
+	}
+	streamEchoTest(t, sess)
+	_ = sess.Close()
+}
+
+// Unbound client vs a tolerant server: already accepted via the nil binding
+// candidate; and vs RequireBinding: cleanly rejected, no teardown hang.
+func TestDialVeilUnboundClient(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	base := func(ts *testServer) ClientConfig {
+		return ClientConfig{
+			Addr:               ts.ln.Addr().String(),
+			SNI:                "kal.test",
+			ServerPub:          ts.pub,
+			PSK:                ts.psk,
+			InsecureSkipVerify: true,
+		}
+	}
+	// Tolerant server accepts the unbound flight.
+	ts := newTestServer(t)
+	sess, _, bound, err := dialVeilOnce(ctx, base(ts), true)
+	if err != nil {
+		t.Fatalf("unbound client vs tolerant server: %v", err)
+	}
+	if bound {
+		t.Fatal("session unexpectedly bound")
+	}
+	streamEchoTest(t, sess)
+	_ = sess.Close()
+
+	// RequireBinding server rejects it — a clean error, not a hang.
+	tsStrict := newTestServerCfg(t, func(c *VeilConfig) { c.RequireBinding = true })
+	cc := base(tsStrict)
+	cc.HandshakeTimeout = 5 * time.Second
+	if s, _, _, err := dialVeilOnce(ctx, cc, true); err == nil {
+		_ = s.Close()
+		t.Fatal("unbound client accepted by RequireBinding server")
+	}
+}

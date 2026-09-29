@@ -564,7 +564,10 @@ func (s *Session) readRecord(rw io.Reader) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !validMsgType(t) {
+	// Forward-compat (SPEC §12): unknown record types below 0x80 are
+	// authenticated, decrypted, and skipped; types ≥0x80 are mandatory —
+	// an unknown one tears the session down.
+	if !validMsgType(t) && t >= 0x80 {
 		return nil, ErrFraming
 	}
 	if ctLen < aeadTagSize+2 || ctLen > MaxRecordCiphertext {
@@ -576,7 +579,7 @@ func (s *Session) readRecord(rw io.Reader) (*Record, error) {
 	}
 	// Ordered profile: sequence must equal expected counter.
 	if seq != s.recvSeq {
-		return nil, Error(fmt.Sprintf("session: replay or out-of-order record seq=%d want=%d type=%d", seq, s.recvSeq, t))
+		return nil, ErrReplay
 	}
 	padded, err := s.recvAEAD.Open(nil, s.nonce(seq), ct, header)
 	if err != nil {
