@@ -88,6 +88,32 @@ this change set), **OPEN**, **DOC** (documented limitation).
 - All scenarios now gate the CI job (previously everything after `connect`
   was `|| true` best-effort).
 
+## BUG-8 — wifi_lte assumed cellular on every API — FIXED (test-stand)
+
+- The API35 emulator image ships no telephony at all (no rild, zero
+  `TRANSPORT_CELLULAR` in dumpsys): `svc data enable` is a no-op, so after
+  `svc wifi disable` there is no underlay and a "wifi→LTE" claim is false.
+  The API26 image has goldfish rild but MOBILE attach takes 10-30s and
+  raced the 90s recovery window.
+- Fix: capability check via `pm list features telephony`, then `svc data
+  enable` + up-to-45s wait for a CONNECTED cellular network BEFORE cutting
+  wifi. No telephony / no attach → logged SKIP and an honest wifi off/on
+  flap (still exercises underlay-loss reconnect) instead of a fake fail.
+- Confirmed working on 29/31/34: kal2 `core:` log shows
+  `redial failed: tcp dial: network is unreachable` during the outage then
+  recovery — the liveness-kill→redial path fires as designed.
+
+## BUG-9 — `$( ... | grep ...)` assignments killed scenarios under set -e — FIXED
+
+- `wl=$(dumpsys deviceidle | grep whitelist | grep $PKG)` in `battery_opt`
+  and the `svc`/`settings` toggles all returned non-zero in normal cases
+  (no match, radio absent) — with `set -euo pipefail` the scenario aborted
+  before its own assertions. Also the deviceidle whitelist prints the
+  header and the package on different lines, so the chained grep could
+  never match anyway.
+- Fix: toggles run `|| true` (assertions decide pass/fail), whitelist
+  check greps the package directly, dns/grep assignments guarded the same.
+
 ## OPEN / documented limitations
 
 - **API 29 uiautomator empty-tree flake** (run 36515454841): Flutter renders,
