@@ -1,0 +1,19 @@
+# Weekly canary run — install on a vantage host (e.g. the RU relay box):
+#   cp kal2-canary.{service,timer} /etc/systemd/system/
+#   mkdir -p /etc/milky && create /etc/milky/canary.env (see README.md)
+#   systemctl enable --now kal2-canary.timer
+[Unit]
+Description=KAL/2 canary — passive carrier liveness measurement
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+EnvironmentFile=/etc/milky/canary.env
+WorkingDirectory=/opt/milkyvpn
+ExecStart=/opt/milkyvpn/research/canary.sh --server ${KAL2_SERVER} --pub ${KAL2_PUB} --psk ${KAL2_PSK} --sni ${KAL2_SNI:-kal.mergescribe.dev} --out /var/lib/kal2-canary/runs
+ExecStartPost=/usr/bin/python3 /opt/milkyvpn/research/report.py /var/lib/kal2-canary/runs --days 7 --out /var/lib/kal2-canary/report.md
+StateDirectory=kal2-canary
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/kal2-canary /tmp

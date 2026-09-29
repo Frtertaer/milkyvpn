@@ -653,7 +653,12 @@ func (c *Client) reconnectLoop() {
 }
 
 // reconnectLane watches one quasar lane, keeps it warm with pings, and
-// redials into its slot when it dies.
+// redials into its slot when it dies. Contract with failover scoring (PR #7
+// scorecard, when merged): this watchdog only kills *dead* lanes — a ping
+// must actually error twice; a merely slow pong keeps the lane alive and the
+// least-loaded stream picker simply starves it. Degradation is handled by
+// score/quarantine logic, never by the kill path, so a throttled lane is
+// backed off rather than destroyed.
 func (c *Client) reconnectLane(i int) {
 	for {
 		sess := c.lanes[i].Load()

@@ -152,9 +152,16 @@ func TestQuasarLossMatrix(t *testing.T) {
 			}
 			defer sess.Close()
 
-			// Session handshake is up; a stream must still complete.
-			bulkEcho(t, sess, tc.payload)
-			if err := sess.Ping([]byte("loss"), 15*time.Second); err != nil {
+			// Session handshake is up; a stream must still complete. Open and
+			// ping timeouts scale with the leg budget: at 85% loss one ARQ
+			// round-trip already eats tens of seconds.
+			openTO := tc.budget / 2
+			bulkEchoTO(t, sess, tc.payload, openTO)
+			pingTO := tc.budget / 4
+			if pingTO < 15*time.Second {
+				pingTO = 15 * time.Second
+			}
+			if err := sess.Ping([]byte("loss"), pingTO); err != nil {
 				t.Fatalf("ping under %s loss: %v", tc.name, err)
 			}
 			t.Logf("%s loss: seen=%d passed=%d", tc.name, lossy.seen.Load(), lossy.passed.Load())
