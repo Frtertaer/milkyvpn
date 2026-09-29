@@ -242,7 +242,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
       MilkyHaptics.success();
       messenger.showSnackBar(
-        SnackBar(content: Text(snap == null ? t.noSubscription : t.importOk)),
+        SnackBar(content: Text(snap == null ? t.noSubscription : t.updated)),
       );
     } on SubscriptionFetchException catch (e) {
       if (!mounted) return;

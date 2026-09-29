@@ -77,6 +77,7 @@ class S {
   String get protectionConnecting => t('Подключаем…', 'Connecting…');
   String get notConnected => t('Не подключено', 'Not connected');
   String get connecting => t('Подключаем…', 'Connecting…');
+  String get disconnecting => t('Отключаем…', 'Disconnecting…');
   String get connected => t('Подключено', 'Connected');
   String get protectedShort => t('Защищено', 'Protected');
   String get connect => t('Подключить', 'Connect');
@@ -271,7 +272,10 @@ class S {
   String get import => t('Добавить', 'Add');
   String get importing => t('Загружаем…', 'Loading…');
   String get importOk => t('Подписка добавлена', 'Subscription added');
+  String get updated => t('Подписка обновлена', 'Subscription updated');
   String get goToConnect => t('Перейти к подключению', 'Go to connect');
+  String get showLink => t('Показать ссылку', 'Show link');
+  String get hideLink => t('Скрыть ссылку', 'Hide link');
   String get deepLinkTitle =>
       t('Добавить подписку MilkyVPN?', 'Add MilkyVPN subscription?');
   String get deepLinkBody => t(
