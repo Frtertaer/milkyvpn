@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -45,6 +46,7 @@ func main() {
 	socks := flag.String("socks", "127.0.0.1:10808", "local socks listen")
 	tunName := flag.String("tun", "", "create a wintun adapter with this name and tunnel all device traffic (Windows, needs admin)")
 	ctlAddr := flag.String("ctl", "", "control socket: log lines are mirrored here and 'stop' exits (used when spawned elevated)")
+	logPath := flag.String("log", "", "append logs to this file as well (rolls to .1 past ~1MB; parent dirs are created)")
 	fetch := flag.String("fetch", "", "fetch URL through tunnel and exit")
 	fetchMax := flag.Int64("fetchmax", 32<<20, "max bytes to read for -fetch")
 	proxyURL := flag.String("proxy", "", "base-dial proxy (http://user:pass@host:port)")
@@ -57,6 +59,19 @@ func main() {
 	lanes := flag.Int("lanes", 0, "number of parallel carrier sessions (multi-lane stream spreading)"); qlanes := flag.Int("qlanes", 1, "quasar parallel sessions; streams round-robin across lanes")
 	qwnd := flag.Int("qwnd", 0, "quasar receive window in segments; paces the server's offered rate to ~wnd*mtu/RTT (0 = 16384)")
 	flag.Parse()
+
+	var logFile *os.File
+	if *logPath != "" {
+		f, err := openLogFile(*logPath, 1<<20)
+		if err != nil {
+			log.Printf("kal2: cannot open -log %s: %v", *logPath, err)
+		} else {
+			logFile = f
+			defer logFile.Close()
+			log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+			log.Printf("kal2: logging to %s", *logPath)
+		}
+	}
 
 	serverPub, err := kal2core.DecodeKey(*pub)
 	if err != nil {
@@ -170,7 +185,11 @@ func main() {
 			log.Fatalf("ctl: %v", err)
 		}
 		defer ctl.close()
-		log.SetOutput(io.MultiWriter(os.Stderr, ctl))
+		outs := []io.Writer{os.Stderr, ctl}
+		if logFile != nil {
+			outs = append(outs, logFile)
+		}
+		log.SetOutput(io.MultiWriter(outs...))
 		ctl.echo("kal2: session up via " + *carrier)
 	}
 
@@ -297,6 +316,27 @@ func (c *ctlServer) Write(p []byte) (int, error) {
 func (c *ctlServer) echo(line string) { _, _ = c.Write([]byte(line + "\n")) }
 
 func (c *ctlServer) close() { c.ln.Close() }
+
+// openLogFile rolls path to path.1 once it exceeds maxBytes — one backlog
+// generation is kept, enough for field diagnostics without unbounded growth
+// on long soaks — then opens it for appending with a start banner.
+func openLogFile(path string, maxBytes int64) (*os.File, error) {
+	if st, err := os.Stat(path); err == nil && st.Size() > maxBytes {
+		_ = os.Remove(path + ".1")
+		_ = os.Rename(path, path+".1")
+	}
+	if dir := filepath.Dir(path); dir != "" {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Fprintf(f, "=== kal2-client started %s ===\n", time.Now().Format(time.RFC3339))
+	return f, nil
+}
 
 func openURL(cli *kal2core.Client, raw string) (io.ReadCloser, error) {
 	u, err := url.Parse(raw)
