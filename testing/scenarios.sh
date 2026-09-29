@@ -44,6 +44,14 @@ if [ -z "$PKG" ]; then
 fi
 PKG=${PKG:-vpn.milky.app}
 
+# adbd answers before the system finishes booting — a monkey launch into a
+# half-up launcher silently goes nowhere (API 29 flake). Wait for real boot.
+for _ in $(seq 1 30); do
+  [ "$("${ADB[@]}" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] && break
+  sleep 5
+done
+sleep 5
+
 PASS=0; FAIL=0
 ok()   { PASS=$((PASS+1)); echo "PASS  $*"; }
 bad()  { FAIL=$((FAIL+1)); echo "FAIL  $*"; }
