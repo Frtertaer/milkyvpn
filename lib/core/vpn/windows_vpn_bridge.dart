@@ -14,9 +14,13 @@ import 'vpn_bridge.dart';
 /// elevated (-tun -ctl): the UAC prompt appears once per connect, the client
 /// creates the wintun adapter and routes all device traffic into the tunnel.
 class WindowsProcessVpnBridge implements VpnBridge {
-  WindowsProcessVpnBridge({String? clientPath, String? socksAddr})
-    : _clientPath = clientPath ?? _defaultClientPath(),
-      _socksAddr = socksAddr ?? defaultSocksAddr;
+  WindowsProcessVpnBridge({
+    String? clientPath,
+    String? socksAddr,
+    String? logPath,
+  }) : _clientPath = clientPath ?? _defaultClientPath(),
+       _socksAddr = socksAddr ?? defaultSocksAddr,
+       _logPath = logPath ?? _defaultLogPath();
 
   static const String defaultSocksAddr = '127.0.0.1:11808';
   static const String _ctlAddr = '127.0.0.1:11909';
@@ -24,6 +28,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
 
   final String _clientPath;
   final String _socksAddr;
+  final String _logPath;
 
   final _states = StreamController<VpnSnapshot>.broadcast();
   final _links = StreamController<String>.broadcast();
@@ -35,6 +40,14 @@ class WindowsProcessVpnBridge implements VpnBridge {
   static String _defaultClientPath() {
     final exeDir = File(Platform.resolvedExecutable).parent.path;
     return '$exeDir\\kal2\\kal2-client.exe';
+  }
+
+  /// kal2-client -log target under the per-user app data dir — the core
+  /// persists its own log there (stderr is invisible to us, and the elevated
+  /// -tun helper has no parent to read it anyway).
+  static String _defaultLogPath() {
+    final appData = Platform.environment['APPDATA'] ?? '';
+    return '$appData\\homes.milky\\milkyvpn\\logs\\kal2-client.log';
   }
 
   void _set(VpnSnapshot s) {
@@ -86,10 +99,16 @@ class WindowsProcessVpnBridge implements VpnBridge {
       p.path ?? '',
       '-socks',
       _socksAddr,
+      '-log',
+      _logPath,
       if (p.ech != null && p.ech!.isNotEmpty) ...['-ech', p.ech!],
       if (p.cover == '0' || p.cover == 'false') '-cover=false',
     ];
   }
+
+  /// Visible seam for unit tests — the spawned command line is the bridge's
+  /// real contract with kal2-client (flags dropped here are silent bugs).
+  List<String> argsForTesting(VpnProfile p) => _argsFor(p);
 
   @override
   Future<void> connect(VpnProfile profile) async {
