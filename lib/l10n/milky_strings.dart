@@ -426,6 +426,12 @@ class S {
             'Windows asked for admin rights (UAC) and the launch was declined. Allow it, or turn off "Full tunnel" in settings — the normal mode needs no admin.',
           );
         }
+        if (Platform.isIOS || Platform.isMacOS) {
+          return t(
+            'Не получилось создать VPN-туннель. Разрешите добавление конфигурации VPN и попробуйте снова.',
+            'Could not create the VPN tunnel. Allow adding the VPN configuration and try again.',
+          );
+        }
         return t(
           'Android не разрешил создать VPN-туннель. Разрешите подключение и попробуйте снова.',
           'Android did not allow the VPN tunnel. Grant the permission and try again.',
