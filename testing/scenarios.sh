@@ -138,8 +138,14 @@ onboarding_and_import() {
   [ -n "$LINK" ] || { log "no --link/KAL2_TEST_LINK — expecting profile already present"; return; }
   local esc=${LINK//&/\\&}
   ui_tap_class android.widget.EditText; sleep 1   # focus the url field
-  "${ADB[@]}" shell input text "$esc" 2>/dev/null || \
-    log "input text failed — paste link in UI manually next run"
+  if ! "${ADB[@]}" shell input text "$esc" 2>/dev/null; then
+    # chunked fallback — some API levels silently drop very long input text
+    local i=0 n=${#esc}
+    while [ $i -lt $n ]; do
+      "${ADB[@]}" shell input text "${esc:i:40}" || break
+      i=$((i+40)); sleep 0.3
+    done
+  fi
   "${ADB[@]}" shell input keyevent 111 2>/dev/null || true  # close keyboard
   sleep 1
   ui_tap_desc_wait "Добавить\|^Add$" && sleep 4         # import
