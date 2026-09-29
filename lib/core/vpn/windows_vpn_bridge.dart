@@ -36,6 +36,10 @@ class WindowsProcessVpnBridge implements VpnBridge {
   Socket? _ctl;
   VpnSnapshot _snap = VpnSnapshot.initial;
   bool _proxySet = false;
+  // Proxy state captured before the first apply, so disconnect restores the
+  // user's previous configuration instead of flattening it to "off".
+  int? _prevProxyEnable;
+  String? _prevProxyServer;
 
   static String _defaultClientPath() {
     final exeDir = File(Platform.resolvedExecutable).parent.path;
@@ -78,30 +82,29 @@ class WindowsProcessVpnBridge implements VpnBridge {
 
   List<String> _argsFor(VpnProfile p) {
     final network = p.network.toLowerCase();
+    // 'relay' is its own carrier; an explicit carrier (from the link or the
+    // transport override) is honored; anything else hedges veil+drift.
+    final carrier = network == 'relay'
+        ? 'relay'
+        : const {'veil', 'drift', 'cdn', 'mosaic', 'quasar'}.contains(network)
+            ? network
+            : 'auto';
+    // A flag with a '' value is fatal on the -tun path: `Start-Process
+    // -ArgumentList` rejects empty elements, and Go's flag pkg would read the
+    // NEXT token as the value. Every client flag defaults to "" anyway —
+    // omit the pair.
+    List<String> kv(String flag, String value) =>
+        value.isEmpty ? const [] : [flag, value];
     return <String>[
-      '-addr',
-      '${p.address}:${p.port}',
-      '-sni',
-      p.sni ?? '',
-      '-pub',
-      p.publicKey ?? '',
-      '-psk',
-      p.secret,
-      '-carrier',
-      // 'relay' is its own carrier; an explicit carrier (from the link or the
-      // transport override) is honored; anything else hedges veil+drift.
-      network == 'relay'
-          ? 'relay'
-          : const {'veil', 'drift', 'cdn', 'mosaic', 'quasar'}.contains(network)
-          ? network
-          : 'auto',
-      '-drift',
-      p.path ?? '',
-      '-socks',
-      _socksAddr,
-      '-log',
-      _logPath,
-      if (p.ech != null && p.ech!.isNotEmpty) ...['-ech', p.ech!],
+      ...kv('-addr', '${p.address}:${p.port}'),
+      ...kv('-sni', p.sni ?? ''),
+      ...kv('-pub', p.publicKey ?? ''),
+      ...kv('-psk', p.secret),
+      ...kv('-carrier', carrier),
+      ...kv('-drift', p.path ?? ''),
+      ...kv('-socks', _socksAddr),
+      ...kv('-log', _logPath),
+      ...kv('-ech', p.ech ?? ''),
       if (p.cover == '0' || p.cover == 'false') '-cover=false',
     ];
   }
@@ -195,6 +198,17 @@ class WindowsProcessVpnBridge implements VpnBridge {
     subErr.cancel();
 
     await _applyProxy();
+    // The client can die mid-applyProxy (e.g. SOCKS bind failure races the
+    // 'session up' line): its exit handler's _restoreProxy may already have
+    // run as a no-op before _proxySet flipped — leaving our proxy pointing at
+    // a dead listener. Re-check and undo synchronously.
+    if (_proc == null) {
+      await _restoreProxy();
+      _set(
+        const VpnSnapshot(state: VpnState.error, errorCode: 'core_exit'),
+      );
+      throw VpnBridgeException('core_exit');
+    }
     _set(
       VpnSnapshot(
         state: VpnState.connected,
@@ -406,6 +420,8 @@ class WindowsProcessVpnBridge implements VpnBridge {
       r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings';
 
   Future<void> _applyProxy() async {
+    _prevProxyEnable ??= await _queryRegDword('ProxyEnable');
+    _prevProxyServer ??= await _queryRegValue('ProxyServer');
     await Process.run('reg', [
       'add',
       _proxyKey,
@@ -432,20 +448,82 @@ class WindowsProcessVpnBridge implements VpnBridge {
     await _refreshProxy();
   }
 
+  /// reg arg lists that put the captured proxy state back: re-add the prior
+  /// ProxyServer (or delete ours when there was none), then restore
+  /// ProxyEnable. PAC/AutoConfigURL is never touched. A snapshot equal to
+  /// [ourServer] is our own value leaked by a crashed run — restoring it
+  /// would perpetuate the leak, so it counts as "no prior proxy".
+  static List<List<String>> restoreProxyPlan({
+    int? prevProxyEnable,
+    String? prevProxyServer,
+    String? ourServer,
+    String key = _proxyKey,
+  }) {
+    final leaked = prevProxyServer != null && prevProxyServer == ourServer;
+    final ops = <List<String>>[
+      if (prevProxyServer == null || leaked)
+        ['delete', key, '/v', 'ProxyServer', '/f']
+      else
+        ['add', key, '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', prevProxyServer, '/f'],
+      [
+        'add',
+        key,
+        '/v',
+        'ProxyEnable',
+        '/t',
+        'REG_DWORD',
+        '/d',
+        '${leaked ? 0 : (prevProxyEnable ?? 0)}',
+        '/f',
+      ],
+    ];
+    return ops;
+  }
+
+  /// Parses one `reg query` value line (`    Name    TYPE    VALUE`) into the
+  /// raw value string; null when the name is absent from the output.
+  static String? parseRegQueryValue(String output, String name) {
+    for (final line in output.split('\n')) {
+      final parts = line.trim().split(RegExp(r'\s+'));
+      if (parts.length >= 3 && parts[0] == name) {
+        return parts.sublist(2).join(' ');
+      }
+    }
+    return null;
+  }
+
+  Future<String?> _queryRegValue(String name) async {
+    try {
+      final r = await Process.run('reg', ['query', _proxyKey, '/v', name]);
+      if (r.exitCode != 0) return null;
+      return parseRegQueryValue('${r.stdout}', name);
+    } on Object {
+      return null;
+    }
+  }
+
+  Future<int?> _queryRegDword(String name) async {
+    final raw = await _queryRegValue(name);
+    if (raw == null) return null;
+    return int.tryParse(raw.startsWith('0x') ? raw.substring(2) : raw, radix: 16) ??
+        int.tryParse(raw);
+  }
+
   Future<void> _restoreProxy() async {
     if (!_proxySet) return;
     _proxySet = false;
-    await Process.run('reg', [
-      'add',
-      _proxyKey,
-      '/v',
-      'ProxyEnable',
-      '/t',
-      'REG_DWORD',
-      '/d',
-      '0',
-      '/f',
-    ]);
+    final ops = restoreProxyPlan(
+      prevProxyEnable: _prevProxyEnable,
+      prevProxyServer: _prevProxyServer,
+      ourServer: 'socks=$_socksAddr',
+    );
+    _prevProxyEnable = null;
+    _prevProxyServer = null;
+    for (final args in ops) {
+      // A missing ProxyServer makes `reg delete` fail — that is the expected
+      // state when the user never had one, so failures here are ignored.
+      await Process.run('reg', args);
+    }
     await _refreshProxy();
   }
 

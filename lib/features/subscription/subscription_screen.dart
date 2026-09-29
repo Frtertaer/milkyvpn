@@ -151,7 +151,13 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
       final snap = await repo.refresh();
       if (!mounted) return;
       if (snap == null) {
-        messenger.showSnackBar(SnackBar(content: Text(t.noSubscription)));
+        messenger.showSnackBar(
+          SnackBar(
+            content: Text(
+              repo.hasSubscription ? t.notRefreshable : t.noSubscription,
+            ),
+          ),
+        );
       } else {
         MilkyHaptics.success();
         messenger.showSnackBar(SnackBar(content: Text(t.importOk)));
