@@ -208,7 +208,7 @@
 - Repro: fresh install → Import kal2:// → Connect → prepare() падает до
   prompt'а "Add VPN Configuration"
 - Found by: iOS sim integration run (iPhone 17, iOS 26.5)
-- Issue: —  PR: milky-app  Regression test:
+- Issue: —  PR: #30  Regression test:
   ios/RunnerTests::testPlaceholderProtocolIsSaveable
 - Fix: prepare() сохраняет placeholderProtocol() — полный
   NETunnelProviderProtocol (providerBundleIdentifier +
@@ -224,7 +224,7 @@
 - Repro: подключиться профилем с ech=…&cover=0&carrier=mosaic → в JSON,
   уходящий в Kal2mobileStart, нет ни ech, ни cover, carrier=auto
 - Found by: iOS sim run (code review против android/Kal2Config.toJson)
-- Issue: —  PR: milky-app  Regression test:
+- Issue: —  PR: #30  Regression test:
   ios/RunnerTests::testKal2ConfigJSONPassesEchCoverAndCarriers
 - Fix: kal2ConfigJSON пишет ech + cover(=false только при "0"/"false") и
   принимает veil/drift/cdn/mosaic/quasar — паритет с Android
@@ -235,7 +235,7 @@
 - Status: fixed-in-PR
 - Repro: iOS → Diagnostics → platform label
 - Found by: iOS sim run
-- Issue: —  PR: milky-app  Regression test:
+- Issue: —  PR: #30  Regression test:
   test/milky_device_test.dart::platformLabel maps every supported platform
 - Fix: platformLabel — switch по platform (ios/macos/android/windows)
   вместо бинарного android|Windows
@@ -247,7 +247,7 @@
 - Repro: отклонить/провалить VPN-consent на iOS → баннер «Android не
   разрешил создать VPN-туннель»
 - Found by: iOS sim run
-- Issue: —  PR: milky-app  Regression test: — (строка, не логика)
+- Issue: —  PR: #30  Regression test: — (строка, не логика)
 - Fix: permissionDenied-копия ветвится по Platform.isIOS/isMacOS —
   «Разрешите добавление конфигурации VPN»
 
