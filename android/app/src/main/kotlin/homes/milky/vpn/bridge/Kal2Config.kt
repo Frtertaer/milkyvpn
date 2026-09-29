@@ -20,6 +20,7 @@ object Kal2Config {
             "veil" -> "veil"
             "cdn" -> "cdn"
             "mosaic" -> "mosaic"
+            "quasar" -> "quasar"
             else -> "auto"
         }
         return JSONObject()

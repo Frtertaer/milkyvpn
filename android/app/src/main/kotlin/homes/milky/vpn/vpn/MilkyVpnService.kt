@@ -562,7 +562,7 @@ internal fun configShape(p: XrayConfigBuilder.ProfileSpec, config: JSONObject): 
     fun present(value: String?) = !value.isNullOrBlank()
     fun enum(value: String?, allowed: Set<String>) = if (value in allowed) value else "other_or_absent"
     return listOf(
-        "protocol=${enum(p.protocol, setOf("vless", "hysteria2", "kal2"))}",
+        "protocol=${enum(p.protocol, setOf("vless", "hysteria2", "kal2", "pandora"))}",
         "network=${enum(p.network, setOf("tcp", "raw", "ws", "xhttp", "veil", "drift", "relay", "cdn", "mosaic", "auto"))}",
         "security=${enum(p.security, setOf("reality", "tls", "none"))}",
         "addressPresent=${p.address.isNotBlank()}", "portValid=${p.port in 1..65535}",

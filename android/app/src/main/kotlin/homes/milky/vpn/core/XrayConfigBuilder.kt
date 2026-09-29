@@ -26,8 +26,8 @@ object XrayConfigBuilder {
     const val TUN_DNS_2 = "8.8.8.8"
 
     /** Transports that are genuinely executable by this engine. */
-    val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2", "vmess", "trojan", "ss", "shadowsocks", "kal2")
-    val SUPPORTED_KAL2_CARRIERS = setOf("veil", "drift", "relay", "cdn", "mosaic", "auto")
+    val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2", "vmess", "trojan", "ss", "shadowsocks", "kal2", "pandora")
+    val SUPPORTED_KAL2_CARRIERS = setOf("veil", "drift", "relay", "cdn", "mosaic", "quasar", "auto")
     val SUPPORTED_VLESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
     val SUPPORTED_VLESS_SECURITY = setOf("reality", "tls", "none")
     val SUPPORTED_VMESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
@@ -173,7 +173,7 @@ object XrayConfigBuilder {
         if (p.port !in 1..65535) throw UnsupportedProfileException("port")
         if (p.secret.isBlank()) throw UnsupportedProfileException("credential")
         when (p.protocol) {
-            "kal2" -> {
+            "kal2", "pandora" -> {
                 if (p.publicKey.isNullOrBlank()) throw UnsupportedProfileException("kal2.pub")
                 if (p.network.lowercase() !in SUPPORTED_KAL2_CARRIERS)
                     throw UnsupportedProfileException("kal2.carrier")
@@ -224,7 +224,7 @@ object XrayConfigBuilder {
         kal2SocksPort: Int? = null,
     ): JSONObject {
         validate(p)
-        if (p.protocol == "kal2" && kal2SocksPort == null)
+        if ((p.protocol == "kal2" || p.protocol == "pandora") && kal2SocksPort == null)
             throw UnsupportedProfileException("kal2.port")
         val root = JSONObject()
         root.put("log", JSONObject().put("loglevel", "warning").put("access", "none"))
