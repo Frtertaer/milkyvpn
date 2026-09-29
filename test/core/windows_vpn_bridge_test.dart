@@ -2,7 +2,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:milkyvpn/core/subscription/vpn_profile.dart';
 import 'package:milkyvpn/core/vpn/windows_vpn_bridge.dart';
 
-VpnProfile kal2Profile({String? ech, String? cover}) => VpnProfile(
+VpnProfile kal2Profile({String? ech, String? cover, String? path}) =>
+    VpnProfile(
       id: 'p1',
       protocol: 'kal2',
       address: '23.133.88.167',
@@ -13,6 +14,7 @@ VpnProfile kal2Profile({String? ech, String? cover}) => VpnProfile(
       publicKey: 'PUBK',
       ech: ech,
       cover: cover,
+      path: path,
     );
 
 void main() {
@@ -51,6 +53,28 @@ void main() {
     final i = args.indexOf('-log');
     expect(i, greaterThanOrEqualTo(0));
     expect(args[i + 1], endsWith(r'\homes.milky\milkyvpn\logs\kal2-client.log'));
+  });
+
+  // BUG-2026-09-29-12: a flag with a '' value crashed the -tun elevated
+  // spawn — PowerShell `Start-Process -ArgumentList` rejects empty elements
+  // (ParameterBindingValidation) and the bridge mapped it to tun_uac_denied
+  // for every profile without `path`. Optional flags must be omitted instead
+  // of emitted empty; no element of the arg list may ever be ''.
+  test('path-less profile drops -drift instead of passing an empty value', () {
+    final b = WindowsProcessVpnBridge(logPath: r'C:\Logs\kal2-client.log');
+    final args = b.argsForTesting(kal2Profile());
+
+    expect(args.contains(''), isFalse, reason: 'empty arg: $args');
+    expect(args.contains('-drift'), isFalse, reason: '-drift kept: $args');
+  });
+
+  test('drift path survives when set', () {
+    final b = WindowsProcessVpnBridge(logPath: r'C:\Logs\kal2-client.log');
+    final args = b.argsForTesting(kal2Profile(path: '/drift/x'));
+
+    final i = args.indexOf('-drift');
+    expect(i, greaterThanOrEqualTo(0));
+    expect(args[i + 1], '/drift/x');
   });
 
   // BUG-2026-09-29-06: disconnect used to flatten the system proxy to

@@ -82,30 +82,29 @@ class WindowsProcessVpnBridge implements VpnBridge {
 
   List<String> _argsFor(VpnProfile p) {
     final network = p.network.toLowerCase();
+    // 'relay' is its own carrier; an explicit carrier (from the link or the
+    // transport override) is honored; anything else hedges veil+drift.
+    final carrier = network == 'relay'
+        ? 'relay'
+        : const {'veil', 'drift', 'cdn', 'mosaic', 'quasar'}.contains(network)
+            ? network
+            : 'auto';
+    // A flag with a '' value is fatal on the -tun path: `Start-Process
+    // -ArgumentList` rejects empty elements, and Go's flag pkg would read the
+    // NEXT token as the value. Every client flag defaults to "" anyway —
+    // omit the pair.
+    List<String> kv(String flag, String value) =>
+        value.isEmpty ? const [] : [flag, value];
     return <String>[
-      '-addr',
-      '${p.address}:${p.port}',
-      '-sni',
-      p.sni ?? '',
-      '-pub',
-      p.publicKey ?? '',
-      '-psk',
-      p.secret,
-      '-carrier',
-      // 'relay' is its own carrier; an explicit carrier (from the link or the
-      // transport override) is honored; anything else hedges veil+drift.
-      network == 'relay'
-          ? 'relay'
-          : const {'veil', 'drift', 'cdn', 'mosaic', 'quasar'}.contains(network)
-          ? network
-          : 'auto',
-      '-drift',
-      p.path ?? '',
-      '-socks',
-      _socksAddr,
-      '-log',
-      _logPath,
-      if (p.ech != null && p.ech!.isNotEmpty) ...['-ech', p.ech!],
+      ...kv('-addr', '${p.address}:${p.port}'),
+      ...kv('-sni', p.sni ?? ''),
+      ...kv('-pub', p.publicKey ?? ''),
+      ...kv('-psk', p.secret),
+      ...kv('-carrier', carrier),
+      ...kv('-drift', p.path ?? ''),
+      ...kv('-socks', _socksAddr),
+      ...kv('-log', _logPath),
+      ...kv('-ech', p.ech ?? ''),
       if (p.cover == '0' || p.cover == 'false') '-cover=false',
     ];
   }

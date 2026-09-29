@@ -103,6 +103,22 @@
 - Issue: —  PR: —  Regression test: `tool/check_windows_bridge.py`
   (ordering-gate: applyProxy → alive-check → connected)
 
+### BUG-2026-09-29-12 — Windows: GUI -tun падает с tun_uac_denied у профилей без path
+- Severity: critical (GUI -tun мёртв для любого профиля без drift-path)
+- Platform: windows
+- Status: fixed-in-PR
+- Repro: профиль без `path` → `-drift ''` в arg list → tun path через
+  `Start-Process -Verb RunAs -ArgumentList` → PowerShell
+  ParameterBindingValidation («argument is null or empty») → exit 1 → мост
+  маппит в `tun_uac_denied`. Не UAC, не EnableLUA — ломается на любом боксе.
+- Fix: `_argsFor` опускает пары flag+value с пустым value (все флаги
+  клиента дефолтятся в ""; Go flag pkg к тому же съел бы следующий токен
+  как значение пустого флага)
+- Found by: windows verify session (fix-билд, уточнение «EnableLUA» диагноза)
+- Issue: —  PR: —  Regression test:
+  `test/core/windows_vpn_bridge_test.dart` — path-less → нет ''/-drift;
+  drift path → сохраняется
+
 ## Закрытые
 
 (перенос сюда после merge фикса с регрессионным тестом)
