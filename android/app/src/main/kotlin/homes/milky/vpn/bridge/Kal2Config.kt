@@ -1,5 +1,6 @@
 package homes.milky.vpn.bridge
 
+import android.os.Build
 import homes.milky.vpn.core.XrayConfigBuilder.ProfileSpec
 import org.json.JSONObject
 
@@ -33,5 +34,9 @@ object Kal2Config {
             .put("ech", p.ech ?: "")
             // cover defaults on in the native core; "0"/"false" disables it.
             .put("cover", !p.cover.equals("0") && !p.cover.equals("false", true))
+            // API < 25 ships a stale root store (no ISRG Root X1) — veil's
+            // certificate chain can never verify there; skip CA verification
+            // on those devices only (session is still KAL/2-authenticated).
+            .put("insecure", Build.VERSION.SDK_INT < 25)
     }
 }
