@@ -201,7 +201,7 @@ class SubscriptionExporter {
     q.put('ech', p.ech);
     q.put('cover', p.cover);
     q.put('pin', p.pin);
-    return _uri('kal2', p.secret, p.address, p.port, q, p.remark);
+    return _uri('pandora', p.secret, p.address, p.port, q, p.remark);
   }
 
   // ------------------------------------------------------------ helpers

@@ -104,7 +104,7 @@ class VpnProfile {
     if (proto == 'vmess') return ProfileKind.vmess;
     if (proto == 'trojan') return ProfileKind.trojan;
     if (proto == 'ss' || proto == 'shadowsocks') return ProfileKind.shadowsocks;
-    if (proto == 'kal2') return ProfileKind.kal2;
+    if (proto == 'kal2' || proto == 'pandora') return ProfileKind.kal2;
     if (proto == 'vless') {
       final n = normalizeNetwork(network);
       if (n == 'tcp' && sec == 'reality') return ProfileKind.vlessRealityTcp;

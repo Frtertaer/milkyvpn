@@ -413,6 +413,21 @@ proxies:
       );
     });
 
+    test('pandora:// is the primary scheme; kal2:// stays a live alias', () {
+      const link =
+          'pandora://0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef@203.0.113.10:443'
+          '?sni=kal.example.com&pub=fedcba9876543210fedcba9876543210fedcba9876543210fedcba9876543210'
+          '&carrier=quasar#P';
+      final p = parser.parseLine(link)!;
+      expect(p.protocol, 'kal2');
+      expect(p.kind, ProfileKind.kal2);
+      expect(p.network, 'quasar');
+      // Export emits the pandora:// scheme, which parses back identically.
+      final exported = const SubscriptionExporter().toShareLink(p)!;
+      expect(exported.startsWith('pandora://'), isTrue, reason: exported);
+      expect(parser.parseLine(exported)!.id, p.id);
+    });
+
     test('kal2 mosaic carrier and SPKI pin survive parse and export', () {
       const pin =
           'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';

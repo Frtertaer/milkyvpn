@@ -157,7 +157,7 @@ class _ImportScreenState extends State<ImportScreen> {
                 keyboardType: TextInputType.url,
                 onChanged: (_) => setState(() => _error = null),
                 decoration: InputDecoration(
-                  hintText: 'https://example.com/s/…  или  kal2://…',
+                  hintText: 'https://example.com/s/…  или  pandora://…',
                   errorText: _error,
                   errorMaxLines: 4,
                   suffixIcon: _ctrl.text.isEmpty

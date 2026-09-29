@@ -55,7 +55,8 @@ class SubscriptionParseResult {
 ///  * Never throws on malformed input; bad entries are counted and skipped.
 ///  * Accepts Base64 (standard/url-safe, padded/unpadded, with whitespace) or plain text.
 ///  * Fully parses `vless://`, `vmess://`, `trojan://`, `ss://`, `ssr://`,
-///    `hysteria2://`, `hy2://`, `tuic://`, `wireguard://` and `kal2://`.
+///    `hysteria2://`, `hy2://`, `tuic://`, `wireguard://`, `pandora://`
+///    and the legacy `kal2://` alias.
 ///  * Accepts container payloads too: sing-box/v2ray JSON (`{outbounds: [...]}`
 ///    or a bare list/object) and YAML (`proxies:` clash lists or `outbounds:`).
 ///  * Recognized unsupported schemes (socks, http(s)) remain countable but are
@@ -202,6 +203,7 @@ class SubscriptionParser {
         case 'ss':
           return _parseShadowsocks(line);
         case 'kal2':
+        case 'pandora':
           return _parseKal2(line);
         case 'ssr':
           return _parseSsr(line);
@@ -678,7 +680,8 @@ class SubscriptionParser {
     );
   }
 
-  /// `kal2://psk@host:port?sni=domain&pub=hex&carrier=veil|drift|cdn|mosaic&path=/p&pin=b64#remark`
+  /// `pandora://psk@host:port?sni=domain&pub=hex&carrier=veil|drift|cdn|mosaic|quasar&path=/p&pin=b64#remark`
+  /// (`kal2://` is the legacy alias — same parser, same profile)
   VpnProfile? _parseKal2(String line) {
     final parts = _split(line);
     if (parts == null) return null;
@@ -688,8 +691,8 @@ class SubscriptionParser {
     final query = parts.params;
     final carrier = (query['carrier'] ?? 'veil').trim().toLowerCase();
     if (carrier != 'veil' && carrier != 'drift' &&
-        carrier != 'cdn' && carrier != 'mosaic' && carrier != 'auto' &&
-        carrier != 'relay') {
+        carrier != 'cdn' && carrier != 'mosaic' && carrier != 'quasar' &&
+        carrier != 'auto' && carrier != 'relay') {
       return null;
     }
     final remark = parts.remark.isEmpty
@@ -1474,12 +1477,13 @@ class SubscriptionParser {
           ),
         );
       case 'kal2':
+      case 'pandora':
         final psk = s('psk') ?? s('password');
         if (psk == null) return null;
         final carrier = (s('carrier') ?? 'veil').trim().toLowerCase();
         if (carrier != 'veil' && carrier != 'drift' &&
-        carrier != 'cdn' && carrier != 'mosaic' && carrier != 'auto' &&
-        carrier != 'relay') {
+        carrier != 'cdn' && carrier != 'mosaic' && carrier != 'quasar' &&
+        carrier != 'auto' && carrier != 'relay') {
           return null;
         }
         return _identified(
