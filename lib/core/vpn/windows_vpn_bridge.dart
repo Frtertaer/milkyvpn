@@ -36,6 +36,10 @@ class WindowsProcessVpnBridge implements VpnBridge {
   Socket? _ctl;
   VpnSnapshot _snap = VpnSnapshot.initial;
   bool _proxySet = false;
+  // Proxy state captured before the first apply, so disconnect restores the
+  // user's previous configuration instead of flattening it to "off".
+  int? _prevProxyEnable;
+  String? _prevProxyServer;
 
   static String _defaultClientPath() {
     final exeDir = File(Platform.resolvedExecutable).parent.path;
@@ -403,6 +407,8 @@ class WindowsProcessVpnBridge implements VpnBridge {
       r'HKCU\Software\Microsoft\Windows\CurrentVersion\Internet Settings';
 
   Future<void> _applyProxy() async {
+    _prevProxyEnable ??= await _queryRegDword('ProxyEnable');
+    _prevProxyServer ??= await _queryRegValue('ProxyServer');
     await Process.run('reg', [
       'add',
       _proxyKey,
@@ -429,20 +435,77 @@ class WindowsProcessVpnBridge implements VpnBridge {
     await _refreshProxy();
   }
 
+  /// reg arg lists that put the captured proxy state back: re-add the prior
+  /// ProxyServer (or delete ours when there was none), then restore
+  /// ProxyEnable. PAC/AutoConfigURL is never touched.
+  static List<List<String>> restoreProxyPlan({
+    int? prevProxyEnable,
+    String? prevProxyServer,
+    String key = _proxyKey,
+  }) {
+    final ops = <List<String>>[
+      if (prevProxyServer == null)
+        ['delete', key, '/v', 'ProxyServer', '/f']
+      else
+        ['add', key, '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', prevProxyServer, '/f'],
+      [
+        'add',
+        key,
+        '/v',
+        'ProxyEnable',
+        '/t',
+        'REG_DWORD',
+        '/d',
+        '${prevProxyEnable ?? 0}',
+        '/f',
+      ],
+    ];
+    return ops;
+  }
+
+  /// Parses one `reg query` value line (`    Name    TYPE    VALUE`) into the
+  /// raw value string; null when the name is absent from the output.
+  static String? parseRegQueryValue(String output, String name) {
+    for (final line in output.split('\n')) {
+      final parts = line.trim().split(RegExp(r'\s+'));
+      if (parts.length >= 3 && parts[0] == name) {
+        return parts.sublist(2).join(' ');
+      }
+    }
+    return null;
+  }
+
+  Future<String?> _queryRegValue(String name) async {
+    try {
+      final r = await Process.run('reg', ['query', _proxyKey, '/v', name]);
+      if (r.exitCode != 0) return null;
+      return parseRegQueryValue('${r.stdout}', name);
+    } on Object {
+      return null;
+    }
+  }
+
+  Future<int?> _queryRegDword(String name) async {
+    final raw = await _queryRegValue(name);
+    if (raw == null) return null;
+    return int.tryParse(raw.startsWith('0x') ? raw.substring(2) : raw, radix: 16) ??
+        int.tryParse(raw);
+  }
+
   Future<void> _restoreProxy() async {
     if (!_proxySet) return;
     _proxySet = false;
-    await Process.run('reg', [
-      'add',
-      _proxyKey,
-      '/v',
-      'ProxyEnable',
-      '/t',
-      'REG_DWORD',
-      '/d',
-      '0',
-      '/f',
-    ]);
+    final ops = restoreProxyPlan(
+      prevProxyEnable: _prevProxyEnable,
+      prevProxyServer: _prevProxyServer,
+    );
+    _prevProxyEnable = null;
+    _prevProxyServer = null;
+    for (final args in ops) {
+      // A missing ProxyServer makes `reg delete` fail — that is the expected
+      // state when the user never had one, so failures here are ignored.
+      await Process.run('reg', args);
+    }
     await _refreshProxy();
   }
 

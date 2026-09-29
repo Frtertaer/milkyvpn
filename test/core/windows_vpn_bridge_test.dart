@@ -56,4 +56,69 @@ void main() {
     expect(i, greaterThanOrEqualTo(0));
     expect(args[i + 1], endsWith(r'\homes.milky\milkyvpn\logs\kal2-client.log'));
   });
+
+  // BUG-2026-09-29-06: disconnect used to flatten the system proxy to
+  // ProxyEnable=0 and leave our `socks=` ProxyServer behind — a user's own
+  // proxy config was lost. The restore plan must put back what connect
+  // captured (or delete our value when there was none).
+  group('proxy restore plan (BUG-06)', () {
+    test('clean box: deletes our ProxyServer and disables the proxy', () {
+      final ops = WindowsProcessVpnBridge.restoreProxyPlan();
+      expect(
+        ops,
+        orderedEquals([
+          containsAllInOrder(['delete', '/v', 'ProxyServer', '/f']),
+          containsAllInOrder(['add', 'ProxyEnable', '/d', '0', '/f']),
+        ]),
+      );
+    });
+
+    test('prior manual proxy is restored verbatim', () {
+      final ops = WindowsProcessVpnBridge.restoreProxyPlan(
+        prevProxyEnable: 1,
+        prevProxyServer: 'proxy.corp.local:8080',
+      );
+      expect(ops, hasLength(2));
+      expect(ops[0], containsAllInOrder(['add', 'ProxyServer', 'proxy.corp.local:8080']));
+      expect(ops[1], containsAllInOrder(['add', 'ProxyEnable', '/d', '1']));
+    });
+
+    test('disabled-but-set ProxyServer is restored with enable=0', () {
+      final ops = WindowsProcessVpnBridge.restoreProxyPlan(
+        prevProxyEnable: 0,
+        prevProxyServer: 'proxy.corp.local:8080',
+      );
+      expect(ops[0], containsAllInOrder(['add', 'ProxyServer', 'proxy.corp.local:8080']));
+      expect(ops[1], containsAllInOrder(['add', 'ProxyEnable', '/d', '0']));
+    });
+  });
+
+  group('reg query output parsing', () {
+    const sample = '\r\n'
+        'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\r\n'
+        '    ProxyEnable    REG_DWORD    0x1\r\n'
+        '    ProxyServer    REG_SZ    proxy.corp.local:8080\r\n\r\n';
+
+    test('dword value parses as hex', () {
+      expect(
+        WindowsProcessVpnBridge.parseRegQueryValue(sample, 'ProxyEnable'),
+        '0x1',
+      );
+    });
+
+    test('sz value parses verbatim', () {
+      expect(
+        WindowsProcessVpnBridge.parseRegQueryValue(sample, 'ProxyServer'),
+        'proxy.corp.local:8080',
+      );
+    });
+
+    test('missing value returns null', () {
+      expect(
+        WindowsProcessVpnBridge.parseRegQueryValue(sample, 'AutoConfigURL'),
+        isNull,
+      );
+      expect(WindowsProcessVpnBridge.parseRegQueryValue('', 'ProxyEnable'), isNull);
+    });
+  });
 }
