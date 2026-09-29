@@ -168,9 +168,15 @@ func (p *cutProxy) handle(c net.Conn, upstream string) {
 
 // bulkEcho pushes size random bytes through an echo stream and checks them.
 func bulkEcho(t *testing.T, sess *kal2.Session, size int) {
+	bulkEchoTO(t, sess, size, 20*time.Second)
+}
+
+// bulkEchoTO is bulkEcho with a caller-scaled open timeout (lossy legs need
+// far more than 20s for OPEN_ACK to survive the drop gauntlet).
+func bulkEchoTO(t *testing.T, sess *kal2.Session, size int, openTO time.Duration) {
 	t.Helper()
 	host, port := startEcho(t)
-	st, err := sess.Open(host, port, 20*time.Second)
+	st, err := sess.Open(host, port, openTO)
 	if err != nil {
 		t.Fatalf("open stream: %v", err)
 	}
