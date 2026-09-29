@@ -23,6 +23,10 @@ const Version byte = 2
 // remains a cross-protocol disambiguator, not a claim of undetectability.
 var Magic = []byte("KLDO-in-")
 
+// ResumeMagic prefixes the resumption flight (v2.1): sessionID || eph ||
+// ticket || resumePreauth || checkpoint instead of the ordinary flight.
+var ResumeMagic = []byte("KLDO-rs-")
+
 // Maximum plaintext carried in one record.
 const MaxPayload = 1 << 16 // 64 KiB
 
@@ -71,15 +75,16 @@ const (
 	MsgClose     byte = 0x03 // CLOSE: half-close or close with generic reason
 	MsgPing      byte = 0x04 // PING: liveness / path measurement
 	MsgPong      byte = 0x05 // PONG
-	MsgMigrate   byte = 0x06 // MIGRATE: reserved for a future capability
+	MsgMigrate   byte = 0x06 // MIGRATE: resumption stream-resync checkpoint (v2.1)
 	MsgRst       byte = 0x07 // RST: reset a stream (error teardown)
 	MsgOpenAck   byte = 0x08 // OPEN_ACK: server reports dial result (payload = code)
 	MsgChallenge byte = 0x09 // CHALLENGE: reserved anti-replay extension
+	MsgTicket    byte = 0x0A // TICKET: server issues a resumption ticket (v2.1)
 )
 
 func validMsgType(t byte) bool {
 	switch t {
-	case MsgOpen, MsgData, MsgClose, MsgPing, MsgPong, MsgMigrate, MsgRst, MsgOpenAck, MsgChallenge:
+	case MsgOpen, MsgData, MsgClose, MsgPing, MsgPong, MsgMigrate, MsgRst, MsgOpenAck, MsgChallenge, MsgTicket:
 		return true
 	}
 	return false
@@ -106,6 +111,8 @@ func MsgName(t byte) string {
 		return "OPEN_ACK"
 	case MsgChallenge:
 		return "CHALLENGE"
+	case MsgTicket:
+		return "TICKET"
 	}
 	return fmt.Sprintf("UNKNOWN(%#x)", t)
 }
@@ -125,6 +132,8 @@ const (
 	ErrFraming   Error = "session: record framing error"
 	ErrTag       Error = "session: record authentication failed"
 	ErrClosed    Error = "session: session closed"
+	ErrMigrate   Error = "session: migration failed"
+	ErrTicket    Error = "session: resumption ticket invalid"
 )
 
 // ---------------------------------------------------------------------------
