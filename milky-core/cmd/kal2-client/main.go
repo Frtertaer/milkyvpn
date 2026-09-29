@@ -257,14 +257,17 @@ func main() {
 	select {}
 }
 
-// ctlServer is a one-shot TCP control channel: the client mirrors its log
-// lines to the peer and exits when the peer sends "stop".
+// ctlServer is a TCP control channel: the client mirrors its log lines to
+// the connected peer and exits when a peer sends "stop". Accepts repeatedly —
+// an orphaned elevated helper must still answer a later peer's 'stop' (a new
+// client respawns cannot bind :11909 while the orphan holds it).
 type ctlServer struct {
-	ln     net.Listener
-	conn   net.Conn
-	mu     sync.Mutex
-	stopCh chan struct{}
-	echoed []string
+	ln       net.Listener
+	conn     net.Conn
+	mu       sync.Mutex
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	echoed   []string
 }
 
 func startCtl(addr string) (*ctlServer, error) {
@@ -278,27 +281,32 @@ func startCtl(addr string) (*ctlServer, error) {
 }
 
 func (c *ctlServer) accept() {
-	conn, err := c.ln.Accept()
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	c.conn = conn
-	for _, l := range c.echoed {
-		_, _ = fmt.Fprintln(conn, l)
-	}
-	c.echoed = nil
-	c.mu.Unlock()
-	go func() {
-		sc := bufio.NewScanner(conn)
-		for sc.Scan() {
-			if strings.TrimSpace(sc.Text()) == "stop" {
-				close(c.stopCh)
-				return
-			}
+	for {
+		conn, err := c.ln.Accept()
+		if err != nil {
+			return
 		}
-		// Peer vanished — keep running; the tunnel is still up.
-	}()
+		c.mu.Lock()
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+		c.conn = conn
+		for _, l := range c.echoed {
+			_, _ = fmt.Fprintln(conn, l)
+		}
+		c.echoed = nil
+		c.mu.Unlock()
+		go func() {
+			sc := bufio.NewScanner(conn)
+			for sc.Scan() {
+				if strings.TrimSpace(sc.Text()) == "stop" {
+					c.stopOnce.Do(func() { close(c.stopCh) })
+					return
+				}
+			}
+			// Peer vanished — keep running; the tunnel is still up.
+		}()
+	}
 }
 
 // Write mirrors log lines to the control peer (io.Writer for log output).

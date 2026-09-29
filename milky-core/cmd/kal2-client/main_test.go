@@ -97,3 +97,38 @@ func TestCtlMirrorAndStop(t *testing.T) {
 		t.Fatal("stop command never released the runner")
 	}
 }
+
+// Regression BUG-2026-09-29-08: a stale conn must not consume the only
+// accept. An app-side ctl conn that died without 'stop' used to leave the
+// elevated helper unreachable — every later conn sat in the backlog unread,
+// so its 'stop' never fired and a respawn died on address-in-use.
+func TestCtlSecondPeerCanStop(t *testing.T) {
+	ctl, err := startCtl("127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("startCtl: %v", err)
+	}
+	defer ctl.close()
+	port := ctl.ln.Addr().(*net.TCPAddr).Port
+	dial := func() net.Conn {
+		c, err := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", port), 2*time.Second)
+		if err != nil {
+			t.Fatalf("dial ctl: %v", err)
+		}
+		return c
+	}
+
+	stale := dial()
+	stale.Close() // the dead app-side conn — no 'stop' sent
+	time.Sleep(100 * time.Millisecond)
+
+	live := dial()
+	defer live.Close()
+	if _, err := fmt.Fprintln(live, "stop"); err != nil {
+		t.Fatalf("send stop: %v", err)
+	}
+	select {
+	case <-ctl.stopCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stop on a second conn never reached the runner")
+	}
+}

@@ -104,6 +104,22 @@
 - Issue: —  PR: —  Regression test: `tool/check_installer.py` (guard+
   abort ordering)
 
+### BUG-2026-09-29-08 — Windows: ctl-сокет принимает только одно соединение → orphan -tun helper не остановить
+- Severity: major (edge: после краша приложения -tun ломается до taskkill/reboot)
+- Platform: windows
+- Status: fixed-in-PR
+- Repro: GUI -tun connect → elevated helper слушает :11909, app держит conn.
+  Краш/убийство приложения → conn умирает БЕЗ 'stop'. Helper жив. Любая
+  новая попытка -tun connect: `_stopCtl` пишет 'stop' в backlog (accept уже
+  израсходован — одно-разовый), новый helper падает на `net.Listen(:11909)`
+  address-in-use → `log.Fatalf`. Также мёртв log-mirror.
+- Fix: ctl-accept в цикле — каждая новая conn замещает старую (закрывая её),
+  'stop' срабатывает от любого пира; `sync.Once` против двойного close(stopCh)
+- Found by: static review kal2-client ctl (windows track)
+- Issue: —  PR: —  Regression test:
+  `milky-core/cmd/kal2-client/main_test.go::TestCtlSecondPeerCanStop`
+  (fails на старом коде — 2.1s timeout)
+
 ## Закрытые
 
 (перенос сюда после merge фикса с регрессионным тестом)
