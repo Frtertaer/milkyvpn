@@ -1,0 +1,43 @@
+title = "milkyvpn gitleaks config"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "kal2-psk"
+description = "KAL/2 user PSK (64-hex) assigned to a psk/user variable or embedded in a kal2:// link"
+regex = '''(?i)(psk|user|secret|password)["'\s]*[=:]["'\s]*[0-9a-f]{64}'''
+keywords = ["psk", "kal2"]
+
+[[rules]]
+id = "kal2-link-cred"
+description = "kal2:// link with embedded PSK"
+regex = '''kal2://[0-9a-f]{64}@'''
+keywords = ["kal2://"]
+
+[[rules]]
+id = "ssh-root-password"
+description = "sshpass inline password"
+regex = '''sshpass\s+-p\s+['"][^'"]+['"]'''
+keywords = ["sshpass"]
+
+[[rules]]
+id = "hy2-password"
+description = "hysteria2 UUID password in client/server config"
+regex = '''(?i)(hysteria2|hy2)[\s\S]{0,200}password["'\s]*[:=]["'\s]*[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}'''
+keywords = ["hysteria2", "hy2"]
+
+[[rules]]
+id = "residential-proxy-creds"
+description = "residential proxy user:pass (dataimpulse-style) in code"
+regex = '''(?i)(gw\.dataimpulse\.com|residential)[\s\S]{0,120}[A-Za-z0-9_-]{8,}:[A-Za-z0-9_-]{8,}@'''
+keywords = ["dataimpulse", "residential"]
+
+[allowlist]
+description = "docs / placeholders"
+paths = [
+  '''\.gitleaks\.toml''',
+]
+regexes = [
+  '''(?i)(example|placeholder|<psk>|your[_-]psk|xxx+)''',
+]
