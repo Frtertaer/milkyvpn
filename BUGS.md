@@ -122,6 +122,20 @@
   `milky-core/cmd/kal2-client/main_test.go::TestCtlSecondPeerCanStop`
   (fails на старом коде — 2.1s timeout)
 
+### BUG-2026-09-29-09 — Windows: `stop` по ctl оставляет /32 host-маршруты (graceful -tun stop)
+- Severity: minor
+- Platform: windows
+- Status: fixed-in-PR
+- Repro: -tun connect → ctl 'stop' → `route print`: /32 маршрут до сервера
+  через физический шлюз остаётся (подтверждено в поле на build 27). /1
+  умирают вместе с адаптером, host-маршрут — нет.
+- Fix: `waitForTun` — ctl-'stop' теперь канселит tun-ctx и ждёт (≤15s) пока
+  goroutine дойдёт до deferred `dev.Restore()`/`dev.Close()`; раньше `return`
+  из main убивал goroutine до defer'ов
+- Found by: windows verify session (build 27)
+- Issue: —  PR: —  Regression test:
+  `milky-core/cmd/kal2-client/main_test.go::TestWaitForTun*`
+
 ## Закрытые
 
 (перенос сюда после merge фикса с регрессионным тестом)

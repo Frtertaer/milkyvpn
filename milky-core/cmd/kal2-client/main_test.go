@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"net"
 	"os"
@@ -130,5 +131,36 @@ func TestCtlSecondPeerCanStop(t *testing.T) {
 	case <-ctl.stopCh:
 	case <-time.After(2 * time.Second):
 		t.Fatal("stop on a second conn never reached the runner")
+	}
+}
+
+// Regression BUG-2026-09-29-09: ctl 'stop' must let the tun goroutine unwind
+// — its deferred Restore removes the /32 server routes; exiting immediately
+// orphaned them (the /1s died with the adapter, the host routes stayed).
+func TestWaitForTunCancelsAndWaits(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		<-ctx.Done()                      // tun.Run returning on cancel
+		time.Sleep(30 * time.Millisecond) // deferred Restore + Close
+		close(done)
+	}()
+	if !waitForTun(cancel, done, 5*time.Second) {
+		t.Fatal("waitForTun did not observe teardown")
+	}
+	if ctx.Err() == nil {
+		t.Fatal("waitForTun never cancelled the tun context")
+	}
+}
+
+func TestWaitForTunTimeout(t *testing.T) {
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{}) // never closes — wedged teardown
+	if waitForTun(cancel, done, 50*time.Millisecond) {
+		t.Fatal("waitForTun should report timeout")
+	}
+	if !waitForTun(nil, nil, time.Millisecond) {
+		t.Fatal("nil tun must not block shutdown")
 	}
 }

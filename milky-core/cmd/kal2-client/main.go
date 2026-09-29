@@ -193,6 +193,8 @@ func main() {
 		ctl.echo("kal2: session up via " + *carrier)
 	}
 
+	var tunCancel context.CancelFunc
+	var tunDone <-chan struct{}
 	if *tunName != "" {
 		// Full-device mode: the TUN adapter routes all traffic into kal2
 		// streams. Still serves SOCKS5 alongside — both paths stay live
@@ -240,21 +242,44 @@ func main() {
 				return sess.OpenNet("udp", "0.0.0.0", 0, 15*time.Second)
 			},
 		}
+		tctx, tcancel := context.WithCancel(context.Background())
+		tunCancel = tcancel
+		done := make(chan struct{})
+		tunDone = done
 		go func() {
-			if err := tun.Run(context.Background(), tcfg); err != nil {
+			defer close(done)
+			if err := tun.Run(tctx, tcfg); err != nil {
 				log.Printf("kal2: tun stopped: %v", err)
 			}
 		}()
 		log.Printf("kal2: tun requested (%s)", *tunName)
 	}
 	if ctl != nil {
-		// 'stop' on the control channel exits cleanly (defers restore routes).
+		// 'stop' on the control channel exits cleanly: the tun goroutine owns
+		// route/adapter teardown — returning early would kill it mid-flight
+		// and orphan the /32 server-bypass routes.
 		select {
 		case <-ctl.stopCh:
+			waitForTun(tunCancel, tunDone, 15*time.Second)
 			return
 		}
 	}
 	select {}
+}
+
+// waitForTun cancels the tun goroutine and waits for its deferred teardown
+// (route restore + adapter close); false on timeout.
+func waitForTun(cancel context.CancelFunc, done <-chan struct{}, d time.Duration) bool {
+	if cancel == nil || done == nil {
+		return true
+	}
+	cancel()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
 }
 
 // ctlServer is a TCP control channel: the client mirrors its log lines to
