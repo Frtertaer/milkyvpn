@@ -259,6 +259,12 @@ func (s *Session) Close() error {
 	return err
 }
 
+// Kill fails the session with err: every open stream learns the cause and the
+// carrier freezes or closes per the migration rules. Close alone only stops
+// the carrier — stream readers would hang waiting on queues nobody drains,
+// so watchdogs use Kill.
+func (s *Session) Kill(err error) { s.fail(err, -1) }
+
 // isDead reports whether the session was finally closed (vs merely frozen).
 func (s *Session) isDead() bool {
 	if s.closed == nil {
