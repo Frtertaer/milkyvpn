@@ -89,6 +89,21 @@
 - Issue: —  PR: —  Regression test:
   `test/core/windows_vpn_bridge_test.dart::proxy restore plan`
 
+### BUG-2026-09-29-07 — Windows: silent-reinstall при живом elevated -tun helper'е → полу-замена файлов
+- Severity: minor (edge: требуется зависший ctl elevated-процесс)
+- Platform: windows
+- Status: fixed-in-PR
+- Repro: elevated -tun helper жив, но ctl не отвечает → `/VERYSILENT`
+  reinstall: ctl-stop молчит, `taskkill /F` из non-elevated инсталлятора
+  получает Access denied → файлы пишутся поверх работающего exe →
+  смешанная старая/новая установка (или ошибка file-in-use)
+- Fix: после fallback'а инсталлятор проверяет `Get-Process kal2-client`;
+  если жив — PrepareToInstall возвращает сообщение и setup чистно
+  абортается («disconnect and run setup again»)
+- Found by: static review windows.iss (windows track)
+- Issue: —  PR: —  Regression test: `tool/check_installer.py` (guard+
+  abort ordering)
+
 ## Закрытые
 
 (перенос сюда после merge фикса с регрессионным тестом)

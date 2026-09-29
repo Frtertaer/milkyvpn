@@ -53,7 +53,18 @@ if kill_f_idx < 0:
 if wait_idx is not None and kill_f_idx >= 0 and wait_idx > kill_f_idx:
     issues.append('ordering: Wait-Process must precede taskkill /F on kal2-client')
 
-# 3. milkyvpn.exe: graceful WM_CLOSE before the /F fallback.
+# 3. A client still running after the fallback (e.g. a wedged elevated -tun
+#    helper the non-elevated installer cannot kill) must ABORT setup rather
+#    than write over a live exe and leave a mixed install.
+guard_idx = body.find('Get-Process kal2-client')
+if guard_idx < 0:
+    issues.append('missing: still-running kal2-client guard after taskkill /F')
+elif kill_f_idx >= 0 and guard_idx < kill_f_idx:
+    issues.append('ordering: still-running guard must follow taskkill /F')
+if 'disconnect and run setup again' not in body:
+    issues.append('missing: abort message for the still-running guard')
+
+# 4. milkyvpn.exe: graceful WM_CLOSE before the /F fallback.
 grace_idx = body.find('/IM milkyvpn.exe')
 force_idx = body.find('/F /IM milkyvpn.exe')
 if force_idx < 0:
