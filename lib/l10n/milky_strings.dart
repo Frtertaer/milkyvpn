@@ -239,6 +239,10 @@ class S {
   String get remove => t('Удалить', 'Remove');
   String get cancel => t('Отмена', 'Cancel');
   String get noSubscription => t('Подписка не добавлена', 'No subscription');
+  String get notRefreshable => t(
+    'Импортированные профили нельзя обновить',
+    'Imported profiles cannot be refreshed',
+  );
   String get addSubscriptionQuestion =>
       t('Добавить подписку MilkyVPN?', 'Add MilkyVPN subscription?');
   String get error => t('Ошибка', 'Error');

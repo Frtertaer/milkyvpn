@@ -68,7 +68,7 @@ func main() {
 		} else {
 			logFile = f
 			defer logFile.Close()
-			log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+			log.SetOutput(io.MultiWriter(failsoft{os.Stderr}, failsoft{logFile}))
 			log.Printf("kal2: logging to %s", *logPath)
 		}
 	}
@@ -185,14 +185,16 @@ func main() {
 			log.Fatalf("ctl: %v", err)
 		}
 		defer ctl.close()
-		outs := []io.Writer{os.Stderr, ctl}
+		outs := []io.Writer{failsoft{os.Stderr}, failsoft{ctl}}
 		if logFile != nil {
-			outs = append(outs, logFile)
+			outs = append(outs, failsoft{logFile})
 		}
 		log.SetOutput(io.MultiWriter(outs...))
 		ctl.echo("kal2: session up via " + *carrier)
 	}
 
+	var tunCancel context.CancelFunc
+	var tunDone <-chan struct{}
 	if *tunName != "" {
 		// Full-device mode: the TUN adapter routes all traffic into kal2
 		// streams. Still serves SOCKS5 alongside — both paths stay live
@@ -240,31 +242,67 @@ func main() {
 				return sess.OpenNet("udp", "0.0.0.0", 0, 15*time.Second)
 			},
 		}
+		tctx, tcancel := context.WithCancel(context.Background())
+		tunCancel = tcancel
+		done := make(chan struct{})
+		tunDone = done
 		go func() {
-			if err := tun.Run(context.Background(), tcfg); err != nil {
+			defer close(done)
+			if err := tun.Run(tctx, tcfg); err != nil {
 				log.Printf("kal2: tun stopped: %v", err)
 			}
 		}()
 		log.Printf("kal2: tun requested (%s)", *tunName)
 	}
 	if ctl != nil {
-		// 'stop' on the control channel exits cleanly (defers restore routes).
+		// 'stop' on the control channel exits cleanly: the tun goroutine owns
+		// route/adapter teardown — returning early would kill it mid-flight
+		// and orphan the /32 server-bypass routes.
 		select {
 		case <-ctl.stopCh:
+			waitForTun(tunCancel, tunDone, 15*time.Second)
 			return
 		}
 	}
 	select {}
 }
 
-// ctlServer is a one-shot TCP control channel: the client mirrors its log
-// lines to the peer and exits when the peer sends "stop".
+// failsoft swallows Write errors so a dead sink cannot starve the rest of
+// the MultiWriter chain — an elevated GUI-subsystem spawn has an invalid
+// stderr handle, and without this every line died on the first Write.
+type failsoft struct{ io.Writer }
+
+func (f failsoft) Write(p []byte) (int, error) {
+	_, _ = f.Writer.Write(p)
+	return len(p), nil
+}
+
+// waitForTun cancels the tun goroutine and waits for its deferred teardown
+// (route restore + adapter close); false on timeout.
+func waitForTun(cancel context.CancelFunc, done <-chan struct{}, d time.Duration) bool {
+	if cancel == nil || done == nil {
+		return true
+	}
+	cancel()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}
+
+// ctlServer is a TCP control channel: the client mirrors its log lines to
+// the connected peer and exits when a peer sends "stop". Accepts repeatedly —
+// an orphaned elevated helper must still answer a later peer's 'stop' (a new
+// client respawns cannot bind :11909 while the orphan holds it).
 type ctlServer struct {
-	ln     net.Listener
-	conn   net.Conn
-	mu     sync.Mutex
-	stopCh chan struct{}
-	echoed []string
+	ln       net.Listener
+	conn     net.Conn
+	mu       sync.Mutex
+	stopCh   chan struct{}
+	stopOnce sync.Once
+	echoed   []string
 }
 
 func startCtl(addr string) (*ctlServer, error) {
@@ -278,27 +316,32 @@ func startCtl(addr string) (*ctlServer, error) {
 }
 
 func (c *ctlServer) accept() {
-	conn, err := c.ln.Accept()
-	if err != nil {
-		return
-	}
-	c.mu.Lock()
-	c.conn = conn
-	for _, l := range c.echoed {
-		_, _ = fmt.Fprintln(conn, l)
-	}
-	c.echoed = nil
-	c.mu.Unlock()
-	go func() {
-		sc := bufio.NewScanner(conn)
-		for sc.Scan() {
-			if strings.TrimSpace(sc.Text()) == "stop" {
-				close(c.stopCh)
-				return
-			}
+	for {
+		conn, err := c.ln.Accept()
+		if err != nil {
+			return
 		}
-		// Peer vanished — keep running; the tunnel is still up.
-	}()
+		c.mu.Lock()
+		if c.conn != nil {
+			_ = c.conn.Close()
+		}
+		c.conn = conn
+		for _, l := range c.echoed {
+			_, _ = fmt.Fprintln(conn, l)
+		}
+		c.echoed = nil
+		c.mu.Unlock()
+		go func() {
+			sc := bufio.NewScanner(conn)
+			for sc.Scan() {
+				if strings.TrimSpace(sc.Text()) == "stop" {
+					c.stopOnce.Do(func() { close(c.stopCh) })
+					return
+				}
+			}
+			// Peer vanished — keep running; the tunnel is still up.
+		}()
+	}
 }
 
 // Write mirrors log lines to the control peer (io.Writer for log output).

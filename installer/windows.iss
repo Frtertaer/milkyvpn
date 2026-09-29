@@ -51,6 +51,14 @@ var
 begin
   Exec('powershell.exe', '-NoProfile -WindowStyle Hidden -Command "try { $c = New-Object System.Net.Sockets.TcpClient(''127.0.0.1'',11909); $w = New-Object System.IO.StreamWriter($c.GetStream()); $w.WriteLine(''stop''); $w.Flush(); $c.Close() } catch {}; try { Wait-Process -Name kal2-client -Timeout 20 } catch {}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('taskkill.exe', '/F /IM kal2-client.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  // Still alive after the fallback means an elevated -tun helper we cannot
+  // kill (installer runs non-elevated). Aborting is loud but honest — writing
+  // files over a running exe would leave a mixed old/new install.
+  Exec('powershell.exe', '-NoProfile -WindowStyle Hidden -Command "if (Get-Process kal2-client -ErrorAction SilentlyContinue) { exit 3 } else { exit 0 }"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  if ResultCode <> 0 then begin
+    Result := 'Milky VPN tunnel is still active — disconnect and run setup again.';
+    exit;
+  end;
   Exec('taskkill.exe', '/IM milkyvpn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('powershell.exe', '-NoProfile -WindowStyle Hidden -Command "try { Wait-Process -Name milkyvpn -Timeout 15 } catch {}"', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
   Exec('taskkill.exe', '/F /IM milkyvpn.exe', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
