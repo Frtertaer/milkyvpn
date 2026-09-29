@@ -129,7 +129,8 @@ ui_edittext_value() {
 # so always send in chunks; escapes are applied per chunk so a boundary can
 # never split an `\&`/%% sequence.
 type_text() {
-  local s=$1 i=0 n=${#s} chunk esc
+  local s=$1
+  local i=0 n=${#s} chunk esc
   while [ $i -lt $n ]; do
     chunk=${s:i:40}
     esc=${chunk//&/\\&}
