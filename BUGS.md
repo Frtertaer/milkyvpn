@@ -181,6 +181,93 @@
   `test/core/windows_vpn_bridge_test.dart` — path-less → нет ''/-drift;
   drift path → сохраняется
 
+### BUG-2026-09-29-13 — mux: конкурентные Ping гонятся за pongReg → ложный pong-timeout
+- Severity: major (сторож lanes читает таймаут как смерть lane →
+  ложный kill живого лейна; под -race — data race на поле сессии)
+- Platform: core (kal2 mux — все платформы, все lanes-клиенты)
+- Status: fixed-in-PR
+- Repro: `client.Ping(...)` из двух+ горутин одновременно:
+  `registerPong` без синхронизации перезаписывает `s.pongReg` — второй
+  caller перехватывает канал ответа, первый получает `pong timeout`
+  на живой сессии. `go test -race` — гонка readLoop(dispatch/pongCh) ×
+  Ping(registerPong/unregisterPong)
+- Fix: `pongQ []chan []byte` — FIFO-очередь waiters под `pongMu`;
+  каждый входящий PONG удовлетворяет самый старый ожидающий Ping
+  (упорядоченный carrier возвращает эхо в порядке запросов)
+- Found by: carrier-track stress session (recon + repro-тест)
+- Issue: —  PR: —  Regression test:
+  `milky-core/internal/kal2/stress_test.go::TestMuxConcurrentPings`
+
+### BUG-2026-09-29-14 — lanes: задушенный lane собирает все новые стримы
+  (kill-vs-quarantine инверсия)
+- Severity: major (scorecard-контракт нарушен: живой-но-задушенный lane
+  не подпадает под kill-путь — pong приходит — но монополизирует роутинг)
+- Platform: core (kal2core Client lanes)
+- Status: fixed-in-PR
+- Repro: два lanes: здоровый и задушенный (pong приходит, но медленно).
+  `Session()` выбирал least-`SentBytes` → у задушенного почти нет emitted
+  байт → он выглядит «свежим» и получает ВСЕ новые стримы, ползая на
+  черепашьей скорости, пока здоровый простаивает
+- Fix: `laneRTT` scorecard — сторож записывает RTT последнего успешного
+  pong на lane; `Session()` пропускает lanes с `laneRTT > laneQuarantineRTT`
+  (3s), пока жив хотя бы один здоровый; все задушены → fallback на
+  least-loaded. Убитый lane (2 реальных ping-фейла) kill'ается и
+  редиалится как раньше — kill-vs-quarantine разведены
+- Found by: carrier-track stress session (contract review + repro-тест)
+- Issue: —  PR: —  Regression test:
+  `milky-core/pkg/kal2core/lanes_test.go::TestLaneStrangledQuarantinedNotKilled`,
+  `TestLaneDeadKilledAndRedialed`, `TestLaneAllQuarantinedFallback`
+
+### BUG-2026-09-29-15 — mux: карта streams течёт на remote close
+- Severity: major (unbounded leak: долгоживущая сессия накапливает zombie-
+  entry на каждый закрытый пиром стрим → рост RSS на длинном soak'е;
+  15-мин -race soak был убит OOM-киллером через ~6.5 мин)
+- Platform: core (kal2 mux — все платформы)
+- Status: fixed-in-PR
+- Repro: пир закрывает стрим (`MsgClose`) или сбрасывает (`MsgRst`):
+  `remoteClose()`/`reset()` помечали stream closed, но НИКОГДА не удаляли
+  запись из `s.streams`. Локальный `Stream.Close()` удалял — удалённый
+  конец нет. Server-side за churn-прогон скапливал по записи на стрим
+- Fix: evict в терминальной точке жизненного цикла — pump удаляет запись
+  после EOF-дрейна (graceful), `reset()` удаляет немедленно (abrupt);
+  half-close ordering сохранён (данные до MsgClose доставляются)
+- Found by: carrier-track mux -race soak (killed at ~395s) + map audit
+- Issue: —  PR: —  Regression test:
+  `milky-core/internal/kal2/stress_test.go::TestMuxRemoteCloseEvicts`
+
+### BUG-2026-09-29-16 — mux: SetReadDeadline/SetWriteDeadline были no-op
+- Severity: major (net.Conn-контракт сломан: любой код, полагающийся на
+  deadline — SOCKS idle timeout, churn-читатели — блокируется навсегда;
+  15-мин soak завис именно так: ReadFull в churn-воркере никогда не
+  возвращался)
+- Platform: core (kal2 mux — все платформы)
+- Status: fixed-in-PR
+- Repro: `st.SetReadDeadline(now+300ms); st.Read(buf)` без входящих данных
+  → блок навсегда вместо timeout-ошибки; `SetWriteDeadline` + переполненная
+  data-lane → блок навсегда на slot-токене
+- Fix: `readDeadline`/`writeDeadline` (atomic ns) на stream; Read ждёт
+  recvCh/closedCh/timer → `os.ErrDeadlineExceeded`; Write гонит чанки через
+  `sendRecordDeadline` — timeout-селект на slot/ctrlCh enqueue
+- Found by: carrier-track mux -race soak (hang at ~20m dump)
+- Issue: —  PR: —  Regression test:
+  `milky-core/internal/kal2/stress_test.go::TestMuxReadDeadlineReal`,
+  `TestMuxWriteDeadlineReal`
+
+### BUG-2026-09-29-17 — carrier tests: VeilListener logf вызывал t.Logf после конца теста
+- Severity: minor (test-only data race: `-race` FAIL на пакете carrier;
+  per-conn goroutine `v.Serve` переживает `tRunner`, лог ловит гонку на
+  testing internals / может паниковать «Log after test completed»)
+- Platform: core (test harness — internal/carrier e2e helpers)
+- Status: fixed-in-PR
+- Repro: `go test -race ./internal/carrier` — фоновый TLS-handshake
+  handler логирует через `VeilConfig.Logf → t.Logf` после завершения
+  теста (детектed на TestVeilSPKIPin teardown × late conn goroutine)
+- Fix: `newTestServerWith` буферит строки лога под мьютексом и флашит
+  через `t.Log` внутри `t.Cleanup` (пока t валиден); поздние строки дроп
+- Found by: carrier-track `go test -race` suite rerun после merge universal
+- Issue: —  PR: —  Regression test: `go test -race ./internal/carrier/`
+  (ранее флаковал DATA RACE на testing.(*common).destination)
+
 ## Закрытые
 
 (перенос сюда после merge фикса с регрессионным тестом)
