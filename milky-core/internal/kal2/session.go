@@ -423,6 +423,9 @@ func (s *Session) dispatch(rec *Record) {
 	case MsgOpenAck:
 		if st, ok := s.getStream(rec.StreamID); ok {
 			st.setDialResult(rec.Payload)
+			if !(len(rec.Payload) == 1 && rec.Payload[0] == 0x00) {
+				st.fail(fmt.Errorf("session: remote dial failed: %v", rec.Payload))
+			}
 		}
 	case MsgData:
 		if st, ok := s.getStream(rec.StreamID); ok {
@@ -560,13 +563,23 @@ func (s *Session) Open(host string, port uint16, timeout time.Duration) (*Stream
 	return s.OpenNet("tcp", host, port, timeout)
 }
 
-// OpenNet opens a stream with an explicit network ("tcp" or "udp").
-func (s *Session) OpenNet(network, host string, port uint16, timeout time.Duration) (*Stream, error) {
-	s.smu.Lock()
-	id := s.nextID
-	s.nextID += 2
-	s.smu.Unlock()
+// OpenOpt returns the stream as soon as OPEN is on the wire — the caller may
+// start writing immediately (the server buffers data until its target dial
+// completes), so request+open travel in the same flight and first byte costs
+// ~1 RTT instead of ~2. A refused dial arrives later as RST/reset; callers
+// needing the synchronous dial result use OpenNet.
+func (s *Session) OpenOpt(host string, port uint16) (*Stream, error) {
+	st, err := s.openStream("tcp", host, port)
+	if err != nil {
+		return nil, err
+	}
+	return &Stream{stream: st}, nil
+}
 
+// openStream allocates and registers a stream and puts OPEN on the wire. It
+// does not wait for OPEN_ACK.
+func (s *Session) openStream(network, host string, port uint16) (*stream, error) {
+	id := s.allocID()
 	st := newStream(s, id)
 	s.smu.Lock()
 	s.streams[id] = st
@@ -578,17 +591,34 @@ func (s *Session) OpenNet(network, host string, port uint16, timeout time.Durati
 		st.remoteClose()
 		return nil, err
 	}
+	return st, nil
+}
+
+func (s *Session) allocID() uint32 {
+	s.smu.Lock()
+	defer s.smu.Unlock()
+	id := s.nextID
+	s.nextID += 2
+	return id
+}
+
+// OpenNet opens a stream with an explicit network ("tcp" or "udp").
+func (s *Session) OpenNet(network, host string, port uint16, timeout time.Duration) (*Stream, error) {
+	st, err := s.openStream(network, host, port)
+	if err != nil {
+		return nil, err
+	}
 	if !st.waitDial(timeout) {
 		s.smu.Lock()
-		delete(s.streams, id)
+		delete(s.streams, st.id)
 		s.smu.Unlock()
 		st.remoteClose()
-		_ = s.sendRecord(MsgRst, id, []byte("open timeout"))
+		_ = s.sendRecord(MsgRst, st.id, []byte("open timeout"))
 		return nil, fmt.Errorf("session: open timeout or refused")
 	}
 	if st.dialErr != nil {
 		s.smu.Lock()
-		delete(s.streams, id)
+		delete(s.streams, st.id)
 		s.smu.Unlock()
 		st.remoteClose()
 		return nil, st.dialErr
