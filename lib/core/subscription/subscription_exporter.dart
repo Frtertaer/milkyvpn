@@ -198,6 +198,9 @@ class SubscriptionExporter {
     q.put('pub', p.publicKey);
     q.put('carrier', p.network.isEmpty ? 'veil' : p.network);
     q.put('path', p.path);
+    q.put('ech', p.ech);
+    q.put('cover', p.cover);
+    q.put('pin', p.pin);
     return _uri('kal2', p.secret, p.address, p.port, q, p.remark);
   }
 

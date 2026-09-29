@@ -83,13 +83,16 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     ),
                   if (Platform.isWindows)
                     const MilkyHairline(indent: MilkySpace.lg),
-                  MilkySettingRow(
-                    icon: Icons.vpn_lock_rounded,
-                    title: t.alwaysOn,
-                    subtitle: t.alwaysOnHint,
-                    showChevron: true,
-                    onTap: () => bridge.openVpnSettings(),
-                  ),
+                  // Always-on VPN is an Android VpnService feature; the
+                  // same tap elsewhere opened unrelated OS settings.
+                  if (Platform.isAndroid)
+                    MilkySettingRow(
+                      icon: Icons.vpn_lock_rounded,
+                      title: t.alwaysOn,
+                      subtitle: t.alwaysOnHint,
+                      showChevron: true,
+                      onTap: () => bridge.openVpnSettings(),
+                    ),
                 ],
               ),
             ),
@@ -256,7 +259,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
       MilkyHaptics.success();
       messenger.showSnackBar(
-        SnackBar(content: Text(snap == null ? t.noSubscription : t.importOk)),
+        SnackBar(
+          content: Text(
+            snap == null
+                ? (repo.hasSubscription ? t.notRefreshable : t.noSubscription)
+                : t.importOk,
+          ),
+        ),
       );
     } on SubscriptionFetchException catch (e) {
       if (!mounted) return;

@@ -41,6 +41,9 @@ type Config struct {
 	// OpenUDP opens a kal2 UDP relay stream (wildcard; datagrams are
 	// framed with per-datagram destination headers).
 	OpenUDP func(ctx context.Context) (Stream, error)
+	// Fd, Android only: the parcel fd returned by VpnService.establish()
+	// (adapter creation, addressing and routing are owned by the OS).
+	Fd uintptr
 	// Logf receives lifecycle messages.
 	Logf func(string, ...any)
 }

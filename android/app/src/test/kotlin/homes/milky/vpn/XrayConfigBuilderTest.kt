@@ -299,4 +299,21 @@ class XrayConfigBuilderTest {
             assertEquals(expectedPrivateCidrs, actualPrivateCidrs)
         }
     }
+
+    @Test
+    fun kal2AcceptsEveryNativeCarrierAndPropagatesPin() {
+        for (c in listOf("veil", "drift", "relay", "cdn", "mosaic", "auto")) {
+            val p = ProfileSpec("kal2", "k.example", 443, "psk", network = c, publicKey = "ab".repeat(32))
+            assertTrue(c, XrayConfigBuilder.isSupported(p))
+        }
+        assertFalse(XrayConfigBuilder.isSupported(
+            ProfileSpec("kal2", "k.example", 443, "psk", network = "bogus", publicKey = "ab".repeat(32))))
+        val spec = ProfileSpec.fromMap(mapOf(
+            "protocol" to "kal2", "address" to "k.example", "port" to 443, "secret" to "psk",
+            "network" to "mosaic", "publicKey" to "ab".repeat(32), "pin" to "cd".repeat(32),
+        ))
+        val json = homes.milky.vpn.bridge.Kal2Config.toJson(spec)
+        assertEquals("mosaic", json.getString("carrier"))
+        assertEquals("cd".repeat(32), json.getString("pin"))
+    }
 }
