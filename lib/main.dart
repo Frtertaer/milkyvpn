@@ -11,6 +11,7 @@ import 'app/milky_device.dart';
 import 'core/security/subscription_url_policy.dart';
 import 'core/storage/secure_store.dart';
 import 'core/subscription/subscription_repository.dart';
+import 'core/vpn/ffi_vpn_bridge.dart';
 import 'core/vpn/vpn_bridge.dart';
 import 'core/vpn/vpn_controller.dart';
 import 'core/vpn/windows_vpn_bridge.dart';
@@ -35,9 +36,14 @@ Future<void> main() async {
     ),
   );
   final settings = await AppSettings.load();
-  final VpnBridge bridge = Platform.isWindows
+  // Desktop runs the core in-process through the unified milky C ABI
+  // (dart:ffi). Windows keeps the elevated-helper bridge (UAC for TUN);
+  // Android keeps the :kal2 service on JNI — same ABI underneath.
+  final VpnBridge bridge = Platform.isAndroid
+      ? MethodChannelVpnBridge()
+      : Platform.isWindows
       ? WindowsProcessVpnBridge()
-      : MethodChannelVpnBridge();
+      : FfiVpnBridge();
   final repo = SubscriptionRepository(
     store: KeystoreSecureStore(),
     fetcher: HttpsSubscriptionFetcher(),
