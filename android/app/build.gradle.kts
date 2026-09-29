@@ -32,18 +32,21 @@ android {
 
     buildFeatures {
         buildConfig = true
+        aidl = true
     }
 
     defaultConfig {
-        applicationId = "homes.milky.vpn"
-        minSdk = 26
+        applicationId = "vpn.milky.app"
+        // API 23 — Android 6 devices. Reads the pinned value from
+        // gradle.properties: the Flutter tooling migrator rewrites integer
+        // literals here to flutter.minSdkVersion, which is hardcoded to 24.
+        minSdk = project.property("flutter.minSdkVersion").toString().toInt()
         targetSdk = 36
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        // Only ABIs shipped inside libv2ray.aar.
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
+        // ABI set is driven by Flutter (--split-per-abi produces per-ABI APKs
+        // so each install artifact stays under GitHub's 100 MB file cap).
+        // Only ABIs shipped inside libv2ray.aar are built.
     }
 
     signingConfigs {

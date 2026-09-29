@@ -71,7 +71,11 @@ class _ImportScreenState extends State<ImportScreen> {
       _result = null;
     });
     try {
-      final snap = await repo.importFromUrl(_ctrl.text);
+      // Pasted share links (kal2://, vless://…) are not subscription URLs — parse
+      // them directly instead of forcing a fetch.
+      final snap = await (SubscriptionUrlPolicy().isAllowed(_ctrl.text)
+          ? repo.importFromUrl(_ctrl.text)
+          : repo.importFromText(_ctrl.text));
       if (!mounted) return;
       MilkyHaptics.success();
       _ctrl.clear();
@@ -84,7 +88,11 @@ class _ImportScreenState extends State<ImportScreen> {
       if (go && mounted) Navigator.of(context).pop(true);
     } on SubscriptionFetchException catch (e) {
       if (!mounted) return;
-      setState(() => _error = t.errorText(e.errorClass));
+      setState(
+        () => _error = e.errorClass == 'url_not_allowed'
+            ? t.urlNotAllowed
+            : t.errorText(e.errorClass),
+      );
     } catch (e) {
       if (!mounted) return;
       setState(() => _error = t.errorText(const Redactor().errorClass(e)));
@@ -149,7 +157,7 @@ class _ImportScreenState extends State<ImportScreen> {
                 keyboardType: TextInputType.url,
                 onChanged: (_) => setState(() => _error = null),
                 decoration: InputDecoration(
-                  hintText: 'https://sub.milky.homes/s/…',
+                  hintText: 'https://example.com/s/…  или  pandora://…',
                   errorText: _error,
                   errorMaxLines: 4,
                   suffixIcon: _ctrl.text.isEmpty

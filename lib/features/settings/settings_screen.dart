@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -69,13 +71,28 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     onChanged: s.setAutoConnect,
                   ),
                   const MilkyHairline(indent: MilkySpace.lg),
-                  MilkySettingRow(
-                    icon: Icons.vpn_lock_rounded,
-                    title: t.alwaysOn,
-                    subtitle: t.alwaysOnHint,
-                    showChevron: true,
-                    onTap: () => bridge.openVpnSettings(),
-                  ),
+                  // Full-TUN exists on Windows only; Android tunnels via
+                  // VpnService already.
+                  if (Platform.isWindows)
+                    MilkySettingRow(
+                      icon: Icons.lan_rounded,
+                      title: t.fullTunnel,
+                      subtitle: t.fullTunnelHint,
+                      value: s.fullTunnel,
+                      onChanged: s.setFullTunnel,
+                    ),
+                  if (Platform.isWindows)
+                    const MilkyHairline(indent: MilkySpace.lg),
+                  // Always-on VPN is an Android VpnService feature; the
+                  // same tap elsewhere opened unrelated OS settings.
+                  if (Platform.isAndroid)
+                    MilkySettingRow(
+                      icon: Icons.vpn_lock_rounded,
+                      title: t.alwaysOn,
+                      subtitle: t.alwaysOnHint,
+                      showChevron: true,
+                      onTap: () => bridge.openVpnSettings(),
+                    ),
                 ],
               ),
             ),
@@ -242,7 +259,13 @@ class _SettingsScreenState extends State<SettingsScreen> {
       if (!mounted) return;
       MilkyHaptics.success();
       messenger.showSnackBar(
-        SnackBar(content: Text(snap == null ? t.noSubscription : t.updated)),
+        SnackBar(
+          content: Text(
+            snap == null
+                ? (repo.hasSubscription ? t.notRefreshable : t.noSubscription)
+                : t.importOk,
+          ),
+        ),
       );
     } on SubscriptionFetchException catch (e) {
       if (!mounted) return;

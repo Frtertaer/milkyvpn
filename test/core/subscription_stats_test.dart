@@ -186,24 +186,41 @@ void main() {
       expect(result.isAccounted, isTrue);
     });
 
-    test('unsupported control reports 16 parsed and 10 compatible', () {
+    test('mixed-format control reports 17 parsed and 13 compatible', () {
+      final vmess = base64.encode(
+        utf8.encode(
+          jsonEncode({
+            'v': '2',
+            'ps': 'USA-8',
+            'add': 'us9.example.invalid',
+            'port': '443',
+            'id': '00000020-0000-4000-8000-000000000020',
+            'net': 'tcp',
+            'tls': '',
+          }),
+        ),
+      );
+      final ssUser = base64.encode(utf8.encode('aes-256-gcm:pw-us10'));
       final body = [
         ...fixtureLines().take(10),
-        'vmess://data@us9.example.invalid:443#USA-8',
+        'vmess://$vmess#USA-8',
         'trojan://pw@us10.example.invalid:443#USA-9',
-        'ss://YWVz@us11.example.invalid:8388#USA-10',
-        'vless://00000010-0000-4000-8000-000000000010@us12.example.invalid:443?type=grpc&security=tls#USA-11',
-        'vless://00000011-0000-4000-8000-000000000011@us13.example.invalid:443?type=tcp&security=reality&sni=www.example.com#USA-12',
-        'vless://00000012-0000-4000-8000-000000000012@us14.example.invalid:443?type=ws&security=reality&pbk=PUBLIC_KEY_H#USA-13',
+        'ss://$ssUser@us11.example.invalid:8388#USA-10',
+        'ssr://abc@us12.example.invalid:443#USA-11',
+        'vless://00000010-0000-4000-8000-000000000010@us12.example.invalid:443?type=grpc&security=tls#USA-12',
+        'vless://00000011-0000-4000-8000-000000000011@us13.example.invalid:443?type=tcp&security=reality&sni=www.example.com#USA-13',
+        'vless://00000012-0000-4000-8000-000000000012@us14.example.invalid:443?type=ws&security=reality&pbk=PUBLIC_KEY_H#USA-14',
       ].join('\n');
 
       final result = parser.parse(body);
-      expect(result.receivedEntryCount, 16);
+      expect(result.receivedEntryCount, 17);
       expect(result.parsedProfileCount, 16);
       expect(result.postDedupeProfileCount, 16);
       expect(result.droppedDuplicateCount, 0);
-      expect(result.malformedEntryCount, 0);
-      expect(result.compatibleProfileCount, 10);
+      expect(result.malformedEntryCount, 1);
+      // 10 fixture + vmess + trojan + ss; the malformed ssr, grpc-vless,
+      // reality-no-pbk, ws+reality remain non-executable.
+      expect(result.compatibleProfileCount, 13);
     });
   });
 

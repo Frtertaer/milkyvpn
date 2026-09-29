@@ -1,0 +1,88 @@
+name: windows-package
+
+on:
+  push:
+    branches:
+      - devin/1790199091-kal2-universal-subscriptions
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: '3.47.5'
+          cache: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: milky-core/go.mod
+
+      - name: Flutter app (release)
+        run: |
+          flutter pub get
+          flutter build windows --release
+
+      - name: kal2-client (console-less GUI subsystem)
+        working-directory: milky-core
+        shell: bash
+        run: |
+          mkdir -p ../build/windows/x64/runner/Release/kal2
+          GOOS=windows GOARCH=amd64 go build -trimpath \
+            -ldflags '-s -w -H windowsgui' \
+            -o ../build/windows/x64/runner/Release/kal2/kal2-client.exe \
+            ./cmd/kal2-client
+
+      - name: wintun.dll (full-TUN driver, official signed build)
+        shell: pwsh
+        run: |
+          $zip = 'wintun.zip'
+          Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $zip
+          $h = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51') {
+            throw "wintun sha256 mismatch: $h"
+          }
+          Expand-Archive $zip -DestinationPath wintun-dist
+          Copy-Item 'wintun-dist\wintun\bin\amd64\wintun.dll' `
+            'build\windows\x64\runner\Release\kal2\wintun.dll'
+
+      - name: Bundle VC++ redist DLLs
+        shell: pwsh
+        run: |
+          $rel = 'build\windows\x64\runner\Release'
+          $crt = Get-ChildItem `
+            'C:\Program Files\Microsoft Visual Studio\*\*\VC\Redist\MSVC\*\x64\Microsoft.VC143.CRT' |
+            Sort-Object -Descending FullName | Select-Object -First 1
+          foreach ($d in 'vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll') {
+            Copy-Item (Join-Path $crt.FullName $d) $rel
+          }
+
+      - name: Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build MilkyVPN-Setup.exe (Inno)
+        shell: pwsh
+        working-directory: installer
+        run: |
+          $iscc = 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+          & $iscc /Q windows.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC exited $LASTEXITCODE" }
+          Copy-Item '..\build\installer\MilkyVPN-Setup.exe' '..\MilkyVPN-Setup.exe'
+
+      - name: Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: windows-test-${{ github.run_number }}
+          name: Milky VPN for Windows — test build ${{ github.run_number }}
+          body: |
+            Тестовая сборка Windows-приложения Milky VPN (KAL/2).
+            Скачай `MilkyVPN-Setup.exe`, запусти, дальше по шагам.
+          files: MilkyVPN-Setup.exe
+          prerelease: true

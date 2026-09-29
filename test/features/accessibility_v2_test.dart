@@ -1,3 +1,5 @@
+import 'dart:ui' show Tristate;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/semantics.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -127,7 +129,9 @@ void main() {
       await tester.tap(find.byKey(const ValueKey('milky_nav_2')));
       await tester.pumpAndSettle();
       expect(find.text('Автоподключение'), findsOneWidget);
-      expect(find.text('Always-on VPN'), findsOneWidget);
+      // Always-on VPN is Android-only (BUG-2026-09-29-04) — absent on the
+      // test host; the connection group renders the remaining rows fine.
+      expect(find.text('Always-on VPN'), findsNothing);
       await tester.scrollUntilVisible(
         find.text('Версия'),
         180,
@@ -197,8 +201,7 @@ void main() {
       final orb = find.byKey(const Key('connect_orb'));
       final data = tester.getSemantics(orb).getSemanticsData();
       expect(data.flagsCollection.isButton, isTrue);
-      expect(data.flagsCollection.hasEnabledState, isTrue);
-      expect(data.flagsCollection.isEnabled, isTrue);
+      expect(data.flagsCollection.isEnabled, Tristate.isTrue);
       expect(data.hasAction(SemanticsAction.tap), isTrue);
       expect(data.label, contains('Нажмите, чтобы подключиться'));
       expect(data.label, contains('ВКЛЮЧИТЬ'));

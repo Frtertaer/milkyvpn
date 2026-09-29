@@ -1,3 +1,5 @@
+import 'dart:io' show Platform;
+
 import 'package:flutter/material.dart';
 
 import '../core/errors/milky_error.dart';
@@ -77,11 +79,11 @@ class S {
   String get protectionConnecting => t('Подключаем…', 'Connecting…');
   String get notConnected => t('Не подключено', 'Not connected');
   String get connecting => t('Подключаем…', 'Connecting…');
-  String get disconnecting => t('Отключаем…', 'Disconnecting…');
   String get connected => t('Подключено', 'Connected');
   String get protectedShort => t('Защищено', 'Protected');
   String get connect => t('Подключить', 'Connect');
   String get disconnect => t('Отключить', 'Disconnect');
+  String get disconnecting => t('Отключаем…', 'Disconnecting…');
   String get searchingServer =>
       t('Ищем лучший сервер…', 'Finding the best server…');
   String attemptOf(int i, int n) => t('$i из $n', '$i of $n');
@@ -238,6 +240,10 @@ class S {
   String get remove => t('Удалить', 'Remove');
   String get cancel => t('Отмена', 'Cancel');
   String get noSubscription => t('Подписка не добавлена', 'No subscription');
+  String get notRefreshable => t(
+    'Импортированные профили нельзя обновить',
+    'Imported profiles cannot be refreshed',
+  );
   String get addSubscriptionQuestion =>
       t('Добавить подписку MilkyVPN?', 'Add MilkyVPN subscription?');
   String get error => t('Ошибка', 'Error');
@@ -252,11 +258,17 @@ class S {
   String get advanced => t('Дополнительно', 'Advanced');
   String get copyLink => t('Скопировать ссылку', 'Copy link');
   String get linkCopied => t('Ссылка скопирована', 'Link copied');
+  String get exportProfiles => t('Экспортировать профили', 'Export profiles');
+  String get exportProfilesHint => t(
+    'Скопировать все профили как ссылки для другого клиента',
+    'Copy all profiles as share links for another client',
+  );
+  String get profilesExported => t('Профили скопированы', 'Profiles copied');
   String get subscriptionEmptyTitle =>
       t('Подписки пока нет', 'No subscription yet');
   String get subscriptionEmptyBody => t(
-    'Добавьте ссылку MilkyVPN, чтобы подключить защиту.',
-    'Add your MilkyVPN link to enable protection.',
+    'Добавьте ссылку на подписку, чтобы подключить защиту.',
+    'Add a subscription link to enable protection.',
   );
 
   // ---------------------------------------------------------------- import
@@ -272,8 +284,8 @@ class S {
   String get import => t('Добавить', 'Add');
   String get importing => t('Загружаем…', 'Loading…');
   String get importOk => t('Подписка добавлена', 'Subscription added');
-  String get updated => t('Подписка обновлена', 'Subscription updated');
   String get goToConnect => t('Перейти к подключению', 'Go to connect');
+  String get updated => t('Подписка обновлена', 'Subscription updated');
   String get showLink => t('Показать ссылку', 'Show link');
   String get hideLink => t('Скрыть ссылку', 'Hide link');
   String get deepLinkTitle =>
@@ -284,8 +296,8 @@ class S {
   );
   String get add => t('Добавить', 'Add');
   String get urlNotAllowed => t(
-    'Допустимы только ссылки вида https://sub.milky.homes/s/…',
-    'Only https://sub.milky.homes/s/… links are accepted',
+    'Допустимы только http(s)-ссылки на публичные серверы',
+    'Only http(s) links to public servers are accepted',
   );
   String serversReady(int n) => counted(
     n,
@@ -308,6 +320,11 @@ class S {
   String get alwaysOn => t('Always-on VPN', 'Always-on VPN');
   String get alwaysOnHint =>
       t('Системные настройки Android', 'Android system settings');
+  String get fullTunnel => t('Полный туннель', 'Full tunnel');
+  String get fullTunnelHint => t(
+    'Весь трафик ПК через VPN (запросит права администратора)',
+    'Route all PC traffic through the VPN (asks for admin rights)',
+  );
   String get theme => t('Тема', 'Theme');
   String get themeSystem => t('Системная', 'System');
   String get themeLight => t('Светлая', 'Light');
@@ -326,8 +343,8 @@ class S {
       t('Скопировать диагностику', 'Copy diagnostics');
   String get copied => t('Скопировано', 'Copied');
   String get privacyBody => t(
-    'Приложение не собирает историю посещений, DNS-запросы и содержимое трафика, не содержит аналитики и рекламы. Ссылка на подписку хранится в защищённом хранилище Android Keystore и не покидает устройство, кроме запроса к sub.milky.homes для загрузки списка серверов. Диагностика копируется только по вашему действию и не содержит учётных данных.',
-    'The app does not collect browsing history, DNS queries or traffic contents and has no analytics or ads. The subscription link is stored in Android Keystore-backed secure storage and never leaves the device except for requests to sub.milky.homes to download the server list. Diagnostics are copied only by your action and contain no credentials.',
+    'Приложение не собирает историю посещений, DNS-запросы и содержимое трафика, не содержит аналитики и рекламы. Ссылка на подписку хранится в защищённом хранилище Android Keystore и не покидает устройство, кроме запроса к серверу подписки для загрузки списка серверов. Диагностика копируется только по вашему действию и не содержит учётных данных.',
+    'The app does not collect browsing history, DNS queries or traffic contents and has no analytics or ads. The subscription link is stored in Android Keystore-backed secure storage and never leaves the device except for requests to the subscription host to download the server list. Diagnostics are copied only by your action and contain no credentials.',
   );
   String get aboutBody => t(
     'MilkyVPN — клиент для подписки Milky. Трафик проходит через зашифрованный туннель к выбранному серверу, приложение не видит содержимое ваших запросов.',
@@ -380,6 +397,12 @@ class S {
   String errorBody(MilkyErrorKind kind) {
     switch (kind) {
       case MilkyErrorKind.permissionDenied:
+        if (Platform.isWindows) {
+          return t(
+            'Windows запросил права администратора (UAC), но запуск был отклонён. Разрешите запуск или выключите «Полный туннель» в настройках — тогда хватит обычных прав.',
+            'Windows asked for admin rights (UAC) and the launch was declined. Allow it, or turn off "Full tunnel" in settings — the normal mode needs no admin.',
+          );
+        }
         return t(
           'Android не разрешил создать VPN-туннель. Разрешите подключение и попробуйте снова.',
           'Android did not allow the VPN tunnel. Grant the permission and try again.',

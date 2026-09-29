@@ -22,6 +22,14 @@ class ProfileSelector {
         return 2;
       case ProfileKind.vlessRealityTcp:
         return 3;
+      case ProfileKind.kal2:
+        return 4;
+      case ProfileKind.vmess:
+        return 5;
+      case ProfileKind.trojan:
+        return 6;
+      case ProfileKind.shadowsocks:
+        return 7;
       case ProfileKind.other:
         return 9;
     }
@@ -34,17 +42,17 @@ class ProfileSelector {
   }) {
     if (maxAttempts <= 0) return const [];
 
-    Iterable<VpnProfile> pool = supported.where(
-      (p) => p.kind != ProfileKind.other,
-    );
+    final all = supported.where((p) => p.kind != ProfileKind.other).toList();
+    Iterable<VpnProfile> pool;
     switch (choice) {
       case LocationChoice.finland:
-        pool = pool.where((p) => p.location == ServerLocation.finland);
+        pool = _preferLocation(all, ServerLocation.finland);
         break;
       case LocationChoice.usa:
-        pool = pool.where((p) => p.location == ServerLocation.usa);
+        pool = _preferLocation(all, ServerLocation.usa);
         break;
       case LocationChoice.auto:
+        pool = all;
         break;
     }
     final families = <ProfileKind, List<VpnProfile>>{};
@@ -89,6 +97,19 @@ class ProfileSelector {
       if (!addedInRound) break;
     }
     return selected;
+  }
+
+  /// Profiles in `location` first, then unknown-located ones. Profiles known to be
+  /// in a different country are excluded — an unlabelled profile can still serve
+  /// the choice and must never dead-end a single-profile subscription.
+  static List<VpnProfile> _preferLocation(
+    List<VpnProfile> profiles,
+    ServerLocation location,
+  ) {
+    return [
+      ...profiles.where((p) => p.location == location),
+      ...profiles.where((p) => p.location == ServerLocation.unknown),
+    ];
   }
 }
 

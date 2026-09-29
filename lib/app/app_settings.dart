@@ -24,6 +24,10 @@ class AppSettings extends ChangeNotifier {
       : values.first;
   bool get autoConnect => _prefs.getBool('auto_connect') ?? false;
 
+  /// Windows only: route all device traffic through a wintun adapter instead
+  /// of the SOCKS system proxy. Ignored elsewhere.
+  bool get fullTunnel => _prefs.getBool('tun_mode') ?? false;
+
   Future<void> setOnboardingDone() async {
     await _prefs.setBool('onboarding_done', true);
     notifyListeners();
@@ -41,6 +45,11 @@ class AppSettings extends ChangeNotifier {
 
   Future<void> setAutoConnect(bool v) async {
     await _prefs.setBool('auto_connect', v);
+    notifyListeners();
+  }
+
+  Future<void> setFullTunnel(bool v) async {
+    await _prefs.setBool('tun_mode', v);
     notifyListeners();
   }
 }
