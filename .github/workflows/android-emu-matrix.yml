@@ -40,7 +40,14 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: milky-core/go.mod
-      - uses: android-actions/setup-android@v3
+      # hosted runners ship an Android SDK at $ANDROID_HOME — put its tools on PATH
+      # (setup-android@v3 tries to install the removed 'tools' package and fails)
+      - name: android sdk on PATH
+        run: |
+          SDKM=$(ls -d "$ANDROID_HOME"/cmdline-tools/*/bin 2>/dev/null | sort -V | tail -1)
+          [ -n "$SDKM" ] || { echo "::error::no cmdline-tools in $ANDROID_HOME"; exit 1; }
+          echo "$SDKM:$ANDROID_HOME/platform-tools" >> "$GITHUB_PATH"
+          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
 
       - name: KVM check
         run: |
@@ -78,4 +85,4 @@ jobs:
 
       - name: logcat on failure
         if: failure()
-        run: $ANDROID_HOME/platform-tools/adb logcat -d | tail -300 || true
+        run: timeout 20 $ANDROID_HOME/platform-tools/adb logcat -d 2>/dev/null | tail -300 || true
