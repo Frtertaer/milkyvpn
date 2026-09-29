@@ -308,7 +308,9 @@ s_wifi_lte() {
   m=$(mark_log)
   wifi_toggle enable || true
   sleep 6
-  if wait_state '[= ]CONNECTED' 60 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+  # Re-adding wifi does not force a redial — a healthy session may migrate or
+  # simply keep running over cellular. Only the traffic check is meaningful.
+  if ip=$(verify_tunnel_wait 75) && [ -n "$ip" ]; then
     ok "data→wifi: tunnel alive (exit $ip)"
   else
     bad "data→wifi: tunnel dead"
@@ -459,13 +461,15 @@ s_fgs_doze() {
   log "scenario: doze/FGS"
   "${ADB[@]}" shell dumpsys deviceidle force-idle 2>/dev/null || true
   sleep 10
-  local procdump
-  procdump=$("${ADB[@]}" shell dumpsys activity processes 2>/dev/null | grep -B4 -A8 "$PKG:kal2" || true)
-  if printf '%s' "$procdump" | grep -qiE "fg-service|\bfg\b|procState=fg"; then
+  local svcdump procdump
+  svcdump=$("${ADB[@]}" shell dumpsys activity services "$PKG" 2>/dev/null | grep -A25 "Kal2Service" || true)
+  procdump=$("${ADB[@]}" shell dumpsys activity lru 2>/dev/null | grep "$PKG:kal2" || true)
+  if printf '%s' "$svcdump" | grep -q "isForeground=true" \
+     || printf '%s' "$procdump" | grep -qE "\bfg\b|fg-service"; then
     ok "doze: :kal2 service still foreground"
   else
     bad "doze: :kal2 not foreground — actual state:"
-    printf '%s\n' "$procdump" | head -12
+    printf '%s\n%s\n' "$svcdump" "$procdump" | head -14
   fi
   "${ADB[@]}" shell dumpsys deviceidle unforce 2>/dev/null || true
 }
