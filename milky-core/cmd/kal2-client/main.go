@@ -38,6 +38,12 @@ import (
 )
 
 func main() {
+	// Internal mode: crash watchdog child for Darwin bypass routes
+	// (kal2-client -route-janitor <ledger>). Not a user-facing flag.
+	if len(os.Args) >= 3 && os.Args[1] == "-route-janitor" {
+		runRouteJanitor(os.Args[2])
+		return
+	}
 	addr := flag.String("addr", "", "server host:port (comma list for failover)")
 	sni := flag.String("sni", "", "TLS SNI")
 	pub := flag.String("pub", "", "server ed25519 pub (hex)")
@@ -45,7 +51,7 @@ func main() {
 	carrier := flag.String("carrier", "auto", "auto|veil|drift")
 	driftPath := flag.String("drift", "", "drift path")
 	socks := flag.String("socks", "127.0.0.1:10808", "local socks listen")
-	tunName := flag.String("tun", "", "create a wintun adapter with this name and tunnel all device traffic (Windows, needs admin)")
+	tunName := flag.String("tun", "", "create a TUN adapter with this name and tunnel all device traffic (needs root/admin)")
 	ctlAddr := flag.String("ctl", "", "control socket: log lines are mirrored here and 'stop' exits (used when spawned elevated)")
 	fetch := flag.String("fetch", "", "fetch URL through tunnel and exit")
 	fetchMax := flag.Int64("fetchmax", 32<<20, "max bytes to read for -fetch")
@@ -92,14 +98,16 @@ func main() {
 		}
 	}
 	// bindGuard pins carrier sockets to the physical egress device once the
-	// TUN device is configured — replaces /32 bypass routes, so kill -9
-	// cannot leave residual host routes behind.
+	// TUN device is configured. On Darwin it also maintains the /32 bypass
+	// routes bound sockets require — the route janitor removes those after
+	// a crash since they are not device-scoped.
 	bindGuard := tun.NewBindGuard()
 	if *tunName != "" {
 		// The first session dials before tun.Configure can publish the
 		// device — seed it now or the socket's next dst revalidation loops
 		// carrier traffic into the tunnel.
 		bindGuard.Set(tun.DefaultEgress())
+		armRouteJanitor(bindGuard)
 	}
 	cfg := kal2core.ClientConfig{
 		Addr:               addrs[0],
@@ -197,10 +205,11 @@ func main() {
 		// streams. Still serves SOCKS5 alongside — both paths stay live
 		// across reconnects via cli.Session().
 		tcfg := &tun.Config{
-			Name: *tunName,
-			Addr: tun.DefaultAddr,
-			Bind: bindGuard,
-			Logf: log.Printf,
+			Name:      *tunName,
+			Addr:      tun.DefaultAddr,
+			Bind:      bindGuard,
+			ServerIPs: resolveServerIPs(addrs),
+			Logf:      log.Printf,
 			OpenTCP: func(ctx context.Context, target string) (tun.Stream, error) {
 				sess := cli.Session()
 				if sess == nil {
@@ -450,6 +459,44 @@ func httpConnectDialer(raw string, control func(network, address string, c sysca
 		}
 		return c, nil
 	}, nil
+}
+
+// resolveServerIPs flattens the endpoint list to literal v4 addresses for the
+// Darwin /32 bypasses — hostnames resolve once here and again lazily per-dial
+// inside BindGuard.Control when a carrier reconnects.
+func resolveServerIPs(addrs []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(ip net.IP) {
+		if ip == nil || ip.To4() == nil {
+			return
+		}
+		s := ip.String()
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	for _, a := range addrs {
+		host, _, err := net.SplitHostPort(a)
+		if err != nil {
+			host = a
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			add(ip)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		cancel()
+		if err != nil {
+			continue
+		}
+		for _, ip := range ips {
+			add(ip)
+		}
+	}
+	return out
 }
 
 // prefixReaderConn reads buffered bytes before the underlying conn.

@@ -48,7 +48,10 @@ func (d *fileDevice) ReadPacket() (pkt []byte, release func(), err error) {
 func (d *fileDevice) WritePacket(pkt []byte) error {
 	if d.hdr > 0 {
 		var h [4]byte
-		binary.LittleEndian.PutUint32(h[:], afFamily(pkt))
+		// utun's input path reads the family prefix with ntohl — it is
+		// big-endian on the fd even though the outbound (kernel→fd) prefix
+		// reads as native order in tools.
+		binary.BigEndian.PutUint32(h[:], afFamily(pkt))
 		pkt = append(h[:], pkt...)
 	}
 	for {

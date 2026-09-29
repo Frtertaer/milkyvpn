@@ -65,6 +65,10 @@ func openDevice(cfg *Config) (Device, error) {
 
 func IsElevated() bool { return os.Geteuid() == 0 }
 
+// Name reports the kernel-assigned utun unit (kernel picks it, cfg.Name is
+// only a label on Darwin).
+func (d *darwinDevice) Name() string { return d.name }
+
 // getsockoptString reads a string socket option (x/sys lacks the helper on
 // darwin for SYSPROTO_CONTROL/UTUN_OPT_IFNAME).
 func getsockoptString(fd, level, opt int) (string, error) {
@@ -84,13 +88,19 @@ func DefaultEgress() string {
 	return dev
 }
 
-// defaultRoute reads "default: gateway" out of `route -n get default`.
+// defaultRoute reads gateway/interface out of `route -n get default`.
 func defaultRoute() (gw, dev string, err error) {
 	out, err := exec.Command("route", "-n", "get", "default").Output()
 	if err != nil {
 		return "", "", fmt.Errorf("route get: %w", err)
 	}
-	for _, l := range strings.Split(string(out), "\n") {
+	return parseRouteGet(string(out))
+}
+
+// parseRouteGet pulls the gateway/interface pair from `route -n get`
+// output. Both fields live on lines of the form "key: value".
+func parseRouteGet(out string) (gw, dev string, err error) {
+	for _, l := range strings.Split(out, "\n") {
 		f := strings.Fields(l)
 		if len(f) == 2 && f[0] == "gateway:" {
 			gw = f[1]
@@ -118,11 +128,12 @@ func (d *darwinDevice) configure() error {
 	gw, dev, err := defaultRoute()
 	if err == nil {
 		d.gw, d.dev = gw, dev
-		// Carrier sockets bind to the egress interface from now on — they
-		// bypass the tunnel without FIB entries, so kill -9 leaves no
-		// residual routes behind.
+		// Carrier sockets bind to the egress interface; Darwin additionally
+		// needs a /32 bypass route per server IP (a bound socket whose best
+		// route leaves through utun fails connect() with ENETUNREACH).
 		if d.conf.Bind != nil {
-			d.conf.Bind.Set(dev)
+			d.conf.Bind.setEgress(gw, dev)
+			d.conf.Bind.EnsureIPs(d.conf.ServerIPs)
 		}
 	}
 	// utun is point-to-point: local addr + destination inside the same /32.
@@ -148,5 +159,8 @@ func (d *darwinDevice) restore() {
 	_ = run("route", "delete", "-net", "128.0.0.0/1", "-interface", d.name)
 	_ = run("route", "delete", "-inet6", "-net", "::/1", "-interface", d.name)
 	_ = run("route", "delete", "-inet6", "-net", "8000::/1", "-interface", d.name)
+	if d.conf.Bind != nil {
+		d.conf.Bind.Restore() // /32 bypasses are not device-scoped
+	}
 	// utun disappears with the fd; no explicit teardown needed.
 }

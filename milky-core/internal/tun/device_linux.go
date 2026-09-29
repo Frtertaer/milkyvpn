@@ -64,6 +64,9 @@ func openDevice(cfg *Config) (Device, error) {
 // the client with `cap_net_admin+ep` which still shows euid 0 in most cases.
 func IsElevated() bool { return os.Geteuid() == 0 }
 
+// Name reports the kernel-acknowledged interface name (TUNSETIFF may rename).
+func (d *linuxDevice) Name() string { return d.name }
+
 // DefaultEgress reports the current default-route egress device so carrier
 // sockets can be bound to it even before the TUN device is configured
 // (the first session dials before Configure runs).
