@@ -111,6 +111,11 @@ func (s *Session) Close() error {
 	return err
 }
 
+// Kill fails the session with err: every open stream learns the cause and the
+// carrier closes. Close alone only stops the carrier — stream readers would
+// hang waiting on queues nobody drains, so watchdogs use Kill.
+func (s *Session) Kill(err error) { s.fail(err) }
+
 func (s *Session) nonce(seq uint64) []byte {
 	n := make([]byte, chacha20poly1305.NonceSize)
 	copy(n, s.nonceBase)

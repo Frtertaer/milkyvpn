@@ -29,6 +29,23 @@ jobs:
             echo "::error::secret KAL2_TEST_LINK is not set — add a kal2:// test profile"
             exit 1; }
 
+      # Fingerprint the link so a stale psk is visible in the log without
+      # printing the secret: sha256[:12] of the whole link + psk[:8] + endpoint.
+      - name: KAL2_TEST_LINK fingerprint
+        env:
+          KAL2_TEST_LINK: ${{ secrets.KAL2_TEST_LINK }}
+        run: |
+          python3 - <<'PY'
+          import hashlib, os, re, sys
+          link = os.environ.get("KAL2_TEST_LINK", "")
+          m = re.match(r"kal2://([0-9a-fA-F]+)@([^:/]+):(\d+)", link)
+          if not m:
+              print("::error::KAL2_TEST_LINK is not a kal2:// link"); sys.exit(1)
+          carrier = re.search(r"carrier=(\w+)", link)
+          print(f"link sha256[:12]={hashlib.sha256(link.encode()).hexdigest()[:12]}")
+          print(f"psk prefix={m.group(1)[:8]}… endpoint={m.group(2)}:{m.group(3)} carrier={carrier.group(1) if carrier else 'default'}")
+          PY
+
       - uses: actions/setup-java@v4
         with:
           distribution: temurin

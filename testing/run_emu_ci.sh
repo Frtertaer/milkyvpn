@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# CI entrypoint for the emulator-matrix workflow: gated connect, then best-effort
-# network scenarios. Env: KAL2_TEST_LINK (required), SERIAL (default emulator-5554).
+# CI entrypoint for the emulator-matrix workflow: gated connect, then the full
+# scenario battery — every scenario gates the job. Env: KAL2_TEST_LINK
+# (required), SERIAL (default emulator-5554).
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -19,11 +20,22 @@ collect_logs() {
 }
 trap collect_logs EXIT
 
+# adbd answers long before the system is ready — installing into a half-booted
+# device is a known race. Wait for real boot + the package manager first.
+for _ in $(seq 1 40); do
+  [ "$(adb -s "$SERIAL" shell getprop sys.boot_completed 2>/dev/null | tr -d '\r')" = "1" ] \
+    && adb -s "$SERIAL" shell pm list packages >/dev/null 2>&1 && break
+  sleep 5
+done
+adb -s "$SERIAL" wait-for-device
+sleep 5
+
 adb -s "$SERIAL" install -r "$APK" >/dev/null && echo "installed $APK"
 
 ./testing/scenarios.sh --apk "$APK" --serial "$SERIAL" --scenario connect \
   || { echo "connect scenario FAILED"; exit 1; }
 
-for s in wifi_lte net_loss dns_change dns_leak fgs_doze; do
-  ./testing/scenarios.sh --serial "$SERIAL" --scenario "$s" || true
+for s in wifi_lte net_loss dns_change dns_leak battery_opt fgs_doze on_revoke; do
+  ./testing/scenarios.sh --serial "$SERIAL" --scenario "$s" \
+    || { echo "scenario $s FAILED"; exit 1; }
 done

@@ -5,8 +5,8 @@
 #   testing/scenarios.sh --apk app-debug.apk [--serial emulator-5554]
 #                        [--link 'kal2://...'] [--scenario name|--all]
 #
-# Scenarios: connect, wifi_lte, net_loss, dns_change, dns_leak,
-#            tls_cutoff (needs --proxy), soak30, fgs_doze.
+# Scenarios: connect, wifi_lte, net_loss, dns_change, dns_leak, battery_opt,
+#            on_revoke, tls_cutoff (needs --proxy), soak30, fgs_doze.
 #
 # The device must already be booted and `adb` reachable. The app profile is
 # imported by typing the kal2:// link (see skill testing-android-emu-proxy:
@@ -57,10 +57,14 @@ ok()   { PASS=$((PASS+1)); echo "PASS  $*"; }
 bad()  { FAIL=$((FAIL+1)); echo "FAIL  $*"; }
 log()  { echo "[$(date +%H:%M:%S)] $*"; }
 
-wait_state() {  # wait_state CONNECTED|ERROR [timeout_s]
+# wait_state <logcat-regex> [timeout_s]
+# NOTE: callers must clear_log before the disruptive part of a scenario —
+# logcat -d replays the whole buffer, so a stale CONNECTED line from an earlier
+# scenario would match instantly otherwise.
+wait_state() {
   local want=$1 to=${2:-90} t0=$SECONDS
   while (( SECONDS - t0 < to )); do
-    if "${ADB[@]}" logcat -d -s MilkyVPN 2>/dev/null | grep -q "$want"; then
+    if "${ADB[@]}" logcat -d -s MilkyVPN 2>/dev/null | grep -qE "$want"; then
       return 0
     fi
     sleep 2
@@ -94,6 +98,19 @@ ui_xml() {
   "${ADB[@]}" shell cat /sdcard/__ci.xml 2>/dev/null
 }
 
+# ui_ready — first frames on API 29 can take a while (Impeller slow path) and
+# uiautomator returns an empty tree until the view hierarchy exists.
+ui_ready() {
+  local i
+  for i in $(seq 1 20); do
+    ui_xml | grep -q '<node ' && return 0
+    sleep 2
+  done
+  log "ui: dump still empty after 40s — window state:"
+  "${ADB[@]}" shell dumpsys window 2>/dev/null | grep -E "mCurrentFocus|mFocusedApp" | head -3
+  return 1
+}
+
 _ui_center_of_match() {  # first clickable node matching regex → "x y"
   local re=$1 line b
   line=$(ui_xml | tr '<' '\n' | grep 'clickable="true"' | grep -m1 "\(content-desc=\"[^\"]*${re}[^\"]*\"\|text=\"[^\"]*${re}[^\"]*\"\)")
@@ -111,12 +128,20 @@ ui_tap_desc() {  # ui_tap_desc <regex on text/content-desc> [fallback_x% fallbac
   "${ADB[@]}" shell input tap $xy
 }
 
-ui_tap_desc_wait() {  # poll up to ~20s for a clickable match, then tap it
-  local i
-  for i in $(seq 1 10); do
+ui_tap_desc_wait() {  # poll up to ~30s for a clickable match, then tap it
+  local i xml
+  for i in $(seq 1 15); do
     ui_tap_desc "$1" && return 0
     sleep 2
   done
+  xml=$(ui_xml)
+  if ! printf '%s' "$xml" | grep -q '<node '; then
+    log "ui: accessibility dump EMPTY (API29 first-frame flake?)"
+    "${ADB[@]}" shell dumpsys window 2>/dev/null | grep -E "mCurrentFocus|mFocusedApp" | head -3
+  else
+    log "ui: tree populated, no match for '$1'; visible texts:"
+    printf '%s\n' "$xml" | tr '<' '\n' | grep -o 'text="[^"]*"' | head -15
+  fi
   return 1
 }
 
@@ -132,6 +157,7 @@ ui_tap_class() {  # tap first node of a class (e.g. android.widget.EditText)
 
 onboarding_and_import() {
   # fresh install → 3-page onboarding, then ImportScreen paste+confirm.
+  ui_ready || log "ui: no view tree yet — continuing anyway"
   ui_tap_desc_wait "Продолжить\|Continue" && sleep 2
   ui_tap_desc_wait "Понятно\|Got it" && sleep 2
   ui_tap_desc_wait "Добавить подписку\|Add subscription" && sleep 3
@@ -164,66 +190,166 @@ verify_tunnel() {  # SOCKS liveness: real bytes through the tunnel
   curl -s -m 12 --socks5-hostname 127.0.0.1:11808 https://ifconfig.me/ip 2>/dev/null
 }
 
+# verify_tunnel_wait <timeout_s> — poll until a real fetch succeeds; an empty
+# answer (tunnel half-up) is retried, not accepted.
+verify_tunnel_wait() {
+  local to=${1:-45} t0=$SECONDS ip
+  while (( SECONDS - t0 < to )); do
+    ip=$(verify_tunnel)
+    [ -n "$ip" ] && { echo "$ip"; return 0; }
+    sleep 3
+  done
+  return 1
+}
+
 s_connect() {
-  log "scenario: connect"
-  launch_app; onboarding_and_import; tap_connect
-  if wait_state CONNECTED 90; then
-    local ip; ip=$(verify_tunnel)
-    [ -n "$ip" ] && ok "connected, tunnel exit $ip" || { ok "connected (SOCKS probe empty)"; }
-  else
-    bad "no CONNECTED in 90s"; "${ADB[@]}" logcat -d | tail -60
-  fi
+  log "scenario: connect (2 attempts — first EOF after a server restart is transient)"
+  launch_app; onboarding_and_import
+  local i ip
+  for i in 1 2; do
+    tap_connect
+    clear_log
+    if wait_state ' CONNECTED' 90; then
+      if ip=$(verify_tunnel_wait 45); then
+        ok "connected (attempt $i), real traffic through tunnel, exit $ip"
+        return
+      fi
+      log "attempt $i: CONNECTED but real traffic check empty"
+    else
+      log "attempt $i: no CONNECTED in 90s"
+    fi
+    # retry affordance on the error sheet, then the connect button again
+    ui_tap_desc_wait "Попробовать снова\|Повторить\|Retry\|Try again" || true
+    sleep 2
+  done
+  bad "connect failed after 2 attempts"
+  "${ADB[@]}" logcat -d | tail -60
 }
 
 s_wifi_lte() {
   log "scenario: wifi<->lte switch (guest wifi toggle ↔ cellular data)"
+  clear_log
   "${ADB[@]}" shell svc wifi disable
   sleep 8
   "${ADB[@]}" shell svc data enable
-  sleep 4
-  # kal2 session should still be alive — migration/reconnect covers it
-  if "${ADB[@]}" logcat -d -s MilkyVPN | grep -q "session lost"; then
-    wait_state CONNECTED 60 && ok "wifi→data: session re-established" || bad "session never recovered after wifi→data"
+  # kal2 must redial over cellular and the app must re-verify — CONNECTED line
+  # is fresh because the log was cleared before the toggle.
+  if wait_state ' CONNECTED' 90 && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+    ok "wifi→data: session re-established (exit $ip)"
   else
-    local ip; ip=$(verify_tunnel)
-    [ -n "$ip" ] && ok "wifi→data: session survived (exit $ip)" || bad "wifi→data: session up but tunnel dead"
+    bad "wifi→data: session never recovered"
   fi
+  clear_log
   "${ADB[@]}" shell svc wifi enable
   sleep 6
-  verify_tunnel >/dev/null && ok "data→wifi: tunnel alive" || bad "data→wifi: tunnel dead"
+  if wait_state ' CONNECTED' 60 && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+    ok "data→wifi: tunnel alive (exit $ip)"
+  else
+    bad "data→wifi: tunnel dead"
+  fi
 }
 
 s_net_loss() {
   log "scenario: total net loss 15s"
+  clear_log
   "${ADB[@]}" shell svc wifi disable; "${ADB[@]}" shell svc data disable
   sleep 15
   "${ADB[@]}" shell svc wifi enable; "${ADB[@]}" shell svc data enable
+  # The kal2 carrier socket dies or blackholes with the underlay; the session
+  # must be killed by liveness probes and redialed, then the app re-verifies.
   sleep 5
-  wait_state CONNECTED 90 && verify_tunnel >/dev/null \
-    && ok "net loss: session recovered" \
-    || bad "net loss: no recovery in 90s"
+  if wait_state ' CONNECTED' 90 && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+    ok "net loss: session recovered (exit $ip)"
+  else
+    bad "net loss: no recovery in 90s"
+  fi
 }
 
 s_dns_change() {
   log "scenario: private DNS flip while connected"
   "${ADB[@]}" shell settings put global private_dns_specifier dns.google
   sleep 4
-  verify_tunnel >/dev/null && ok "dns flip: tunnel alive" || bad "dns flip: tunnel dead"
+  # The underlay network renegotiates; the tunnel must stay (or re-dial) and
+  # real traffic must still pass.
+  if ip=$(verify_tunnel_wait 60) && [ -n "$ip" ]; then
+    ok "dns flip: tunnel alive (exit $ip)"
+  else
+    bad "dns flip: tunnel dead"
+  fi
   "${ADB[@]}" shell settings delete global private_dns_specifier
 }
 
 s_dns_leak() {
   log "scenario: DNS leak check"
   "${ADB[@]}" forward tcp:11808 tcp:11808 >/dev/null 2>&1 || true
-  # Through the tunnel all DNS is resolved server-side; nothing should hit
-  # the guest resolver: watch the guest's resolver socket for queries.
-  local before after
-  before=$("${ADB[@]}" shell 'cat /proc/net/udp6 2>/dev/null | wc -l; dumpsys netd 2>/dev/null | grep -ci vpn || true')
-  "${ADB[@]}" shell svc data enable >/dev/null 2>&1
   curl -s -m 10 --socks5-hostname 127.0.0.1:11808 https://checkip.amazonaws.com >/dev/null || true
-  after=$("${ADB[@]}" shell 'cat /proc/net/udp6 2>/dev/null | wc -l')
-  log "resolver-udp6 lines before=$before after=$after (manual review)"
-  ok "dns leak snapshot logged (manual review)"
+  # The VPN link must carry ONLY the tunnel resolvers — an underlay DNS on the
+  # VPN interface means queries could escape around the tunnel.
+  local dnsvpn dnsall
+  dnsall=$("${ADB[@]}" shell dumpsys connectivity 2>/dev/null | grep -i "dnsaddresses")
+  dnsvpn=$(printf '%s\n' "$dnsall" | grep -i "1\.1\.1\.1\|8\.8\.8\.8" | head -3)
+  log "DnsAddresses view: $(printf '%s' "$dnsall" | tr '\n' ';')"
+  if [ -n "$dnsvpn" ]; then
+    ok "dns: vpn link carries tunnel resolvers ($(printf '%s' "$dnsvpn" | head -1 | cut -c1-90))"
+  else
+    bad "dns: tunnel resolvers not found in connectivity dump — manual review"
+  fi
+  # Functional DNS: name resolution through the tunnel must work end-to-end.
+  if curl -s -m 10 --socks5-hostname 127.0.0.1:11808 https://ifconfig.me/ip >/dev/null 2>&1; then
+    ok "dns: name resolution through tunnel works"
+  else
+    bad "dns: resolution through tunnel failed"
+  fi
+}
+
+s_battery_opt() {
+  log "scenario: battery optimization exemption + doze survival"
+  "${ADB[@]}" shell dumpsys deviceidle whitelist +"$PKG" >/dev/null 2>&1 || true
+  sleep 1
+  local wl
+  wl=$("${ADB[@]}" shell dumpsys deviceidle 2>/dev/null | grep -i "whitelist" | grep -i "$PKG" | head -1)
+  if [ -z "$wl" ]; then
+    bad "battery: $PKG did not appear in deviceidle whitelist"
+  else
+    ok "battery: whitelisted ($(printf '%s' "$wl" | tr -d ' ' | cut -c1-60))"
+    "${ADB[@]}" shell dumpsys deviceidle force-idle >/dev/null 2>&1 || true
+    sleep 10
+    # Whitelisted + foreground services keep network in doze — tunnel lives.
+    if ip=$(verify_tunnel_wait 40) && [ -n "$ip" ]; then
+      ok "battery: tunnel alive under forced doze (exit $ip)"
+    else
+      bad "battery: tunnel dead under forced doze despite whitelist"
+    fi
+    "${ADB[@]}" shell dumpsys deviceidle unforce >/dev/null 2>&1 || true
+  fi
+  "${ADB[@]}" shell dumpsys deviceidle whitelist -"$PKG" >/dev/null 2>&1 || true
+}
+
+s_on_revoke() {
+  log "scenario: onRevoke (appops ACTIVATE_VPN deny)"
+  # OP_ACTIVATE_VPN exists since API 29 — detect and skip honestly below that.
+  if ! "${ADB[@]}" shell appops get "$PKG" ACTIVATE_VPN >/dev/null 2>&1; then
+    log "SKIP: ACTIVATE_VPN appop unsupported on this API"
+    ok "on_revoke: skipped (appop unsupported on this API)"
+    return
+  fi
+  clear_log
+  "${ADB[@]}" shell appops set "$PKG" ACTIVATE_VPN deny 2>/dev/null || true
+  sleep 6
+  if "${ADB[@]}" shell logcat -d -s MilkyVPN 2>/dev/null | grep -q "onRevoke"; then
+    ok "revoke: onRevoke fired and logged"
+  elif wait_state 'DISCONNECTED|ERROR' 15; then
+    ok "revoke: tunnel torn down (state DISCONNECTED/ERROR)"
+  else
+    bad "revoke: no onRevoke / teardown signal in 20s"
+  fi
+  # the tunnel must actually be dead — traffic check must now fail
+  if ! verify_tunnel >/dev/null; then
+    ok "revoke: tunnel traffic dead after revoke"
+  else
+    bad "revoke: tunnel still passes traffic after revoke"
+  fi
+  "${ADB[@]}" shell appops set "$PKG" ACTIVATE_VPN allow 2>/dev/null || true
 }
 
 s_tls_cutoff() {
@@ -232,7 +358,7 @@ s_tls_cutoff() {
   # cutproxy (milky-core) truncates each flow past N bytes; the client must
   # reconnect/migrate rather than wedge.
   local alive
-  alive=$(verify_tunnel || true)
+  alive=$(verify_tunnel_wait 60 || true)
   [ -n "$alive" ] && ok "session re-established across flow cuts" || bad "session died across flow cuts"
 }
 
@@ -263,9 +389,11 @@ run_all() {
   s_net_loss
   s_dns_change
   s_dns_leak
+  s_battery_opt
+  s_fgs_doze
   s_tls_cutoff
   s_soak30
-  s_fgs_doze
+  s_on_revoke   # last — it kills the VPN
 }
 
 if [ "$SCEN" = "all" ]; then run_all; else "s_$SCEN"; fi
