@@ -2,9 +2,13 @@ package kal2core
 
 import (
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
 	"errors"
+	"net"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -91,5 +95,121 @@ func TestDialHedgedAllFail(t *testing.T) {
 	s, err := dialHedged(ctx, ClientConfig{Carrier: "auto"}, nil)
 	if err == nil || s != nil {
 		t.Fatalf("want failure, got s=%v err=%v", s, err)
+	}
+}
+
+// dropConn simulates a silent carrier blackout: while blackhole is set, Read
+// never returns — packets vanish without RST, so the link stays open but dead.
+type dropConn struct {
+	net.Conn
+	blackhole atomic.Bool
+}
+
+func (d *dropConn) Read(p []byte) (int, error) {
+	for d.blackhole.Load() {
+		time.Sleep(time.Millisecond)
+	}
+	return d.Conn.Read(p)
+}
+
+// pipeSessionsT builds a real client+server session pair over net.Pipe via
+// the exported handshake API; the server side is wrapped in a dropConn the
+// caller uses to blackhole the link.
+func pipeSessionsT(t *testing.T, psk []byte) (client, server *kal2.Session, drop *dropConn) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("keygen: %v", err)
+	}
+	sh, err := kal2.NewServerHandshake(priv)
+	if err != nil {
+		t.Fatalf("server hs: %v", err)
+	}
+	ch, err := kal2.NewClientHandshake(pub, psk, nil)
+	if err != nil {
+		t.Fatalf("client hs: %v", err)
+	}
+	ff, err := ch.FirstFlight(0)
+	if err != nil {
+		t.Fatalf("first flight: %v", err)
+	}
+	eph, _, err := kal2.ParseClientFirstFlight(ff, psk, nil)
+	if err != nil {
+		t.Fatalf("parse first flight: %v", err)
+	}
+	srvFlight, err := sh.Start(eph, nil)
+	if err != nil {
+		t.Fatalf("server flight: %v", err)
+	}
+	cs, err := ch.ServerFlight(srvFlight)
+	if err != nil {
+		t.Fatalf("client session: %v", err)
+	}
+	ss, err := sh.Finish()
+	if err != nil {
+		t.Fatalf("server session: %v", err)
+	}
+	c1, c2 := net.Pipe()
+	d := &dropConn{Conn: c2}
+	cs.Attach(c1)
+	ss.Attach(d)
+	t.Cleanup(func() {
+		d.blackhole.Store(false)
+		_ = cs.Close()
+		_ = ss.Close()
+	})
+	return cs, ss, d
+}
+
+// A blackholed carrier (peer alive but never reading: net_loss / dns_flip on
+// Android produce exactly this) used to leave WaitClosed silent forever, so
+// EnableReconnect could wait indefinitely. The liveness watchdog must kill
+// the dead session so the redialer swaps in a live one.
+func TestLivenessRedialsBlackhole(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+
+	psk := []byte("test-psk")
+	var calls atomic.Int32
+	var first *kal2.Session
+	var firstDrop *dropConn
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		cs, _, d := pipeSessionsT(t, psk)
+		if calls.Add(1) == 1 {
+			first = cs
+			firstDrop = d
+		}
+		return cs, nil
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cli, err := Dial(ctx, ClientConfig{Addr: "pipe:0", Carrier: "veil", PSK: psk})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = cli.Close() })
+	cli.EnableLiveness(50*time.Millisecond, 50*time.Millisecond, 2)
+	cli.EnableReconnect()
+
+	if err := cli.Ping(ctx); err != nil {
+		t.Fatalf("initial ping: %v", err)
+	}
+
+	// Silent blackout: the server keeps the socket open but stops reading.
+	firstDrop.blackhole.Store(true)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for cli.Session() == nil || cli.Session() == first {
+		if time.Now().After(deadline) {
+			t.Fatalf("session not redialed after blackhole (dial calls=%d)", calls.Load())
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("dial calls = %d, want 2", got)
+	}
+	// The recovered session must actually pass traffic probes again.
+	if err := cli.Ping(ctx); err != nil {
+		t.Fatalf("ping after redial: %v", err)
 	}
 }

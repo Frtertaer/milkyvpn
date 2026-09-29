@@ -441,6 +441,7 @@
 
 ## Carrier/mux (carrier-stress трек, PR #29)
 
+
 ### BUG-2026-09-29-13 — mux: конкурентные Ping гонятся за pongReg → ложный pong-timeout
 - Severity: major (сторож lanes читает таймаут как смерть lane →
   ложный kill живого лейна; под -race — data race на поле сессии)
@@ -527,3 +528,279 @@
 - Found by: carrier-track `go test -race` suite rerun после merge universal
 - Issue: —  PR: —  Regression test: `go test -race ./internal/carrier/`
   (ранее флаковал DATA RACE на testing.(*common).destination)
+
+## Трек PROTOCOL — conformance SPEC v2.1
+
+### BUG-2026-09-29-13 — vectors.json: ключевой материал выведен не по формуле §2
+
+- **Severity:** High (test oracle)
+- **Platform:** all
+- **Status:** FIXED (spec-side)
+- **Found by:** `TestVectorHandshakeKeys` / `TestVectorFlights`
+- **Issue:** в testdata/vectors.json все HKDF-производные (signature,
+  clientRecordKey, serverRecordKey, nonceBase, handshakeVerify, finished,
+  resumeSecret, record ciphertext, resume.*, ticket) вычислены с
+  `info = mxs-in-v2/transcript/<label>` — без суффикса `/<transcript>`,
+  который прямо записан в §2 (`info = mxs-in-v2/transcript/<label>/<transcript>`).
+  Реализация соответствует тексту спеки → вектор-файл был непригоден как
+  conformance-оракул (любая корректная реализация «не проходила» его).
+- **Fix:** `milky-core/cmd/genvec` — генератор векторов по формулам спеки
+  (восстановлен удалённый «временный» генератор); vectors.json регенерирован.
+  Дескриптор/openTargets/transcript/preauth/migrate совпали байт-в-байт.
+- **PR:** spec-side PR в `devin/1790623610-kal2-spec-v2`
+- **Regression test:** conformance_test.go — все `keys.*` сверяются с
+  спек-формулой в тестовом коде (независимая реализация HKDF).
+
+### BUG-2026-09-29-14 — vectors.json: ticketLen закодирован big-endian
+
+- **Severity:** Medium (test oracle)
+- **Status:** FIXED (spec-side)
+- **Issue:** `resume.resumeFlight` содержит `ticketLen = 0x004e` (BE 78),
+  спека §9.2 требует `[2,LE]` (`0x4e00`). Код PR #7 (`ParseResumeHead`)
+  читает LE — вектор непарсабелен спек-имплементацией.
+- **Fix:** регенерация vectors.json с LE.
+- **Regression test:** `TestVectorResume` — парсинг полёта по LE.
+
+### BUG-2026-09-29-15 — спека §3: порядок payload/padLen/pad в тексте неверен
+
+- **Severity:** Medium (spec text)
+- **Status:** FIXED (spec-side)
+- **Issue:** текст §3: `ct = AEAD(payload || padLen[2,LE] || pad[padLen])`.
+  Имплементация и вектор кладут длину **в конец**: `payload || pad || padLen`.
+  Реальное значение несовместимо с текстом.
+- **Fix:** правка SPEC.md §3 (spec-side PR).
+- **Regression test:** `TestVectorRecord` — impl дешифрует векторную запись.
+
+### BUG-2026-09-29-16 — спека §9.2/9.4: nStreams помечен LE, вектор+код — BE
+
+- **Severity:** Low (spec text)
+- **Status:** FIXED (spec-side)
+- **Issue:** `nStreams[2,LE]` в тексте против BE в vectors.json
+  (`migrate.payload`) и коде PR #7 (checkpoint). Весь wire-формат BE —
+  правим текст, не байты.
+- **Fix:** SPEC.md §9.2, §9.4 → `[2,BE]`/`[4,BE]`.
+- **Regression test:** `TestVectorResume`/`TestVectorMigrate` — BE-парсинг.
+
+### BUG-2026-09-29-17 — неизвестные типы записей <0x80 убивали сессию
+
+- **Severity:** High (forward-compat)
+- **Status:** FIXED (code)
+- **Issue:** `readRecord` возвращал `ErrFraming` на любой неизвестный тип →
+  v2.1-записи (TICKET 0x0A, будущие <0x80) рвали v2-сессию. §12 требует:
+  <0x80 — пропускать (AEAD+seq-учёт сохраняется), ≥0x80 — разрыв.
+- **Fix:** `session.go` — пропуск неизвестных <0x80 после AEAD-open;
+  `protocol.go` — `MsgTicket = 0x0A`.
+- **PR:** code PR → `devin/1790199091-kal2-universal-subscriptions`
+- **Regression test:** `TestForwardCompatTypes` (0x40/0x0A skip, 0x81 kill).
+
+### BUG-2026-09-29-18 — bound-клиент против unbound-сервера: разрыв вместо фолбэка
+
+- **Severity:** High (interop, проверка (d))
+- **Status:** FIXED (code)
+- **Issue:** клиент всегда биндил к TLS-exporter; сервер с `binding=∅`
+  (спека: «носитель без binding → binding=∅») выдавал signature/handshake
+  mismatch → разрыв. Фолбэка на клиенте не было вовсе.
+- **Fix:** `ClientConfig.AllowUnboundFallback` (opt-in, дефолт строгий —
+  иначе stripping-MitM мог бы молча понизить binding) — один redial
+  unbound при падении KAL/2-рукопожатия; `VeilConfig.IgnoreBinding` —
+  серверный unbound-режим для смешанных флитов.
+- **Regression test:** `TestDialVeilBoundClientUnboundServer`,
+  `TestDialVeilUnboundClient` (tolerant / RequireBinding).
+
+### BUG-2026-09-29-19 — §9/§10: resumption/migration и descriptor-публикация не реализованы на impl-ветке
+
+- **Severity:** High (feature gap; проверки (b-resumption), (c), (e-server))
+- **Status:** fixed-in-PR #7 (merged) для resumption/migration —
+  resume.go, TICKET/MIGRATE, `ResumeAttach`, freeze/migGate/replay
+  присутствуют на базе; проверки (b-resumption), (c) выполняются там.
+  Остаётся OPEN: §10 server-publish/fetch descriptor'ов (rendezvous
+  серверная часть) нигде не реализована.
+- **Частично закрыто здесь:** `descriptor.go` — §10.1 парсер (подпись/pin/TTL)
+  + `RendezvousPath` (§10.2 keyed path) + тесты против векторов; билет-
+  формат и re-key проверены `TestVectorResume` по спек-формулам.
+
+### BUG-2026-09-29-20 — спека: третий полёт (ClientAuthFlight) не описан; §10.2 epoch-энкодинг не определён
+
+- **Severity:** Low (spec text)
+- **Status:** FIXED (spec-side)
+- **Issue:** impl шлёт `pskMAC(32) || finished(32)` после server flight —
+  в §2 не задокументировано; `epoch` в `kal2-rdvs/` || epoch без типа
+  сериализации. Обе дыры делают cross-impl conformance недетерминированным.
+- **Fix:** SPEC.md — описание третьего полёта + `epoch` как десятичное ASCII.
+||||||| ab374d4
+
+---
+
+# BUGS — emulator-matrix findings
+
+Track: Android emulator matrix (API 26/29/31/34/35), `testing/` stand on
+`devin/1790629023-testing-stand`. Status: **FIXED** (fix + regression test in
+this change set), **OPEN**, **DOC** (documented limitation).
+
+## BUG-1 — net_loss / dns_flip: tunnel never recovered within 90s — FIXED
+
+- Symptom: `svc wifi disable && svc data disable` for 15s → restore → no
+  CONNECTED within 90s; private-DNS flip behaved the same.
+- Root cause, two layers:
+  1. **Go core**: `kal2.Session` had no liveness detection. A blackholed
+     carrier (packets dropped, no RST — exactly what `svc` network kill and
+     many real mobile handoffs produce) keeps `WaitClosed()` silent forever:
+     the read loop blocks on a socket that never errors and writes just back
+     up. `EnableReconnect` therefore never redialed.
+  2. **Android**: `registerNetworkCallback.onLost` ran a single reverify
+     probe, then `teardownLocked()` + terminal `ERROR`. No reconnect loop.
+- Fix:
+  - `kal2.Session.Kill(err)` — fails streams and closes the carrier (a plain
+    `Close` leaves stream readers hanging on undrained queues).
+  - `kal2core.Client.EnableLiveness(every, pongTimeout, misses)` — watchdog
+    that pings the live session (Ping runs in a goroutine under an outer
+    deadline so a wedged outbound queue counts as a miss, not a hang) and
+    `Kill`s after N misses → the existing reconnect loop redials. Wired in
+    `kal2mobile` with 4s/4s/2.
+  - `Client.pingMu` serializes Ping callers — the session routes each PONG to
+    a single registered channel, so concurrent pings (cover + liveness) used
+    to clobber each other.
+  - `MilkyVpnService`: `wantsConnected` + `tunnelSupervisor` — probes the
+    tunnel with a real fetch every ~10s while connected; failures flip to
+    CONNECTING, ~90s of failure escalates to a fresh full connect (≤3, linear
+    backoff), then honest `ERROR`. Recoverable connect() failures also retry
+    the same way.
+- Regression test: `milky-core/pkg/kal2core/api_test.go:
+  TestLivenessRedialsBlackhole` (blackholes the carrier socket, expects kill
+  + redial + working ping). CI scenarios `net_loss`, `wifi_lte`, `dns_change`.
+
+## BUG-2 — fgs_doze: `:kal2` process dropped out of foreground under doze — FIXED
+
+- Symptom: `dumpsys deviceidle force-idle` → `dumpsys activity processes`
+  showed `:kal2` no longer in `fg` state.
+- Root cause: `Kal2Service` was a bound-only service; binder importance
+  (BIND_IMPORTANT from a foreground client) does not survive device idle —
+  the system demotes bound secondary processes, freezing the SOCKS listener
+  (TCP accepts at kernel level, no thread to accept() → wedged outbound).
+- Fix: `Kal2Service` promotes itself to a real foreground service while a
+  session is live (`startForeground`, `specialUse` type on API 34+,
+  `PROPERTY_SPECIAL_USE_FGS_SUBTYPE` in the manifest), demoted on `stop()`.
+- Regression: CI scenarios `fgs_doze`, `battery_opt`.
+
+## BUG-3 — verify_tunnel accepted an empty reply — FIXED (test-stand)
+
+- The SOCKS probe `curl --socks5-hostname … ifconfig.me/ip` returning empty
+  was counted as pass — "real traffic through tunnel" was never asserted.
+- Fix: strict non-empty + `verify_tunnel_wait` polling window.
+
+## BUG-4 — wait_state matched stale logcat lines — FIXED (test-stand)
+
+- `wait_state CONNECTED` grepped the whole `logcat -d` buffer — a CONNECTED
+  line written by an earlier scenario matched instantly after a disruption;
+  `logcat -c` then destroyed the evidence the failure report needed, and the
+  device ring buffer wraps MilkyVPN lines out on noisy APIs anyway.
+- Fix: `run_emu_ci.sh` streams `adb logcat -v threadtime` into
+  `ci-artifacts/logcat-full.txt` for the whole job; waits run on byte-offset
+  marks (`mark_log`/`log_since`) into that file — fresh lines only, nothing
+  lost. Pattern is `'[= ]CONNECTED'` so `stage=CONNECTED` and
+  `attempt=N CONNECTED` both match but `DISCONNECTED` never does.
+
+## BUG-5 — `adb install` raced emulator boot — FIXED (test-stand)
+
+- `run_emu_ci.sh` installed immediately while adbd was up but the system was
+  half-booted → install failures. Now waits for `sys.boot_completed` + `pm`.
+
+## BUG-6 — connect had no retry for the transient first-connect EOF — FIXED
+
+- `server flight: unexpected EOF` on the first connect after a server restart
+  was a hard fail (observed CI-wide). The scenario now retries the connect
+  once, and the app itself retries recoverable connect failures (≤3, 2/4/6s
+  backoff) — both belts live behind the error vocabulary.
+
+## BUG-7 — missing scenario coverage — FIXED (test-stand)
+
+- Added `on_revoke` (`appops set PKG ACTIVATE_VPN deny` → expects `onRevoke`
+  log + teardown + dead tunnel; restores `allow`). On API <29 the op does not
+  exist — the scenario logs `SKIP` and reports pass-with-note.
+- Added `battery_opt` (deviceidle whitelist + forced doze → tunnel must live).
+- All scenarios now gate the CI job (previously everything after `connect`
+  was `|| true` best-effort).
+
+## BUG-8 — wifi_lte assumed cellular on every API — FIXED (test-stand)
+
+- The API35 emulator image ships no telephony at all (no rild, zero
+  `TRANSPORT_CELLULAR` in dumpsys): `svc data enable` is a no-op, so after
+  `svc wifi disable` there is no underlay and a "wifi→LTE" claim is false.
+  The API26 image has goldfish rild but MOBILE attach takes 10-30s and
+  raced the 90s recovery window.
+- Fix: capability check via `pm list features telephony`, then `svc data
+  enable` + up-to-45s wait for a CONNECTED cellular network BEFORE cutting
+  wifi. No telephony / no attach → logged SKIP and an honest wifi off/on
+  flap (still exercises underlay-loss reconnect) instead of a fake fail.
+- Confirmed working on 29/31/34: kal2 `core:` log shows
+  `redial failed: tcp dial: network is unreachable` during the outage then
+  recovery — the liveness-kill→redial path fires as designed.
+
+## BUG-9 — `$( ... | grep ...)` assignments killed scenarios under set -e — FIXED
+
+- `wl=$(dumpsys deviceidle | grep whitelist | grep $PKG)` in `battery_opt`
+  and the `svc`/`settings` toggles all returned non-zero in normal cases
+  (no match, radio absent) — with `set -euo pipefail` the scenario aborted
+  before its own assertions. Also the deviceidle whitelist prints the
+  header and the package on different lines, so the chained grep could
+  never match anyway.
+- Fix: toggles run `|| true` (assertions decide pass/fail), whitelist
+  check greps the package directly, dns/grep assignments guarded the same.
+
+## BUG-10 — `svc wifi`/`svc data` throw SecurityException on API <=28 — FIXED
+
+- On API 26 the shell user (2000) lacks `CHANGE_WIFI_STATE`, so
+  `svc wifi disable` dies with
+  `SecurityException: WifiService: Neither user 2000 nor current process has
+  android.permission.CHANGE_WIFI_STATE` — wifi stayed up, the tunnel never
+  dropped, and `wifi_lte` reported a fake "session never recovered".
+- Fix: `wifi_toggle` tries `svc wifi`, verifies the real state via
+  `dumpsys wifi` ("Wi-Fi is enabled/disabled"), and falls back to the legacy
+  `settings put global wifi_on 0/1` (writable by shell, still honored on
+  API <29). `mobile_data` gets the same fallback. If neither path toggles,
+  the scenario logs SKIP honestly instead of failing.
+
+## BUG-11 — data→wifi asserted a fresh CONNECTED that never comes — FIXED
+
+- Re-enabling wifi after running on cellular does NOT kill the VPN session:
+  the carrier socket either migrates or keeps running, so no redial and no
+  new `CONNECTED` line is logged. Requiring `wait_state CONNECTED` made the
+  second half of `wifi_lte` fail even on a perfectly healthy tunnel
+  (seen on API 35, run 36525073239).
+- Fix: the data→wifi half now asserts only that traffic still passes
+  (`verify_tunnel_wait 75`). The wifi→data half keeps the CONNECTED
+  requirement — losing the underlay really does force a redial.
+
+## BUG-12 — fgs_doze checked the wrong dumpsys section — FIXED
+
+- `dumpsys activity processes | grep -B2 -A6 :kal2` lands on the LRU
+  `*APP* UID ... ProcessRecord` block which carries no fg/svc label — the
+  check could never see "fg" and reported ":kal2 not foreground" although
+  `ActivityManager` had logged `Background started FGS: Allowed` for
+  Kal2Service.
+- Fix: assert on `isForeground=true` inside the Kal2Service record of
+  `dumpsys activity services $PKG` (authoritative for FGS state), with
+  `dumpsys activity lru` `fg` as fallback; both dumps print on failure.
+
+## OPEN / documented limitations
+
+- **API 29 uiautomator empty-tree flake** (run 36515454841): Flutter renders,
+  no crash, but `uiautomator dump` returned no nodes for 90s. Mitigations in
+  this change: `ui_ready` gate before onboarding, longer `ui_tap_desc_wait`,
+  empty-dump diagnostics (window focus dump). If it still fires, the run log
+  now distinguishes "empty tree" from "wrong screen".
+- **`on_revoke` on API 26**: `ACTIVATE_VPN` appop doesn't exist there — SKIP.
+- **`on_revoke` on API 31 (and any API without the framework
+  OnOpChangedListener)**: `appops set ACTIVATE_VPN deny` is only consulted
+  at `prepare()` time — denying a live session does not call
+  `VpnService.onRevoke()` and the tunnel stays up. The scenario detects the
+  missing signal and records a SKIP instead of a fake fail.
+- **`dns_leak`** remains partially observational: it asserts the VPN link
+  carries the tunnel resolvers (1.1.1.1/8.8.8.8) and that resolution through
+  the tunnel works; the raw `dumpsys connectivity` snapshot is also logged
+  into ci-artifacts for manual review.
+- **`tls_cutoff`** stays skipped in CI (needs a `-http-proxy` emulator plus a
+  host-side cutproxy); runnable manually via `--proxy`.
+- **`soak30`** stays out of CI (30 min vs the 45-min job budget); runnable
+  manually.
+

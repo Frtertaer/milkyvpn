@@ -27,6 +27,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -73,6 +74,17 @@ class MilkyVpnService : VpnService() {
         private const val VERIFY_URL = "https://www.gstatic.com/generate_204"
         private const val VERIFY_TIMEOUT_MS = 20_000L
         private const val STARTUP_TIMEOUT_MS = 15_000L
+        private const val SUPERVISOR_INTERVAL_MS = 10_000L
+        private const val SUPERVISOR_PROBE_TIMEOUT_MS = 10_000L
+        private const val SUPERVISOR_FAIL_MAX = 9 // ~90s of failed probes before a full reconnect
+        private const val MAX_RECOVERY_CONNECTS = 3
+
+        /** Failures worth a fresh full connect: transient network/core trouble. */
+        private val RECOVERABLE_CODES = setOf(
+            "connection_refused", "network_unreachable", "network_error", "timeout",
+            "dns_failure", "tunnel_unverified", "tls_handshake", "reality_handshake",
+            "core_failure",
+        )
 
         @Volatile
         var instance: MilkyVpnService? = null
@@ -92,8 +104,13 @@ class MilkyVpnService : VpnService() {
     private val mutex = Mutex()
     private val attempts = ConnectionAttemptGate()
     private var tunFd: ParcelFileDescriptor? = null
+    @Volatile // read by the supervisor off-mutex
     private var controller: CoreController? = null
     private var connectJob: Job? = null
+    private var recoveryJob: Job? = null
+    private var recoveryConnects = 0
+    // User intent: tunnel should be up. Cleared on disconnect/revoke/terminal fail.
+    private val wantsConnected = AtomicBoolean(false)
     private val coreEnvReady = AtomicBoolean(false)
     private var networkCallback: ConnectivityManager.NetworkCallback? = null
     private lateinit var connectivity: ConnectivityManager
@@ -117,6 +134,8 @@ class MilkyVpnService : VpnService() {
             ACTION_CONNECT, null, SERVICE_INTERFACE -> {
                 // null / SERVICE_INTERFACE == started by the system (Always-on VPN).
                 startAsForeground(getString(R.string.vpn_notif_connecting))
+                wantsConnected.set(true)
+                recoveryConnects = 0
                 val attemptId = attempts.begin()
                 connectJob?.cancel()
                 connectJob = scope.launch { connect(attemptId) }
@@ -144,8 +163,10 @@ class MilkyVpnService : VpnService() {
 
     // ---------------------------------------------------------------- connect
 
-    private suspend fun connect(attemptId: Long) = mutex.withLock {
-        if (!attempts.isActive(attemptId)) return@withLock
+    private suspend fun connect(attemptId: Long): Unit = mutex.withLock {
+        // wantsConnected re-checked under the mutex: a disconnect landing after
+        // the recovery launch must still win over a stale auto-retry.
+        if (!attempts.isActive(attemptId) || !wantsConnected.get()) return@withLock
         // A newer connect command replaces any previously established core/TUN.
         teardownLocked()
 
@@ -252,6 +273,7 @@ class MilkyVpnService : VpnService() {
                     lastSuccessfulStage = trace.lastSuccessfulStage,
                     firstFailedStage = null,
                 )
+                startSupervisor()
             }
             if (!published) teardownLocked()
         } catch (t: Throwable) {
@@ -259,18 +281,43 @@ class MilkyVpnService : VpnService() {
             trace.failure(code)
             SafeLog.w("connect failed", t)
             teardownLocked()
-            failAttemptLocked(
-                attemptId,
-                profileId = profileId,
-                profileRemark = remark,
-                errorCode = code,
-                lastSuccessfulStage = trace.lastSuccessfulStage,
-                firstFailedStage = trace.firstFailedStage,
-            )
+            if (wantsConnected.get() && code in RECOVERABLE_CODES && recoveryConnects < MAX_RECOVERY_CONNECTS) {
+                // Transient failure (e.g. first connect against a just-restarted
+                // server, or an uplink still settling): finish this attempt as
+                // still-wanted CONNECTING and redrive a fresh full connect.
+                recoveryConnects++
+                attempts.finishIfActive(attemptId) {
+                    VpnStateStore.update(
+                        VpnStateStore.State.CONNECTING,
+                        connectedSinceEpochMs = null,
+                        errorCode = code,
+                        lastSuccessfulStage = trace.lastSuccessfulStage,
+                        firstFailedStage = trace.firstFailedStage,
+                    )
+                }
+                val backoff = recoveryConnects * 2_000L
+                SafeLog.i("retrying connect in ${backoff}ms ($recoveryConnects/$MAX_RECOVERY_CONNECTS)")
+                connectJob = scope.launch {
+                    delay(backoff)
+                    // begin() only once the backoff passed and the session is
+                    // still wanted — a disconnect during the window wins.
+                    if (!wantsConnected.get()) return@launch
+                    connect(attempts.begin())
+                }
+            } else {
+                failAttemptLocked(
+                    attemptId,
+                    profileId = profileId,
+                    profileRemark = remark,
+                    errorCode = code,
+                    lastSuccessfulStage = trace.lastSuccessfulStage,
+                    firstFailedStage = trace.firstFailedStage,
+                )
+            }
         }
     }
 
-    /** Must be called with [mutex] held. */
+    /** Must be called with [mutex] held. Terminal path — recovery stops here. */
     private fun failAttemptLocked(
         attemptId: Long,
         profileId: String? = null,
@@ -279,6 +326,7 @@ class MilkyVpnService : VpnService() {
         lastSuccessfulStage: String? = VpnStateStore.current.lastSuccessfulStage,
         firstFailedStage: String? = VpnStateStore.current.firstFailedStage,
     ) {
+        wantsConnected.set(false)
         attempts.finishIfActive(attemptId) {
             VpnStateStore.update(
                 VpnStateStore.State.ERROR,
@@ -368,6 +416,7 @@ class MilkyVpnService : VpnService() {
         }
 
     private suspend fun handleCoreShutdown(attemptId: Long) = mutex.withLock {
+        wantsConnected.set(false) // terminal — no auto-retry on a native crash
         attempts.finishIfActive(attemptId) {
             teardownLocked()
             VpnStateStore.update(
@@ -427,6 +476,8 @@ class MilkyVpnService : VpnService() {
 
     /** Called from the bridge (same process). */
     fun requestDisconnect(revoked: Boolean = false): Job {
+        wantsConnected.set(false)
+        recoveryJob?.cancel()
         val ticket = DisconnectTicket(
             generation = attempts.cancelCurrent(),
             connectJob = connectJob,
@@ -462,7 +513,10 @@ class MilkyVpnService : VpnService() {
                     if (current.state == VpnStateStore.State.CONNECTED) {
                         VpnStateStore.update(VpnStateStore.State.CONNECTING, connectedSinceEpochMs = null)
                     }
-                    scope.launch { reverifyAfterNetworkChange(attemptId) }
+                    // Recovery is driven by the supervisor: the core-side
+                    // liveness watchdog redials underneath and probe results
+                    // flip the state back; a sustained outage escalates to a
+                    // fresh full connect.
                 }
             }
         }
@@ -478,21 +532,89 @@ class MilkyVpnService : VpnService() {
         }
     }
 
-    private suspend fun reverifyAfterNetworkChange(attemptId: Long) = mutex.withLock {
-        if (!attempts.isActive(attemptId)) return@withLock
-        try {
-            val ctrl = controller ?: throw IllegalStateException("core unavailable")
-            val delayMs = withTimeout(VERIFY_TIMEOUT_MS) {
-                withContext(Dispatchers.IO) { ctrl.measureDelay(VERIFY_URL) }
+    /** True when some non-VPN network currently offers Internet. */
+    private fun underlayUp(): Boolean = connectivity.allNetworks.any { n ->
+        connectivity.getNetworkCapabilities(n)?.let {
+            it.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                !it.hasTransport(NetworkCapabilities.TRANSPORT_VPN)
+        } == true
+    }
+
+    private fun startSupervisor() {
+        if (recoveryJob?.isActive == true) return
+        recoveryJob = scope.launch { tunnelSupervisor() }
+    }
+
+    /**
+     * Watches the live tunnel while the user wants it up. Every ~10s a real
+     * fetch through the outbound: passes flip CONNECTING back to CONNECTED, a
+     * sustained outage (~90s) escalates to a fresh full connect. A session the
+     * core-side liveness watchdog redialed underneath simply starts passing
+     * again — no rebuild needed.
+     */
+    private suspend fun tunnelSupervisor() {
+        var failures = 0
+        while (wantsConnected.get()) {
+            delay(SUPERVISOR_INTERVAL_MS)
+            if (!wantsConnected.get()) return
+            val attemptId = attempts.current() ?: continue // gap between attempts
+            val ctrl = controller ?: continue // full connect rebuilding — let it speak
+            if (!underlayUp()) continue // no uplink right now — don't burn the miss budget
+            val ok = runCatching {
+                withTimeout(SUPERVISOR_PROBE_TIMEOUT_MS) {
+                    withContext(Dispatchers.IO) { ctrl.measureDelay(VERIFY_URL) }
+                } >= 0
+            }.getOrDefault(false)
+            if (ok) {
+                recoveryConnects = 0
+                failures = 0
+                attempts.runIfActive(attemptId) {
+                    if (VpnStateStore.current.state == VpnStateStore.State.CONNECTING) {
+                        SafeLog.i("attempt=$attemptId CONNECTED")
+                        VpnStateStore.update(
+                            VpnStateStore.State.CONNECTED,
+                            connectedSinceEpochMs = System.currentTimeMillis(),
+                        )
+                        val remark = VpnStateStore.current.profileRemark ?: ""
+                        updateNotification(getString(R.string.vpn_notif_connected) + " · " + remark)
+                    }
+                }
+                continue
             }
-            if (delayMs < 0) throw IllegalStateException("verification failed")
+            failures++
             attempts.runIfActive(attemptId) {
-                VpnStateStore.update(VpnStateStore.State.CONNECTED, connectedSinceEpochMs = System.currentTimeMillis())
+                if (VpnStateStore.current.state == VpnStateStore.State.CONNECTED) {
+                    VpnStateStore.update(VpnStateStore.State.CONNECTING, connectedSinceEpochMs = null)
+                }
             }
-        } catch (t: Throwable) {
-            teardownLocked()
-            failAttemptLocked(attemptId, errorCode = "network_unreachable")
+            if (failures >= SUPERVISOR_FAIL_MAX) {
+                reattempt("probes exhausted")
+                return
+            }
         }
+    }
+
+    /** Escalate recovery to a fresh full connect (teardown + handshake + TUN). */
+    private fun reattempt(reason: String) {
+        if (!wantsConnected.get()) return
+        if (recoveryConnects >= MAX_RECOVERY_CONNECTS) {
+            SafeLog.w("recovery budget exhausted: $reason")
+            wantsConnected.set(false)
+            val id = attempts.current() ?: return
+            scope.launch {
+                mutex.withLock {
+                    if (attempts.isActive(id)) {
+                        teardownLocked()
+                        failAttemptLocked(id, errorCode = "network_unreachable")
+                    }
+                }
+            }
+            return
+        }
+        recoveryConnects++
+        SafeLog.w("recovery: $reason — full reconnect $recoveryConnects/$MAX_RECOVERY_CONNECTS")
+        val newId = attempts.begin()
+        connectJob = scope.launch { connect(newId) }
     }
 
     private fun unregisterNetworkCallback() {
@@ -602,6 +724,9 @@ internal class ConnectionAttemptGate {
 
     @Synchronized
     fun isActive(attemptId: Long): Boolean = activeAttempt == attemptId
+
+    @Synchronized
+    fun current(): Long? = activeAttempt
 
     @Synchronized
     fun runIfActive(attemptId: Long, action: () -> Unit): Boolean {

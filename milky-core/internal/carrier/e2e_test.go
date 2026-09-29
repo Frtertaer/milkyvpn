@@ -79,7 +79,15 @@ func newTestServer(t *testing.T) *testServer {
 	return newTestServerWith(t, nil)
 }
 
+func newTestServerCfg(t *testing.T, mutate func(*VeilConfig)) *testServer {
+	return newTestServerFull(t, nil, mutate)
+}
+
 func newTestServerWith(t *testing.T, echKeys []tls.EncryptedClientHelloKey) *testServer {
+	return newTestServerFull(t, echKeys, nil)
+}
+
+func newTestServerFull(t *testing.T, echKeys []tls.EncryptedClientHelloKey, mutate func(*VeilConfig)) *testServer {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
 		t.Fatal(err)
@@ -96,7 +104,7 @@ func newTestServerWith(t *testing.T, echKeys []tls.EncryptedClientHelloKey) *tes
 	var logMu sync.Mutex
 	logBuf := []string{}
 	logging := true
-	v := NewVeilListener(VeilConfig{
+	vcfg := VeilConfig{
 		Domain:   "kal.test",
 		Cert:     cert,
 		Identity: priv,
@@ -138,7 +146,11 @@ func newTestServerWith(t *testing.T, echKeys []tls.EncryptedClientHelloKey) *tes
 				}
 			}()
 		},
-	})
+	}
+	if mutate != nil {
+		mutate(&vcfg)
+	}
+	v := NewVeilListener(vcfg)
 	mux := http.NewServeMux()
 	mux.Handle(DefaultDriftPath, v.DriftHandler(DefaultDriftPath))
 	mux.Handle(DefaultDriftPath+"/", v.DriftHandler(DefaultDriftPath))

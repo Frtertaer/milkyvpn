@@ -259,6 +259,12 @@ func (s *Session) Close() error {
 	return err
 }
 
+// Kill fails the session with err: every open stream learns the cause and the
+// carrier freezes or closes per the migration rules. Close alone only stops
+// the carrier — stream readers would hang waiting on queues nobody drains,
+// so watchdogs use Kill.
+func (s *Session) Kill(err error) { s.fail(err, -1) }
+
 // isDead reports whether the session was finally closed (vs merely frozen).
 func (s *Session) isDead() bool {
 	if s.closed == nil {
@@ -558,7 +564,10 @@ func (s *Session) readRecord(rw io.Reader) (*Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !validMsgType(t) {
+	// Forward-compat (SPEC §12): unknown record types below 0x80 are
+	// authenticated, decrypted, and skipped; types ≥0x80 are mandatory —
+	// an unknown one tears the session down.
+	if !validMsgType(t) && t >= 0x80 {
 		return nil, ErrFraming
 	}
 	if ctLen < aeadTagSize+2 || ctLen > MaxRecordCiphertext {
@@ -570,7 +579,7 @@ func (s *Session) readRecord(rw io.Reader) (*Record, error) {
 	}
 	// Ordered profile: sequence must equal expected counter.
 	if seq != s.recvSeq {
-		return nil, Error(fmt.Sprintf("session: replay or out-of-order record seq=%d want=%d type=%d", seq, s.recvSeq, t))
+		return nil, ErrReplay
 	}
 	padded, err := s.recvAEAD.Open(nil, s.nonce(seq), ct, header)
 	if err != nil {
