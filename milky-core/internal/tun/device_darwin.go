@@ -4,7 +4,6 @@ package tun
 
 import (
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -14,11 +13,11 @@ import (
 )
 
 const (
-	utunControlName  = "com.apple.net.utun_control"
-	utunOptIfname    = 2
-	sysProtoControl  = 2
-	afSysControl     = 2
-	utunHeaderLen    = 4
+	utunControlName = "com.apple.net.utun_control"
+	utunOptIfname   = 2
+	sysProtoControl = 2
+	afSysControl    = 2
+	utunHeaderLen   = 4
 )
 
 // darwinDevice is a utun adapter (the only unprivileged-by-design tunnel
@@ -75,7 +74,14 @@ func getsockoptString(fd, level, opt int) (string, error) {
 	if errno != 0 {
 		return "", errno
 	}
-	return string(buf[:n]), nil
+	return cstr(buf[:n]), nil
+}
+
+// DefaultEgress reports the current default-route egress device so carrier
+// sockets can be bound to it even before the TUN device is configured.
+func DefaultEgress() string {
+	_, dev, _ := defaultRoute()
+	return dev
 }
 
 // defaultRoute reads "default: gateway" out of `route -n get default`.
@@ -109,35 +115,38 @@ func (d *darwinDevice) configure() error {
 	if addr == "" {
 		addr = DefaultAddr
 	}
-	gw, _, err := defaultRoute()
+	gw, dev, err := defaultRoute()
 	if err == nil {
-		d.gw = gw
+		d.gw, d.dev = gw, dev
+		// Carrier sockets bind to the egress interface from now on — they
+		// bypass the tunnel without FIB entries, so kill -9 leaves no
+		// residual routes behind.
+		if d.conf.Bind != nil {
+			d.conf.Bind.Set(dev)
+		}
 	}
 	// utun is point-to-point: local addr + destination inside the same /32.
 	if err := run("ifconfig", d.name, "inet", addr, addr, "netmask", "255.255.255.0", "up"); err != nil {
 		return err
 	}
-	for _, sip := range d.conf.ServerIPs {
-		if net.ParseIP(sip) == nil || d.gw == "" {
-			continue
-		}
-		_ = run("route", "add", "-host", sip, d.gw)
-	}
 	// /1 split default through the utun interface (BSD `route` needs -net).
+	// Every route is interface-scoped so it dies with the utun device.
 	if err := run("route", "add", "-net", "0.0.0.0/1", "-interface", d.name); err != nil {
 		return err
 	}
-	return run("route", "add", "-net", "128.0.0.0/1", "-interface", d.name)
+	if err := run("route", "add", "-net", "128.0.0.0/1", "-interface", d.name); err != nil {
+		return err
+	}
+	// Same for IPv6 so v6 traffic doesn't leak around the tunnel.
+	_ = run("route", "add", "-inet6", "-net", "::/1", "-interface", d.name)
+	_ = run("route", "add", "-inet6", "-net", "8000::/1", "-interface", d.name)
+	return nil
 }
 
 func (d *darwinDevice) restore() {
 	_ = run("route", "delete", "-net", "0.0.0.0/1", "-interface", d.name)
 	_ = run("route", "delete", "-net", "128.0.0.0/1", "-interface", d.name)
-	for _, sip := range d.conf.ServerIPs {
-		if net.ParseIP(sip) == nil {
-			continue
-		}
-		_ = run("route", "delete", "-host", sip)
-	}
+	_ = run("route", "delete", "-inet6", "-net", "::/1", "-interface", d.name)
+	_ = run("route", "delete", "-inet6", "-net", "8000::/1", "-interface", d.name)
 	// utun disappears with the fd; no explicit teardown needed.
 }

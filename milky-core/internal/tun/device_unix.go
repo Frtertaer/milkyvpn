@@ -3,9 +3,12 @@
 package tun
 
 import (
+	"bytes"
 	"encoding/binary"
 	"fmt"
 	"os"
+
+	"golang.org/x/sys/unix"
 )
 
 // fileDevice adapts a file-descriptor packet device to Device:
@@ -21,16 +24,25 @@ type fileDevice struct {
 
 func (d *fileDevice) MTU() uint32 { return d.mtu }
 
+// ReadPacket does a raw blocking read(2) on the fd — not os.File.Read,
+// which routes through the runtime poller and fails with "not pollable" on
+// kernels/sandboxes that refuse EPOLL_CTL_ADD on character devices. The fd
+// stays in blocking mode, so read returns whole packets or an error.
 func (d *fileDevice) ReadPacket() (pkt []byte, release func(), err error) {
 	b := make([]byte, d.mtu+64)
-	n, err := d.f.Read(b)
-	if err != nil {
-		return nil, nil, err
+	for {
+		n, rerr := unix.Read(int(d.f.Fd()), b)
+		if rerr == unix.EINTR {
+			continue
+		}
+		if rerr != nil {
+			return nil, nil, rerr
+		}
+		if uint32(n) < d.hdr {
+			return nil, nil, fmt.Errorf("tun: short read %d", n)
+		}
+		return b[d.hdr:n], func() {}, nil
 	}
-	if uint32(n) < d.hdr {
-		return nil, nil, fmt.Errorf("tun: short read %d", n)
-	}
-	return b[d.hdr:n], func() {}, nil
 }
 
 func (d *fileDevice) WritePacket(pkt []byte) error {
@@ -39,8 +51,19 @@ func (d *fileDevice) WritePacket(pkt []byte) error {
 		binary.LittleEndian.PutUint32(h[:], afFamily(pkt))
 		pkt = append(h[:], pkt...)
 	}
-	_, err := d.f.Write(pkt)
-	return err
+	for {
+		n, err := unix.Write(int(d.f.Fd()), pkt)
+		if err == unix.EINTR {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if n != len(pkt) {
+			return fmt.Errorf("tun: short write %d/%d", n, len(pkt))
+		}
+		return nil
+	}
 }
 
 func afFamily(pkt []byte) uint32 {
@@ -48,6 +71,15 @@ func afFamily(pkt []byte) uint32 {
 		return 30 // AF_INET6 on Darwin
 	}
 	return 2 // AF_INET
+}
+
+// cstr trims a NUL-terminated kernel string (utun ifname, ifreq names) —
+// leaving the trailing NULs in produces exec args the OS rejects.
+func cstr(b []byte) string {
+	if i := bytes.IndexByte(b, 0); i >= 0 {
+		return string(b[:i])
+	}
+	return string(b)
 }
 
 func (d *fileDevice) Configure(serverIPs []string) error {

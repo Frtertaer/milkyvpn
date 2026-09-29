@@ -9,3 +9,6 @@ func openDevice(cfg *Config) (Device, error) {
 }
 
 func IsElevated() bool { return false }
+
+// DefaultEgress has no implementation on unsupported platforms.
+func DefaultEgress() string { return "" }

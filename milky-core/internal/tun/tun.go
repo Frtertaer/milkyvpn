@@ -32,10 +32,10 @@ type Config struct {
 	Name string
 	// Addr is the IPv4 address assigned to the TUN interface.
 	Addr string
-	// ServerIPs are the tunnel server's own addresses. Each gets a /32 route
-	// through the real default gateway so the tunnel's own traffic is not
-	// routed back into the tunnel.
-	ServerIPs []string
+	// Bind pins carrier sockets to the physical egress device once the
+	// device is configured (replaces per-server bypass routes, which would
+	// survive kill -9). May be nil.
+	Bind *BindGuard
 	// OpenTCP opens a kal2 TCP stream to host:port (netstack-side connect).
 	OpenTCP func(ctx context.Context, addr string) (Stream, error)
 	// OpenUDP opens a kal2 UDP relay stream (wildcard; datagrams are
@@ -71,7 +71,7 @@ func Run(ctx context.Context, cfg *Config) error {
 		return fmt.Errorf("tun: %w", err)
 	}
 	defer dev.Close()
-	if err := dev.Configure(cfg.ServerIPs); err != nil {
+	if err := dev.Configure(nil); err != nil {
 		return fmt.Errorf("tun: %w", err)
 	}
 	defer dev.Restore()

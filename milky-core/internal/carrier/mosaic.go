@@ -696,7 +696,7 @@ func (p *mosaicPool) close() {
 func dialMosaicTLS(ctx context.Context, cfg ClientConfig, network string, wire *atomic.Int64) (net.Conn, error) {
 	dial := cfg.DialContext
 	if dial == nil {
-		d := &net.Dialer{Timeout: cfg.timeout()}
+		d := &net.Dialer{Timeout: cfg.timeout(), Control: cfg.DialControl}
 		dial = d.DialContext
 	}
 	raw, err := dial(ctx, network, cfg.Addr)

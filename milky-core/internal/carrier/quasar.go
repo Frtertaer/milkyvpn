@@ -2,6 +2,8 @@ package carrier
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"net"
 	"sync"
@@ -82,7 +84,7 @@ func tuneKCP(s *kcp.UDPSession, sndWnd, rcvWnd, resend, rateLimit int) {
 	if rcvWnd <= 0 {
 		rcvWnd = 16384
 	}
-	s.SetStreamMode(true) // byte stream, no per-write packetization
+	s.SetStreamMode(true)         // byte stream, no per-write packetization
 	s.SetNoDelay(1, 2, resend, 1) // nodelay, 2ms flush, NC off
 	s.SetWindowSize(sndWnd, rcvWnd)
 	s.SetMtu(1400)
@@ -120,6 +122,30 @@ func DialQuasar(ctx context.Context, cfg ClientConfig, qc *QuasarConfig) (*kal2.
 	}
 	ch := make(chan res, 1)
 	go func() {
+		if cfg.DialControl != nil {
+			// Bound socket (TUN mode): the packet conn is created with the
+			// control hook so the socket bypasses the tunnel routes;
+			// ownConn=true makes session.Close() close it.
+			udpaddr, err := net.ResolveUDPAddr("udp", cfg.Addr)
+			if err != nil {
+				ch <- res{nil, fmt.Errorf("resolve: %w", err)}
+				return
+			}
+			lc := net.ListenConfig{Control: cfg.DialControl}
+			pc, err := lc.ListenPacket(context.Background(), "udp", ":0")
+			if err != nil {
+				ch <- res{nil, fmt.Errorf("socket: %w", err)}
+				return
+			}
+			var convid uint32
+			_ = binary.Read(rand.Reader, binary.LittleEndian, &convid)
+			s, err := kcp.NewConn4(convid, udpaddr, qc.block(), qc.DataShards, qc.ParityShards, true, pc)
+			if err != nil {
+				_ = pc.Close()
+			}
+			ch <- res{s, err}
+			return
+		}
 		s, err := kcp.DialWithOptions(cfg.Addr, qc.block(), qc.DataShards, qc.ParityShards)
 		ch <- res{s, err}
 	}()
