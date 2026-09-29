@@ -64,7 +64,12 @@ type Session struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 	readDone  chan struct{}
-	pongReg   chan []byte
+	// pongMu guards pongQ: the FIFO queue of outstanding Ping waiters.
+	// Concurrent Pings used to overwrite a single shared channel, so pongs
+	// were misdelivered and callers timed out on a live session (a spurious
+	// failure the lanes watchdog reads as lane death).
+	pongMu    sync.Mutex
+	pongQ     []chan []byte
 }
 
 type outRec struct {
@@ -648,7 +653,10 @@ func (s *Session) OpenNet(network, host string, port uint16, timeout time.Durati
 	return &Stream{stream: st}, nil
 }
 
-// Ping sends PING and waits for the echo.
+// Ping sends PING and waits for the echo. Multiple callers are supported:
+// waiters queue FIFO and each incoming PONG satisfies the oldest one — the
+// ordered carrier returns echoes in request order, and a PONG from any peer
+// activity answers exactly one outstanding ping.
 func (s *Session) Ping(payload []byte, timeout time.Duration) error {
 	ch := s.registerPong()
 	defer s.unregisterPong(ch)
@@ -913,19 +921,31 @@ func (st *Stream) Target() (network, host string, port uint16, err error) {
 // pong registry ---------------------------------------------------------------
 
 func (s *Session) pongCh() chan []byte {
-	if s.pongReg == nil {
-		s.pongReg = make(chan []byte, 1)
+	s.pongMu.Lock()
+	defer s.pongMu.Unlock()
+	if len(s.pongQ) == 0 {
+		return nil
 	}
-	return s.pongReg
+	ch := s.pongQ[0]
+	s.pongQ = s.pongQ[1:]
+	return ch
 }
 
 func (s *Session) registerPong() chan []byte {
-	s.pongReg = make(chan []byte, 1)
-	return s.pongReg
+	ch := make(chan []byte, 1)
+	s.pongMu.Lock()
+	s.pongQ = append(s.pongQ, ch)
+	s.pongMu.Unlock()
+	return ch
 }
 
 func (s *Session) unregisterPong(ch chan []byte) {
-	if s.pongReg == ch {
-		s.pongReg = nil
+	s.pongMu.Lock()
+	defer s.pongMu.Unlock()
+	for i, w := range s.pongQ {
+		if w == ch {
+			s.pongQ = append(s.pongQ[:i], s.pongQ[i+1:]...)
+			return
+		}
 	}
 }
