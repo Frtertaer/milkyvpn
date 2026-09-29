@@ -118,6 +118,37 @@ ui_ready() {
   return 1
 }
 
+# ui_edittext_value — text= attribute of the first EditText node in the dump
+# (&amp; unescaped so it can be compared to the raw link).
+ui_edittext_value() {
+  ui_xml | tr '<' '\n' | grep 'class="android.widget.EditText"' | head -1 \
+    | sed -n 's/.*text="\([^"]*\)".*/\1/p' | sed 's/&amp;/\&/g'
+}
+
+# type_text — `input text` silently truncates long strings (still exits 0),
+# so always send in chunks; escapes are applied per chunk so a boundary can
+# never split an `\&`/%% sequence.
+type_text() {
+  local s=$1 i=0 n=${#s} chunk esc
+  while [ $i -lt $n ]; do
+    chunk=${s:i:40}
+    esc=${chunk//&/\\&}
+    esc=${esc//%/%%}
+    esc=${esc// /%s}
+    "${ADB[@]}" shell input text "$esc" || return 1
+    i=$((i+40)); sleep 0.3
+  done
+}
+
+# clear_field — move caret to end, then DEL×N in one `input` invocation
+# (it accepts multiple key names, sent sequentially).
+clear_field() {
+  "${ADB[@]}" shell input keyevent KEYCODE_MOVE_END 2>/dev/null
+  local dels="" i
+  for i in $(seq 1 "${1:-400}"); do dels="$dels KEYCODE_DEL"; done
+  "${ADB[@]}" shell input keyevent $dels
+}
+
 # ui_tree_useful — the API29 ghost-tree flake: uiautomator returns nodes but
 # every text/content-desc is empty, so no desc-match can ever succeed.
 ui_tree_useful() {
@@ -187,15 +218,27 @@ onboarding_and_import() {
   ui_tap_desc_wait "Понятно\|Got it" && sleep 2
   ui_tap_desc_wait "Добавить подписку\|Add subscription" && sleep 3
   [ -n "$LINK" ] || { log "no --link/KAL2_TEST_LINK — expecting profile already present"; return; }
-  local esc=${LINK//&/\\&}
   ui_tap_class android.widget.EditText; sleep 1   # focus the url field
-  if ! "${ADB[@]}" shell input text "$esc" 2>/dev/null; then
-    # chunked fallback — some API levels silently drop very long input text
-    local i=0 n=${#esc}
-    while [ $i -lt $n ]; do
-      "${ADB[@]}" shell input text "${esc:i:40}" || break
-      i=$((i+40)); sleep 0.3
-    done
+  # The link must land verbatim: `input text` truncates long strings silently
+  # (ech= links are ~350 chars), so chunk + verify against the field content.
+  # Fragment (#remark) may contain untypable chars — compare only the query.
+  local want typed try
+  want=$(printf '%s' "${LINK%%#*}" | tr -cd '\40-\176')
+  for try in 1 2 3; do
+    type_text "$LINK" || true
+    sleep 1
+    typed=$(ui_edittext_value)
+    if [ "$typed" = "$want" ] || [ "$typed" = "$(printf '%s' "$LINK" | tr -cd '\40-\176')" ]; then
+      break
+    fi
+    log "link field mismatch (try $try): want ${#want} chars, got ${#typed} — clear+retry"
+    clear_field $((${#typed} + 8))
+    ui_tap_class android.widget.EditText 2>/dev/null || true; sleep 1
+  done
+  if [ "$typed" != "$want" ] && [ "$typed" != "$(printf '%s' "$LINK" | tr -cd '\40-\176')" ]; then
+    log "FAIL: url field differs after 3 tries (want ${#want} chars, got ${#typed})"
+    log "field: $(printf '%s' "$typed" | head -c 300)"
+    return 1
   fi
   "${ADB[@]}" shell input keyevent 111 2>/dev/null || true  # close keyboard
   sleep 1
