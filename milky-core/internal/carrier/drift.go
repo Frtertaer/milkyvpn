@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
+	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -71,7 +72,9 @@ func (v *VeilListener) DriftHandler(base string) http.Handler {
 			defer wc.Close()
 			bc = wc
 		} else {
-			bc = newDriftServerConn(w, r)
+			d := newDriftServerConn(w, r)
+			defer d.stopPump()
+			bc = d
 		}
 		fail := func(code int) {
 			if isWS {
@@ -84,6 +87,10 @@ func (v *VeilListener) DriftHandler(base string) http.Handler {
 		magic := make([]byte, len(kal2.Magic))
 		if _, err := io.ReadFull(bc, magic); err != nil {
 			fail(http.StatusNotFound)
+			return
+		}
+		if bytesEqual(magic, kal2.ResumeMagic) {
+			v.acceptResumeDrift(bc, magic, w, r, isWS, fail)
 			return
 		}
 		if !bytesEqual(magic, kal2.Magic) {
@@ -117,42 +124,114 @@ func (v *VeilListener) DriftHandler(base string) http.Handler {
 				f.Flush()
 			}
 			bc.(*driftServerConn).started = true
+			bc.(*driftServerConn).startPump()
 		}
 		if err := v.establishKAL(bc, eph, psk, nil); err != nil {
 			return
 		}
 		// Keep the handler alive while the session lives: the session's read
 		// loop consumes the request body / WS frames; block until it ends.
-		if isWS {
-			select {
-			case <-bc.(*wsConn).closed:
-			case <-r.Context().Done():
-			}
-		} else {
-			d := bc.(*driftServerConn)
-			select {
-			case <-d.closed:
-			case <-r.Context().Done():
-			}
-			// The ResponseWriter must not be touched once the handler
-			// returns: fence off in-flight session writes first.
-			_ = d.Close()
-			d.mu.Lock()
-			d.mu.Unlock() //nolint:staticcheck // empty critical section is the fence
-		}
+		v.holdDrift(bc, r, isWS)
 	})
+}
+
+// holdDrift blocks the handler while the session owns the conn.
+func (v *VeilListener) holdDrift(bc BoundConn, r *http.Request, isWS bool) {
+	if isWS {
+		select {
+		case <-bc.(*wsConn).closed:
+		case <-r.Context().Done():
+		}
+		return
+	}
+	d := bc.(*driftServerConn)
+	select {
+	case <-d.closed:
+	case <-r.Context().Done():
+	}
+	// The ResponseWriter must not be touched once the handler returns:
+	// fence off in-flight session writes first (the deferred stopPump
+	// guarantees the writer pump has fully exited by then).
+	_ = d.Close()
+}
+
+// acceptResumeDrift serves a KLDO-rs- flight inside the drift transport:
+// same Accept → flight+checkpoint → ResumeAttach pipeline as the veil path,
+// with the HTTP-shaped failure surface (plain 4xx, like any bad upload).
+func (v *VeilListener) acceptResumeDrift(bc BoundConn, magic []byte, w http.ResponseWriter, r *http.Request, isWS bool, fail func(int)) {
+	rest := make([]byte, kal2.ResumeFixedSize-len(kal2.ResumeMagic))
+	if _, err := io.ReadFull(bc, rest); err != nil {
+		fail(http.StatusNotFound)
+		return
+	}
+	head := append(magic, rest...)
+	if v.cfg.Resumer == nil {
+		fail(http.StatusBadRequest)
+		return
+	}
+	res, err := v.cfg.Resumer.Accept(head, bc, nil)
+	if err != nil {
+		fail(http.StatusForbidden)
+		return
+	}
+	flight, _, err := res.ServerResume(v.cfg.Identity, nil)
+	if err != nil {
+		fail(http.StatusForbidden)
+		return
+	}
+	if !isWS {
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Cache-Control", "no-store")
+		w.WriteHeader(http.StatusOK)
+		if f, ok := w.(http.Flusher); ok {
+			f.Flush()
+		}
+		bc.(*driftServerConn).started = true
+		bc.(*driftServerConn).startPump()
+	}
+	cp := res.Session.Checkpoint().Encode()
+	out := append(flight, byte(len(cp)), byte(len(cp)>>8))
+	out = append(out, cp...)
+	if _, err := bc.Write(out); err != nil {
+		return
+	}
+	if err := res.Finish(); err != nil {
+		return
+	}
+	if err := res.Session.ResumeAttach(bc, res.Checkpoint); err != nil {
+		return
+	}
+	if err := v.cfg.Resumer.Refresh(res.Session); err != nil {
+		v.cfg.logf("veil: refresh ticket: %v", err)
+	}
+	v.holdDrift(bc, r, isWS)
 }
 
 // driftServerConn adapts an HTTP request/response pair to BoundConn.
 // Read = request body; Write = streaming response; Close = cancels context.
+// Every access to the ResponseWriter is funneled through a pump goroutine
+// that lives only while the handler does: startPump runs it once the
+// streaming response begins, stopPump guarantees it has exited before the
+// handler returns — so net/http's handlerDone teardown can never race a
+// write.
 type driftServerConn struct {
-	w       http.ResponseWriter
-	r       *http.Request
-	started bool
-	mu      sync.Mutex
-	closed  chan struct{}
-	once    sync.Once
-	remote  net.Addr
+	w        http.ResponseWriter
+	r        *http.Request
+	started  bool
+	closed   chan struct{}
+	once     sync.Once
+	remote   net.Addr
+	wreq     chan driftWrite
+	wexit    chan struct{}
+	wstop    chan struct{}
+	pumpDone chan struct{}
+	pumpOnce sync.Once
+	stopOnce sync.Once
+}
+
+type driftWrite struct {
+	b   []byte
+	res chan error
 }
 
 func newDriftServerConn(w http.ResponseWriter, r *http.Request) *driftServerConn {
@@ -160,7 +239,12 @@ func newDriftServerConn(w http.ResponseWriter, r *http.Request) *driftServerConn
 	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
 		ra = &net.TCPAddr{IP: net.ParseIP(host)}
 	}
-	d := &driftServerConn{w: w, r: r, closed: make(chan struct{}), remote: ra}
+	d := &driftServerConn{
+		w: w, r: r, remote: ra,
+		closed: make(chan struct{}), wreq: make(chan driftWrite),
+		wexit: make(chan struct{}), wstop: make(chan struct{}),
+		pumpDone: make(chan struct{}),
+	}
 	go func() {
 		select {
 		case <-r.Context().Done():
@@ -171,29 +255,73 @@ func newDriftServerConn(w http.ResponseWriter, r *http.Request) *driftServerConn
 	return d
 }
 
-func (d *driftServerConn) Read(b []byte) (int, error) { return d.r.Body.Read(b) }
-func (d *driftServerConn) Write(b []byte) (n int, err error) {
-	// The KAL session can outlive the handler: once the request context ends,
-	// the h2 responseWriter panics on Write. Guard with closed + recover.
-	defer func() {
-		if r := recover(); r != nil {
-			n, err = 0, io.ErrClosedPipe
+func (d *driftServerConn) startPump() {
+	d.pumpOnce.Do(func() {
+		go func() {
+			defer close(d.wexit)
+			defer close(d.pumpDone)
+			for {
+				select {
+				case q := <-d.wreq:
+					_, err := d.w.Write(q.b)
+					if err == nil {
+						if f, ok := d.w.(http.Flusher); ok {
+							f.Flush()
+						}
+					}
+					q.res <- err
+				case <-d.wstop:
+					return
+				case <-d.r.Context().Done():
+					return
+				}
+			}
+		}()
+	})
+}
+
+// stopPump halts the writer pump. Handlers must call it before returning so
+// no goroutine touches the ResponseWriter after its lifetime ends. If the
+// pump was never started (request failed before streaming) it returns.
+func (d *driftServerConn) stopPump() {
+	d.stopOnce.Do(func() {
+		close(d.wstop)
+		select {
+		case <-d.pumpDone:
+		default:
+			if d.started {
+				<-d.pumpDone
+			}
 		}
-	}()
-	d.mu.Lock()
-	defer d.mu.Unlock()
+	})
+}
+
+func (d *driftServerConn) Read(b []byte) (int, error) { return d.r.Body.Read(b) }
+func (d *driftServerConn) Write(b []byte) (int, error) {
 	select {
 	case <-d.closed:
 		return 0, io.ErrClosedPipe
+	case <-d.wexit:
+		return 0, io.ErrClosedPipe
 	default:
 	}
-	n, err = d.w.Write(b)
-	if err == nil {
-		if f, ok := d.w.(http.Flusher); ok {
-			f.Flush()
-		}
+	res := make(chan error, 1)
+	select {
+	case <-d.closed:
+		return 0, io.ErrClosedPipe
+	case <-d.wexit:
+		return 0, io.ErrClosedPipe
+	case d.wreq <- driftWrite{b, res}:
 	}
-	return n, err
+	select {
+	case err := <-res:
+		if err != nil {
+			return 0, err
+		}
+		return len(b), nil
+	case <-d.wexit:
+		return 0, io.ErrClosedPipe
+	}
 }
 func (d *driftServerConn) Close() error {
 	d.once.Do(func() {
@@ -274,15 +402,21 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 	// The KAL flight must be the first bytes of the body: run the handshake
 	// manually over the conn's write half, then read the response for the
 	// server flight.
-	hs, err := kal2.NewClientHandshake(cfg.ServerPub, cfg.PSK, nil)
-	if err != nil {
-		return nil, nil, err
+	var hs *kal2.ClientHandshake
+	var cr *kal2.ClientResume
+	if cfg.Resume != nil {
+		cr, err = cfg.Resume.BeginResumeFlight(pw, nil)
+	} else {
+		hs, err = kal2.NewClientHandshake(cfg.ServerPub, cfg.PSK, nil)
+		if err == nil {
+			var flight []byte
+			flight, err = hs.FirstFlight(cfg.FirstFlightPadLen)
+			if err == nil {
+				_, err = pw.Write(flight)
+			}
+		}
 	}
-	flight, err := hs.FirstFlight(cfg.FirstFlightPadLen)
 	if err != nil {
-		return nil, nil, err
-	}
-	if _, err := pw.Write(flight); err != nil {
 		return nil, nil, err
 	}
 
@@ -309,7 +443,12 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 	conn.resp = resp
 	conn.read = resp.Body
 
-	sess, err := driftHandshakeConn(hs, conn, cfg)
+	var sess *kal2.Session
+	if cfg.Resume != nil {
+		sess, err = driftResumeConn(cr, conn, cfg)
+	} else {
+		sess, err = driftHandshakeConn(hs, conn, cfg)
+	}
 	if err != nil {
 		_ = conn.Close()
 		return nil, nil, err
@@ -341,6 +480,40 @@ func driftHandshakeConn(hs *kal2.ClientHandshake, conn BoundConn, cfg ClientConf
 	}
 	sess.Attach(conn)
 	return sess, nil
+}
+
+// driftResumeConn finishes a v2.1 resumption over conn: server flight,
+// checkpoint trailer, then ResumeAttach on the frozen session.
+func driftResumeConn(cr *kal2.ClientResume, conn BoundConn, cfg ClientConfig) (*kal2.Session, error) {
+	s := cfg.Resume.Session
+	head := make([]byte, kal2.ServerFlightSize)
+	if _, err := io.ReadFull(conn, head); err != nil {
+		return nil, fmt.Errorf("resume server flight: %w", err)
+	}
+	if err := cr.FinishResume(s, cfg.ServerPub, head, nil); err != nil {
+		return nil, err
+	}
+	var clb [2]byte
+	if _, err := io.ReadFull(conn, clb[:]); err != nil {
+		return nil, fmt.Errorf("resume checkpoint: %w", err)
+	}
+	cpb := make([]byte, binary.LittleEndian.Uint16(clb[:]))
+	if _, err := io.ReadFull(conn, cpb); err != nil {
+		return nil, fmt.Errorf("resume checkpoint: %w", err)
+	}
+	cp, err := decodeResumeCheckpoint(cpb)
+	if err != nil {
+		return nil, err
+	}
+	if err := s.ResumeAttach(conn, cp); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+// decodeResumeCheckpoint parses the server-flight checkpoint trailer.
+func decodeResumeCheckpoint(b []byte) (*kal2.ResumeCheckpoint, error) {
+	return kal2.DecodeCheckpoint(b)
 }
 
 // DialDriftWS is drift over a WebSocket: identical kal2 stream inside binary
@@ -384,17 +557,21 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 		return nil, nil, err
 	}
 
-	hs, err := kal2.NewClientHandshake(cfg.ServerPub, cfg.PSK, nil)
-	if err != nil {
-		_ = wsc.Close()
-		return nil, nil, err
+	var hs *kal2.ClientHandshake
+	var cr *kal2.ClientResume
+	if cfg.Resume != nil {
+		cr, err = cfg.Resume.BeginResumeFlight(wsc, nil)
+	} else {
+		hs, err = kal2.NewClientHandshake(cfg.ServerPub, cfg.PSK, nil)
+		if err == nil {
+			var flight []byte
+			flight, err = hs.FirstFlight(cfg.FirstFlightPadLen)
+			if err == nil {
+				_, err = wsc.Write(flight)
+			}
+		}
 	}
-	flight, err := hs.FirstFlight(cfg.FirstFlightPadLen)
 	if err != nil {
-		_ = wsc.Close()
-		return nil, nil, err
-	}
-	if _, err := wsc.Write(flight); err != nil {
 		_ = wsc.Close()
 		return nil, nil, err
 	}
@@ -404,7 +581,13 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 	}
 	done := make(chan hsRes, 1)
 	go func() {
-		s, err := driftHandshakeConn(hs, wsc, cfg)
+		var s *kal2.Session
+		var err error
+		if cfg.Resume != nil {
+			s, err = driftResumeConn(cr, wsc, cfg)
+		} else {
+			s, err = driftHandshakeConn(hs, wsc, cfg)
+		}
 		done <- hsRes{s, err}
 	}()
 	select {

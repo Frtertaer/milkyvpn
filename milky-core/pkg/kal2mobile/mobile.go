@@ -9,13 +9,16 @@
 //	 "carrier":"auto|veil|drift", "path":"/api/v2/stream",
 //	 "pub":"<hex>", "psk":"<hex>", "socks":"127.0.0.1:10808",
 //	 "ech":"<base64 ECHConfigList>", "cover":true,
-//	 "pin":"<b64 or hex sha256(SPKI)>[,...]", "insecure":false}
+//	 "pin":"<b64 or hex sha256(SPKI)>[,...]", "insecure":false,
+//	 "tun":false, "tun_fd":0}
 //
 // The outer TLS certificate is verified against the system roots unless
 // "pin" is given (SPKI pin replaces CA verification) or "insecure" is true
 // (legacy devices whose root store lacks the server's CA).
 //
-// Point OS proxy / VPN routing at the returned SOCKS port.
+// Point OS proxy / VPN routing at the returned SOCKS port. `tun` brings up
+// the platform TUN adapter (root/admin); `tun_fd` adopts an existing fd —
+// the Android VpnService.establish() parcel fd — instead.
 package kal2mobile
 
 import (
@@ -30,6 +33,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Frtertaer/milkyvpn/milky-core/internal/tun"
 	"github.com/Frtertaer/milkyvpn/milky-core/pkg/kal2core"
 )
 
@@ -41,17 +45,21 @@ type mobileConfig struct {
 	Pub       string `json:"pub"`
 	PSK       string `json:"psk"`
 	Socks     string `json:"socks"`
-	ECH       string `json:"ech"`   // base64 ECHConfigList (link param ech=)
-	Cover     *bool  `json:"cover"` // default on: jittered chaff against timing DPI
+	ECH       string `json:"ech"`    // base64 ECHConfigList (link param ech=)
+	Cover     *bool  `json:"cover"`  // default on: jittered chaff against timing DPI
 	Pin       string `json:"pin"`
 	Insecure  bool   `json:"insecure"`
+	Tun       bool   `json:"tun"`    // platform TUN adapter (root/admin)
+	TunFd     int    `json:"tun_fd"` // Android: adopt a VpnService fd
+	TunAddr   string `json:"tun_addr"`
 }
 
 var (
-	mu      sync.Mutex
-	client  *kal2core.Client
-	socksLn net.Listener
-	logf    = func(string, ...any) {}
+	mu        sync.Mutex
+	client    *kal2core.Client
+	socksLn   net.Listener
+	tunCancel context.CancelFunc
+	logf      = func(string, ...any) {}
 )
 
 // LogSink receives 'kal2: ...' log lines. gomobile cannot bind SetLogger
@@ -161,6 +169,15 @@ func Start(configJSON string) (int, error) {
 	cli.EnableReconnect()
 	client = cli
 	socksLn = ln
+	if mc.Tun || mc.TunFd > 0 {
+		ctx2, cancel := context.WithCancel(context.Background())
+		tunCancel = cancel
+		go func() {
+			if err := runTun(ctx2, mc, cli, addrs); err != nil && ctx2.Err() == nil {
+				logf("core: tun stopped: %v", err)
+			}
+		}()
+	}
 	_, port, _ := net.SplitHostPort(ln.Addr().String())
 	p, _ := strconv.Atoi(port)
 	logf("core: up (%s)", ln.Addr())
@@ -175,6 +192,10 @@ func Stop() {
 }
 
 func stopLocked() {
+	if tunCancel != nil {
+		tunCancel()
+		tunCancel = nil
+	}
 	if client != nil {
 		_ = client.Close()
 		client = nil
@@ -200,4 +221,57 @@ func splitComma(s string) []string {
 		}
 	}
 	return out
+}
+
+// runTun bridges the platform TUN device into the live session — same
+// wiring as cmd/kal2-client's -tun flag.
+func runTun(ctx context.Context, mc mobileConfig, cli *kal2core.Client, addrs []string) error {
+	var serverIPs []string
+	for _, a := range addrs {
+		host, _, _ := net.SplitHostPort(a)
+		if ip := net.ParseIP(host); ip != nil && ip.To4() != nil {
+			serverIPs = append(serverIPs, host)
+			continue
+		}
+		if ips, err := net.LookupIP(host); err == nil {
+			for _, ip := range ips {
+				if ip4 := ip.To4(); ip4 != nil {
+					serverIPs = append(serverIPs, ip4.String())
+				}
+			}
+		}
+	}
+	addr := mc.TunAddr
+	if addr == "" {
+		addr = tun.DefaultAddr
+	}
+	return tun.Run(ctx, &tun.Config{
+		Name:      "milky0",
+		Addr:      addr,
+		ServerIPs: serverIPs,
+		Fd:        uintptr(mc.TunFd),
+		Logf:      logf,
+		OpenTCP: func(_ context.Context, target string) (tun.Stream, error) {
+			sess := cli.Session()
+			if sess == nil {
+				return nil, errors.New("no live session")
+			}
+			host, ps, err := net.SplitHostPort(target)
+			if err != nil {
+				return nil, err
+			}
+			port, err := strconv.Atoi(ps)
+			if err != nil {
+				return nil, err
+			}
+			return sess.Open(host, uint16(port), 15*time.Second)
+		},
+		OpenUDP: func(_ context.Context) (tun.Stream, error) {
+			sess := cli.Session()
+			if sess == nil {
+				return nil, errors.New("no live session")
+			}
+			return sess.OpenNet("udp", "0.0.0.0", 0, 15*time.Second)
+		},
+	})
 }

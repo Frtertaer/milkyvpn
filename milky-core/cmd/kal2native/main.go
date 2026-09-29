@@ -8,6 +8,7 @@ package main
 #cgo LDFLAGS: -llog
 #include <jni.h>
 #include <stdlib.h>
+#include <string.h>
 #include <android/log.h>
 
 static const char* jniGetStr(JNIEnv* env, jstring s) {
@@ -23,6 +24,14 @@ static jstring jniNewStr(JNIEnv* env, const char* p) {
 static void jniLog(const char* tag, const char* msg) {
     __android_log_write(ANDROID_LOG_INFO, tag, msg);
 }
+
+// Unified C ABI (milky.h) — the same exports libmilky ships on desktop
+// and iOS, so Dart FFI callers can use one binding on every platform
+// alongside the JNI entry points below.
+typedef void (*milky_log_cb)(const char* msg);
+static milky_log_cb milkyLogCb = NULL;
+static void milkySetLogCb(milky_log_cb cb) { milkyLogCb = cb; }
+static void milkyEmitLog(const char* msg) { if (milkyLogCb) milkyLogCb(msg); }
 */
 import "C"
 
@@ -48,6 +57,9 @@ func init() {
 		tag := C.CString("core")
 		c := C.CString(msg)
 		C.jniLog(tag, c)
+		// FFI receivers decode the pointer asynchronously — keep it
+		// alive (see cmd/milkynative; log volume is small).
+		C.milkyEmitLog(C.CString(msg))
 		C.free(unsafe.Pointer(tag))
 		C.free(unsafe.Pointer(c))
 	})
@@ -89,6 +101,57 @@ func Java_homes_milky_vpn_bridge_NativeBridge_nativeLastError(env *C.JNIEnv, cls
 	s := C.jniNewStr(env, cs)
 	C.free(unsafe.Pointer(cs))
 	return s
+}
+
+var versionC = C.CString("milky-core/2.1 (kal2)")
+
+//export milky_start
+func milky_start(cjson *C.char) C.int {
+	port, err := kal2mobile.Start(C.GoString(cjson))
+	setErr(err)
+	if err != nil {
+		return -1
+	}
+	return C.int(port)
+}
+
+//export milky_stop
+func milky_stop() {
+	kal2mobile.Stop()
+}
+
+//export milky_alive
+func milky_alive() C.int {
+	if kal2mobile.Alive() {
+		return 1
+	}
+	return 0
+}
+
+//export milky_last_error
+func milky_last_error(buf *C.char, cap C.int) C.int {
+	if buf == nil || cap <= 0 {
+		return -1
+	}
+	n := len(lastErr)
+	if n > int(cap)-1 {
+		n = int(cap) - 1
+	}
+	if n > 0 {
+		C.memcpy(unsafe.Pointer(buf), unsafe.Pointer(unsafe.StringData(lastErr)), C.size_t(n))
+	}
+	*(*C.char)(unsafe.Add(unsafe.Pointer(buf), n)) = 0
+	return C.int(n)
+}
+
+//export milky_set_log_callback
+func milky_set_log_callback(cb C.milky_log_cb) {
+	C.milkySetLogCb(cb)
+}
+
+//export milky_version
+func milky_version() *C.char {
+	return versionC
 }
 
 func main() {}

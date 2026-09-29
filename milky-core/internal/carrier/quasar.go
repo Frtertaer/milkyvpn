@@ -12,6 +12,7 @@ import (
 	"crypto/sha256"
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/kal2"
 	kcp "github.com/xtaci/kcp-go/v5"
+	"golang.org/x/crypto/chacha20poly1305"
 	"golang.org/x/crypto/hkdf"
 	"io"
 )
@@ -19,8 +20,9 @@ import (
 // Quasar carries a KAL/2 session over UDP using a KCP reliable stream. It is
 // the high-throughput carrier for paths where inbound TCP is strangled:
 // retransmissions ride UDP, so the flow inherits UDP's loss profile instead
-// of TCP's. Each datagram is salsa20-scrambled (key derived from the user
-// PSK) so KCP headers never appear on the wire.
+// of TCP's. Each datagram is sealed with ChaCha20-Poly1305 (key derived
+// from the server identity) so KCP headers never appear on the wire and the
+// datagrams are tamper-evident.
 //
 // Tuning targets a ~150 ms RTT transcontinental path: aggressive resend,
 // no congestion-window throttling (KCP NC off), large windows to cover the
@@ -47,7 +49,10 @@ type QuasarConfig struct {
 	// ~175 Mbit offered → ~9% delivered vs ~73 Mbit offered → ~62%.
 	// Capping near the link's sweet spot beats flooding it. 0 = unlimited.
 	RateLimit int
-	// WireKey scrambles every datagram (salsa20). nil = plaintext KCP.
+	// WireKey seals every datagram (ChaCha20-Poly1305 AEAD). nil = plaintext
+	// KCP. AEAD is required even though the inner KAL/2 session is already
+	// authenticated: the KCP header and payload must be unforgeable, or an
+	// active middlebox can rewrite segment fields and stall the stream.
 	WireKey []byte
 }
 
@@ -55,16 +60,17 @@ func (c *QuasarConfig) block() kcp.BlockCrypt {
 	if len(c.WireKey) == 0 {
 		return nil
 	}
-	b, err := kcp.NewSalsa20BlockCrypt(c.WireKey)
+	aead, err := chacha20poly1305.New(c.WireKey)
 	if err != nil {
 		return nil
 	}
-	return b
+	return kcp.NewAEADCrypt(aead)
 }
 
-// QuasarWireKey derives the datagram scrambling key from the server's public
+// QuasarWireKey derives the datagram AEAD key from the server's public
 // identity (known to both ends, identical for every user) so a passive
-// observer sees uniform random datagrams.
+// observer sees uniform random datagrams. Integrity, not confidentiality:
+// the key is public-derived, confidentiality is the inner session's job.
 func QuasarWireKey(serverPub []byte) []byte {
 	r := hkdf.New(sha256.New, serverPub, nil, []byte("mxs/quasar-wire"))
 	k := make([]byte, 32)

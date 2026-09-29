@@ -9,3 +9,7 @@ import "github.com/Frtertaer/milkyvpn/milky-core/internal/tun"
 // carrier bypass lives entirely on the bound socket; Windows routes through
 // netsh tied to the wintun adapter.
 func armRouteJanitor(b *tun.BindGuard) {}
+
+// runRouteJanitor exists only on Darwin (see janitor_darwin.go); the flag is
+// unreachable on other platforms — the stub keeps main.go compiling.
+func runRouteJanitor(string) {}
