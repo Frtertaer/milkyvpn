@@ -91,6 +91,21 @@ void main() {
       expect(ops[0], containsAllInOrder(['add', 'ProxyServer', 'proxy.corp.local:8080']));
       expect(ops[1], containsAllInOrder(['add', 'ProxyEnable', '/d', '0']));
     });
+
+    test('snapshot equal to our own socks value is a leaked marker: delete + disable', () {
+      final ops = WindowsProcessVpnBridge.restoreProxyPlan(
+        prevProxyEnable: 1,
+        prevProxyServer: 'socks=127.0.0.1:11808',
+        ourServer: 'socks=127.0.0.1:11808',
+      );
+      expect(
+        ops,
+        orderedEquals([
+          containsAllInOrder(['delete', '/v', 'ProxyServer', '/f']),
+          containsAllInOrder(['add', 'ProxyEnable', '/d', '0', '/f']),
+        ]),
+      );
+    });
   });
 
   group('reg query output parsing', () {
