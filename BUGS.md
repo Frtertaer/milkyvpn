@@ -89,6 +89,20 @@
 - Issue: —  PR: —  Regression test:
   `test/core/windows_vpn_bridge_test.dart::proxy restore plan`
 
+### BUG-2026-09-29-11 — Windows: прокси остаётся на мёртвом listener'е при фейле коннекта
+- Severity: major
+- Platform: windows
+- Status: fixed-in-PR
+- Repro: клиент умирает ПОСЛЕ 'session up' но во время `_applyProxy`
+  (напр. :11808 занят → ServeSocks fatal): exit-handler'овский `_restoreProxy`
+  срабатывает no-op до `_proxySet=true` → `socks=` остаётся выставленным на
+  мёртвый/чужой листенер → трафик юзера в refused/blackhole
+- Fix: после `_applyProxy` — проверка `_proc == null` → синхронный
+  `_restoreProxy` + `core_exit` (раньше `_set(connected)` шёл без проверки)
+- Found by: windows verify session (build 27)
+- Issue: —  PR: —  Regression test: `tool/check_windows_bridge.py`
+  (ordering-gate: applyProxy → alive-check → connected)
+
 ## Закрытые
 
 (перенос сюда после merge фикса с регрессионным тестом)
