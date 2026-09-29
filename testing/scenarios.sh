@@ -118,6 +118,63 @@ ui_ready() {
   return 1
 }
 
+# ui_edittext_value — text= attribute of the first EditText node in the dump
+# (&amp; unescaped so it can be compared to the raw link).
+ui_edittext_value() {
+  ui_xml | tr '<' '\n' | grep 'class="android.widget.EditText"' | head -1 \
+    | sed -n 's/.*text="\([^"]*\)".*/\1/p' | sed 's/&amp;/\&/g'
+}
+
+# type_text — `input text` silently truncates long strings (still exits 0),
+# so always send in chunks. Each chunk is single-quoted for the remote shell
+# (only % needs the input-tool escape and space needs %s; every shell-special
+# char is safe inside '…'), and escapes are applied per chunk so a boundary
+# can never split a %% sequence.
+type_text() {
+  local s=$1
+  local i=0 n=${#s} chunk esc
+  while [ $i -lt $n ]; do
+    chunk=${s:i:40}
+    esc=${chunk//%/%%}
+    esc=${esc// /%s}
+    esc=${esc//\'/\'\\\'\'}
+    "${ADB[@]}" shell input text "'$esc'" || return 1
+    i=$((i+40)); sleep 0.3
+  done
+}
+
+# clear_field — move caret to end, then DEL×N in one `input` invocation
+# (it accepts multiple key names, sent sequentially).
+clear_field() {
+  "${ADB[@]}" shell input keyevent KEYCODE_MOVE_END 2>/dev/null
+  local dels="" i
+  for i in $(seq 1 "${1:-400}"); do dels="$dels KEYCODE_DEL"; done
+  "${ADB[@]}" shell input keyevent $dels
+}
+
+# short_link — `input text` stops landing past ~280 chars on some emus;
+# better to drop optional tail params (ech/cover/pin) at a '&' boundary than
+# feed a link whose last param arrives truncated. The #remark goes too —
+# display-only and often untypable (Cyrillic).
+short_link() {
+  local link=$1 head q out sep part
+  [ ${#link} -le 250 ] && { printf '%s' "$link"; return; }
+  head=${link%%\?*}
+  case $link in *\?*) q=${link#*\?};; *) printf '%s' "$link"; return;; esac
+  q=${q%%\#*}
+  out=$head sep='?'
+  local IFS='&'
+  for part in $q; do
+    if [ $(( ${#out} + ${#part} + 1 )) -le 250 ]; then
+      out=$out$sep$part
+      sep='&'
+    else
+      break
+    fi
+  done
+  printf '%s' "$out"
+}
+
 # ui_tree_useful — the API29 ghost-tree flake: uiautomator returns nodes but
 # every text/content-desc is empty, so no desc-match can ever succeed.
 ui_tree_useful() {
@@ -180,6 +237,19 @@ ui_tap_class() {  # tap first node of a class (e.g. android.widget.EditText)
 }
 
 onboarding_and_import() {
+  # The ghost-tree flake can hit mid-flow: retry the whole path once — the
+  # repo dedupes a re-imported profile, and a persisted profile makes the
+  # second pass land on home directly.
+  local attempt
+  for attempt in 1 2; do
+    _onboarding_and_import_once && return 0
+    log "import attempt $attempt: no success sheet — relaunching app"
+    launch_app
+  done
+  return 1
+}
+
+_onboarding_and_import_once() {
   # fresh install → 3-page onboarding, then ImportScreen paste+confirm.
   ui_ready || log "ui: no view tree yet — continuing anyway"
   ui_heal || log "ui: tree still ghosted — falls back to pct taps"
@@ -187,15 +257,27 @@ onboarding_and_import() {
   ui_tap_desc_wait "Понятно\|Got it" && sleep 2
   ui_tap_desc_wait "Добавить подписку\|Add subscription" && sleep 3
   [ -n "$LINK" ] || { log "no --link/KAL2_TEST_LINK — expecting profile already present"; return; }
-  local esc=${LINK//&/\\&}
   ui_tap_class android.widget.EditText; sleep 1   # focus the url field
-  if ! "${ADB[@]}" shell input text "$esc" 2>/dev/null; then
-    # chunked fallback — some API levels silently drop very long input text
-    local i=0 n=${#esc}
-    while [ $i -lt $n ]; do
-      "${ADB[@]}" shell input text "${esc:i:40}" || break
-      i=$((i+40)); sleep 0.3
-    done
+  # The link must land verbatim: `input text` truncates long strings silently
+  # (ech= links are ~300+ chars), so chunk + shorten to a param boundary +
+  # verify the typed LENGTH (the field is obscured → dump shows bullets).
+  local paste want typed try
+  paste=$(short_link "$LINK")
+  [ "$paste" != "$LINK" ] && log "link ${#LINK} chars → typing ${#paste} (tail params dropped at & boundary)"
+  want=$(printf '%s' "$paste" | tr -cd '\40-\176')
+  for try in 1 2; do
+    type_text "$paste" || true
+    sleep 1
+    typed=$(ui_edittext_value)
+    if [ ${#typed} -eq ${#want} ]; then
+      break
+    fi
+    log "link field mismatch (try $try): want ${#want} chars, got ${#typed} — clear+retry"
+    clear_field $((${#typed} + 8))
+    ui_tap_class android.widget.EditText 2>/dev/null || true; sleep 1
+  done
+  if [ ${#typed} -ne ${#want} ]; then
+    log "WARN: url field reads ${#typed} chars vs want ${#want} — proceeding; connect will judge"
   fi
   "${ADB[@]}" shell input keyevent 111 2>/dev/null || true  # close keyboard
   sleep 1
