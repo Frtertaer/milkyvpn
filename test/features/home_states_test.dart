@@ -134,6 +134,26 @@ void main() {
       vpn.dispose();
       await tester.pumpWidget(const SizedBox());
     });
+
+    testWidgets('disconnecting shows the disconnecting label, not the connecting one', (
+      tester,
+    ) async {
+      final repo = await repoWith(fixture('subscription_16_fake.txt'));
+      final bridge = FakeBridge();
+      final vpn = VpnController(bridge: bridge);
+      await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
+
+      bridge.emit(
+        const VpnSnapshot(state: VpnState.disconnecting),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      expect(find.text('Отключаем…'), findsWidgets);
+      expect(find.text('Подключаем…'), findsNothing);
+      vpn.dispose();
+      await tester.pumpWidget(const SizedBox());
+    });
   });
 
   testWidgets('orb transitions idle → connecting → connected → idle', (
@@ -248,6 +268,25 @@ void main() {
       // The token is a credential: it must not be rendered anywhere.
       expect(find.textContaining('sub.milky.homes/s/'), findsNothing);
       expect(find.textContaining('AbCdEf'), findsNothing);
+      expect(tester.takeException(), isNull);
+      vpn.dispose();
+    });
+
+    testWidgets('refresh reports an update, not a new subscription', (
+      tester,
+    ) async {
+      final repo = await repoWith(fixture('subscription_16_fake.txt'));
+      final bridge = FakeBridge();
+      final vpn = VpnController(bridge: bridge);
+      await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
+
+      await tester.tap(find.byKey(const ValueKey('milky_nav_1')));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('Обновить'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Подписка обновлена'), findsOneWidget);
+      expect(find.text('Подписка добавлена'), findsNothing);
       expect(tester.takeException(), isNull);
       vpn.dispose();
     });

@@ -8,6 +8,7 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
@@ -159,6 +160,10 @@ type Client struct {
 	stop     chan struct{}
 	stopOnce sync.Once
 	rrIdx    atomic.Int32
+	// pingMu serializes Ping callers owned by this client (cover, liveness,
+	// Ping method): the session routes each PONG to a single registered
+	// channel, so concurrent Pings would steal each other's replies.
+	pingMu sync.Mutex
 	scores   *core.Scorecard
 }
 
@@ -455,7 +460,9 @@ func (c *Client) coverLoop() {
 		for i := range pad {
 			pad[i] = byte(rand.IntN(256))
 		}
+		c.pingMu.Lock()
 		_ = s.Ping(pad, 10*time.Second)
+		c.pingMu.Unlock()
 	}
 }
 
@@ -715,6 +722,76 @@ func (c *Client) reconnectLoop() {
 	}
 }
 
+// errLivenessKill is the cause attached to a session the liveness watchdog
+// retires after too many unanswered probes.
+var errLivenessKill = errors.New("kal2: liveness probe failures")
+
+// EnableLiveness starts a watchdog that probes the live session every `every`
+// and kills it after `misses` consecutive failed probes, letting the
+// EnableReconnect redialer take over. Needed because a blackholed carrier
+// (packets silently dropped, no RST) leaves WaitClosed silent forever: the
+// read loop blocks on a socket that never errors and writes just back up in
+// the kernel. The probe runs inside an outer deadline so a Ping stuck behind
+// a full outbound queue still counts as a miss instead of stalling the loop.
+func (c *Client) EnableLiveness(every, pongTimeout time.Duration, misses int) {
+	if every <= 0 {
+		every = 4 * time.Second
+	}
+	if pongTimeout <= 0 {
+		pongTimeout = 4 * time.Second
+	}
+	if misses <= 0 {
+		misses = 2
+	}
+	go c.livenessLoop(every, pongTimeout, misses)
+}
+
+func (c *Client) livenessLoop(every, pongTimeout time.Duration, maxMisses int) {
+	t := time.NewTicker(every)
+	defer t.Stop()
+	misses := 0
+	for {
+		select {
+		case <-c.stop:
+			return
+		case <-t.C:
+		}
+		s := c.Session()
+		if s == nil { // between loss and redial — the reconnect loop owns the gap
+			misses = 0
+			continue
+		}
+		if err := c.probe(s, pongTimeout, every); err == nil {
+			misses = 0
+			continue
+		}
+		misses++
+		if misses >= maxMisses {
+			c.logf("core: liveness: %d failed probes — killing session for redial", misses)
+			misses = 0
+			s.Kill(errLivenessKill)
+		}
+	}
+}
+
+// probe pings s with an outer deadline past Ping's own pong timeout: a Ping
+// that cannot even enqueue (outbound lanes backed up behind a wedged carrier)
+// reports as a miss rather than hanging the watchdog.
+func (c *Client) probe(s *kal2.Session, pongTimeout, slack time.Duration) error {
+	done := make(chan error, 1)
+	c.pingMu.Lock()
+	go func() {
+		defer c.pingMu.Unlock()
+		done <- s.Ping(nil, pongTimeout)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(pongTimeout + slack):
+		return errLivenessKill
+	}
+}
+
 // tryMigrate attempts one resumption of the frozen session over a fresh
 // carrier (hedged race across the carrier list — the server's single-use
 // ticket makes exactly one attempt stick). False means fall back to redial.
@@ -822,6 +899,8 @@ func (c *Client) Ping(ctx context.Context) error {
 	if s == nil {
 		return fmt.Errorf("core: no live session")
 	}
+	c.pingMu.Lock()
+	defer c.pingMu.Unlock()
 	return core.PingSession(ctx, s)
 }
 

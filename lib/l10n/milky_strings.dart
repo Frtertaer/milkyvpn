@@ -83,6 +83,7 @@ class S {
   String get protectedShort => t('Защищено', 'Protected');
   String get connect => t('Подключить', 'Connect');
   String get disconnect => t('Отключить', 'Disconnect');
+  String get disconnecting => t('Отключаем…', 'Disconnecting…');
   String get searchingServer =>
       t('Ищем лучший сервер…', 'Finding the best server…');
   String attemptOf(int i, int n) => t('$i из $n', '$i of $n');
@@ -284,7 +285,11 @@ class S {
   String get importing => t('Загружаем…', 'Loading…');
   String get importOk => t('Подписка добавлена', 'Subscription added');
   String get goToConnect => t('Перейти к подключению', 'Go to connect');
-  String get deepLinkTitle => t('Добавить подписку?', 'Add subscription?');
+  String get updated => t('Подписка обновлена', 'Subscription updated');
+  String get showLink => t('Показать ссылку', 'Show link');
+  String get hideLink => t('Скрыть ссылку', 'Hide link');
+  String get deepLinkTitle =>
+      t('Добавить подписку MilkyVPN?', 'Add MilkyVPN subscription?');
   String get deepLinkBody => t(
     'Ссылка получена из другого приложения. Подписка будет сохранена только на этом устройстве. Подключение не начнётся автоматически.',
     'The link came from another app. The subscription is stored on this device only. No connection starts automatically.',
