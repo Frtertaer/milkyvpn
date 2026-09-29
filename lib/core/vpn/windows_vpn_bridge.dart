@@ -440,14 +440,18 @@ class WindowsProcessVpnBridge implements VpnBridge {
 
   /// reg arg lists that put the captured proxy state back: re-add the prior
   /// ProxyServer (or delete ours when there was none), then restore
-  /// ProxyEnable. PAC/AutoConfigURL is never touched.
+  /// ProxyEnable. PAC/AutoConfigURL is never touched. A snapshot equal to
+  /// [ourServer] is our own value leaked by a crashed run — restoring it
+  /// would perpetuate the leak, so it counts as "no prior proxy".
   static List<List<String>> restoreProxyPlan({
     int? prevProxyEnable,
     String? prevProxyServer,
+    String? ourServer,
     String key = _proxyKey,
   }) {
+    final leaked = prevProxyServer != null && prevProxyServer == ourServer;
     final ops = <List<String>>[
-      if (prevProxyServer == null)
+      if (prevProxyServer == null || leaked)
         ['delete', key, '/v', 'ProxyServer', '/f']
       else
         ['add', key, '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', prevProxyServer, '/f'],
@@ -459,7 +463,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
         '/t',
         'REG_DWORD',
         '/d',
-        '${prevProxyEnable ?? 0}',
+        '${leaked ? 0 : (prevProxyEnable ?? 0)}',
         '/f',
       ],
     ];
@@ -501,6 +505,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
     final ops = restoreProxyPlan(
       prevProxyEnable: _prevProxyEnable,
       prevProxyServer: _prevProxyServer,
+      ourServer: 'socks=$_socksAddr',
     );
     _prevProxyEnable = null;
     _prevProxyServer = null;
