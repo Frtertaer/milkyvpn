@@ -239,6 +239,10 @@ class S {
   String get remove => t('Удалить', 'Remove');
   String get cancel => t('Отмена', 'Cancel');
   String get noSubscription => t('Подписка не добавлена', 'No subscription');
+  String get notRefreshable => t(
+    'Импортированные профили нельзя обновить',
+    'Imported profiles cannot be refreshed',
+  );
   String get addSubscriptionQuestion =>
       t('Добавить подписку MilkyVPN?', 'Add MilkyVPN subscription?');
   String get error => t('Ошибка', 'Error');
@@ -380,6 +384,7 @@ class S {
   String get diagProfile => t('Профиль', 'Profile');
   String get diagAttempts => t('Попытки', 'Attempts');
   String get diagLastError => t('Последняя ошибка', 'Last error');
+  String get diagLastCrash => t('Последний сбой', 'Last crash');
   String get diagCategory => t('Категория', 'Category');
   String get diagCode => t('Код диагностики', 'Diagnostics code');
   String get diagSubscription => t('Подписка', 'Subscription');
