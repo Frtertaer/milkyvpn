@@ -14,6 +14,7 @@ import (
 	"math/rand/v2"
 	"net"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/kal2"
@@ -37,6 +38,14 @@ type ClientConfig struct {
 	Fingerprint string
 	// DialContext overrides TCP dial (e.g. through a proxy CONNECT).
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	// DialControl hooks socket creation for the built-in dialers — same
+	// signature as net.Dialer.Control / net.ListenConfig.Control. Used by
+	// TUN mode to pin carrier sockets to the physical egress device
+	// (SO_BINDTODEVICE / IP_BOUND_IF) so they bypass the tunnel without
+	// bypass routes in the FIB. Ignored when DialContext is set (that
+	// dialer owns its sockets). For UDP carriers it binds the packet
+	// socket before the session is created.
+	DialControl func(network, address string, c syscall.RawConn) error
 	// InsecureSkipVerify disables TLS chain verification (tests only).
 	InsecureSkipVerify bool
 	// PinSHA256 lists accepted SHA-256 hashes of the server leaf's
@@ -165,7 +174,7 @@ func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, 
 	to := cfg.timeout()
 	dial := cfg.DialContext
 	if dial == nil {
-		d := &net.Dialer{Timeout: to}
+		d := &net.Dialer{Timeout: to, Control: cfg.DialControl}
 		dial = d.DialContext
 	}
 	raw, err := dial(ctx, "tcp", cfg.Addr)

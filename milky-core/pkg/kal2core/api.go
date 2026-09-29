@@ -15,6 +15,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/carrier"
@@ -68,7 +69,7 @@ type ServerConfig struct {
 	UDPResend int
 	// UDPRate caps the quasar packet output rate in bytes/s (0 = unlimited).
 	UDPRate int
-	Logf      func(string, ...any)
+	Logf    func(string, ...any)
 }
 
 // User is a provisioned client credential pair.
@@ -123,11 +124,16 @@ type ClientConfig struct {
 	// (KCP stream, TCP byte stream) makes every stream wait behind bulk
 	// backlogs, so spreading streams over several connections keeps
 	// interactive traffic on nearly-empty lanes.
-	Lanes    int
+	Lanes int
 	// Deprecated: same as Lanes (kept for older CLI flags).
 	QuasarLanes int
 	// DialContext overrides the base TCP dial (e.g. via HTTP CONNECT proxy).
-	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
+	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	// DialControl hooks socket creation in the built-in dialers (signature of
+	// net.Dialer.Control): TUN mode pins carrier sockets to the physical
+	// egress device so they bypass the tunnel without FIB bypass routes.
+	// Ignored when DialContext is set.
+	DialControl      func(network, address string, c syscall.RawConn) error
 	HandshakeTimeout time.Duration
 	Logf             func(string, ...any)
 	// Resume, set internally by the migration path, makes dialers run a
@@ -592,6 +598,7 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		ServerPub:          cfg.ServerPub,
 		PSK:                cfg.PSK,
 		DialContext:        cfg.DialContext,
+		DialControl:        cfg.DialControl,
 		HandshakeTimeout:   cfg.HandshakeTimeout,
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
 		PinSHA256:          cfg.PinSHA256,

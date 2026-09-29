@@ -24,9 +24,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/http2"
@@ -37,6 +39,12 @@ import (
 )
 
 func main() {
+	// Internal mode: crash watchdog child for Darwin bypass routes
+	// (kal2-client -route-janitor <ledger>). Not a user-facing flag.
+	if len(os.Args) >= 3 && os.Args[1] == "-route-janitor" {
+		runRouteJanitor(os.Args[2])
+		return
+	}
 	addr := flag.String("addr", "", "server host:port (comma list for failover)")
 	sni := flag.String("sni", "", "TLS SNI")
 	pub := flag.String("pub", "", "server ed25519 pub (hex)")
@@ -44,7 +52,7 @@ func main() {
 	carrier := flag.String("carrier", "auto", "auto|veil|drift")
 	driftPath := flag.String("drift", "", "drift path")
 	socks := flag.String("socks", "127.0.0.1:10808", "local socks listen")
-	tunName := flag.String("tun", "", "create a wintun adapter with this name and tunnel all device traffic (Windows, needs admin)")
+	tunName := flag.String("tun", "", "create a TUN adapter with this name and tunnel all device traffic (needs root/admin)")
 	ctlAddr := flag.String("ctl", "", "control socket: log lines are mirrored here and 'stop' exits (used when spawned elevated)")
 	logPath := flag.String("log", "", "append logs to this file as well (rolls to .1 past ~1MB; parent dirs are created)")
 	fetch := flag.String("fetch", "", "fetch URL through tunnel and exit")
@@ -56,7 +64,8 @@ func main() {
 	cover := flag.Bool("cover", true, "jittered chaff traffic against timing/size DPI heuristics")
 	qfec := flag.String("qfec", "0,0", "quasar carrier Reed-Solomon FEC shards data,parity (e.g. 10,3)")
 	qres := flag.Int("qresend", 0, "quasar client KCP dup-ack fast-retransmit threshold (0 = RTO only)")
-	lanes := flag.Int("lanes", 0, "number of parallel carrier sessions (multi-lane stream spreading)"); qlanes := flag.Int("qlanes", 1, "quasar parallel sessions; streams round-robin across lanes")
+	lanes := flag.Int("lanes", 0, "number of parallel carrier sessions (multi-lane stream spreading)")
+	qlanes := flag.Int("qlanes", 1, "quasar parallel sessions; streams round-robin across lanes")
 	qwnd := flag.Int("qwnd", 0, "quasar receive window in segments; paces the server's offered rate to ~wnd*mtu/RTT (0 = 16384)")
 	flag.Parse()
 
@@ -103,6 +112,18 @@ func main() {
 			log.Fatalf("bad -qfec %q (want data,parity)", *qfec)
 		}
 	}
+	// bindGuard pins carrier sockets to the physical egress device once the
+	// TUN device is configured. On Darwin it also maintains the /32 bypass
+	// routes bound sockets require — the route janitor removes those after
+	// a crash since they are not device-scoped.
+	bindGuard := tun.NewBindGuard()
+	if *tunName != "" {
+		// The first session dials before tun.Configure can publish the
+		// device — seed it now or the socket's next dst revalidation loops
+		// carrier traffic into the tunnel.
+		bindGuard.Set(tun.DefaultEgress())
+		armRouteJanitor(bindGuard)
+	}
 	cfg := kal2core.ClientConfig{
 		Addr:               addrs[0],
 		Addrs:              addrs,
@@ -119,6 +140,7 @@ func main() {
 		QuasarResend:       *qres,
 		Lanes:              *lanes,
 		QuasarLanes:        *qlanes,
+		DialControl:        bindGuard.Control,
 	}
 	for _, p := range strings.Split(*pin, ",") {
 		if p = strings.TrimSpace(p); p == "" {
@@ -141,7 +163,7 @@ func main() {
 		cfg.ECHConfigList = list
 	}
 	if *proxyURL != "" {
-		d, err := httpConnectDialer(*proxyURL)
+		d, err := httpConnectDialer(*proxyURL, bindGuard.Control)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -193,31 +215,19 @@ func main() {
 		ctl.echo("kal2: session up via " + *carrier)
 	}
 
-	var tunCancel context.CancelFunc
-	var tunDone <-chan struct{}
+	sigCtx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSig()
+
+	var tunDone chan struct{}
 	if *tunName != "" {
 		// Full-device mode: the TUN adapter routes all traffic into kal2
 		// streams. Still serves SOCKS5 alongside — both paths stay live
 		// across reconnects via cli.Session().
-		var serverIPs []string
-		for _, a := range addrs {
-			host, _, _ := net.SplitHostPort(a)
-			if net.ParseIP(host) != nil {
-				serverIPs = append(serverIPs, host)
-				continue
-			}
-			if ips, err := net.LookupIP(host); err == nil {
-				for _, ip := range ips {
-					if ip4 := ip.To4(); ip4 != nil {
-						serverIPs = append(serverIPs, ip4.String())
-					}
-				}
-			}
-		}
 		tcfg := &tun.Config{
 			Name:      *tunName,
 			Addr:      tun.DefaultAddr,
-			ServerIPs: serverIPs,
+			Bind:      bindGuard,
+			ServerIPs: resolveServerIPs(addrs),
 			Logf:      log.Printf,
 			OpenTCP: func(ctx context.Context, target string) (tun.Stream, error) {
 				sess := cli.Session()
@@ -242,13 +252,10 @@ func main() {
 				return sess.OpenNet("udp", "0.0.0.0", 0, 15*time.Second)
 			},
 		}
-		tctx, tcancel := context.WithCancel(context.Background())
-		tunCancel = tcancel
-		done := make(chan struct{})
-		tunDone = done
+		tunDone = make(chan struct{})
 		go func() {
-			defer close(done)
-			if err := tun.Run(tctx, tcfg); err != nil {
+			defer close(tunDone)
+			if err := tun.Run(sigCtx, tcfg); err != nil {
 				log.Printf("kal2: tun stopped: %v", err)
 			}
 		}()
@@ -260,11 +267,19 @@ func main() {
 		// and orphan the /32 server-bypass routes.
 		select {
 		case <-ctl.stopCh:
-			waitForTun(tunCancel, tunDone, 15*time.Second)
-			return
+		case <-sigCtx.Done():
+		}
+	} else {
+		<-sigCtx.Done()
+	}
+	stopSig()
+	// Give the TUN goroutine a moment to tear routes down before exit.
+	if tunDone != nil {
+		select {
+		case <-tunDone:
+		case <-time.After(4 * time.Second):
 		}
 	}
-	select {}
 }
 
 // failsoft swallows Write errors so a dead sink cannot starve the rest of
@@ -277,20 +292,6 @@ func (f failsoft) Write(p []byte) (int, error) {
 	return len(p), nil
 }
 
-// waitForTun cancels the tun goroutine and waits for its deferred teardown
-// (route restore + adapter close); false on timeout.
-func waitForTun(cancel context.CancelFunc, done <-chan struct{}, d time.Duration) bool {
-	if cancel == nil || done == nil {
-		return true
-	}
-	cancel()
-	select {
-	case <-done:
-		return true
-	case <-time.After(d):
-		return false
-	}
-}
 
 // ctlServer is a TCP control channel: the client mirrors its log lines to
 // the connected peer and exits when a peer sends "stop". Accepts repeatedly —
@@ -455,8 +456,9 @@ type h2Body struct {
 func (b *h2Body) Close() error { return b.ReadCloser.Close() }
 
 // httpConnectDialer builds a DialContext that tunnels through an HTTP CONNECT
-// proxy (http://[user:pass@]host:port).
-func httpConnectDialer(raw string) (func(context.Context, string, string) (net.Conn, error), error) {
+// proxy (http://[user:pass@]host:port). control, when non-nil, hooks socket
+// creation (TUN mode egress-device binding).
+func httpConnectDialer(raw string, control func(network, address string, c syscall.RawConn) error) (func(context.Context, string, string) (net.Conn, error), error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, err
@@ -474,7 +476,7 @@ func httpConnectDialer(raw string) (func(context.Context, string, string) (net.C
 		auth = "Basic " + base64.StdEncoding.EncodeToString([]byte(u.User.Username()+":"+pw))
 	}
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		var d net.Dialer
+		d := net.Dialer{Control: control}
 		c, err := d.DialContext(ctx, "tcp", proxyAddr)
 		if err != nil {
 			return nil, err
@@ -520,6 +522,44 @@ func httpConnectDialer(raw string) (func(context.Context, string, string) (net.C
 	}, nil
 }
 
+// resolveServerIPs flattens the endpoint list to literal v4 addresses for the
+// Darwin /32 bypasses — hostnames resolve once here and again lazily per-dial
+// inside BindGuard.Control when a carrier reconnects.
+func resolveServerIPs(addrs []string) []string {
+	seen := map[string]struct{}{}
+	var out []string
+	add := func(ip net.IP) {
+		if ip == nil || ip.To4() == nil {
+			return
+		}
+		s := ip.String()
+		if _, ok := seen[s]; !ok {
+			seen[s] = struct{}{}
+			out = append(out, s)
+		}
+	}
+	for _, a := range addrs {
+		host, _, err := net.SplitHostPort(a)
+		if err != nil {
+			host = a
+		}
+		if ip := net.ParseIP(host); ip != nil {
+			add(ip)
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ips, err := net.DefaultResolver.LookupIP(ctx, "ip", host)
+		cancel()
+		if err != nil {
+			continue
+		}
+		for _, ip := range ips {
+			add(ip)
+		}
+	}
+	return out
+}
+
 // prefixReaderConn reads buffered bytes before the underlying conn.
 type prefixReaderConn struct {
 	net.Conn
@@ -527,3 +567,18 @@ type prefixReaderConn struct {
 }
 
 func (p *prefixReaderConn) Read(b []byte) (int, error) { return p.r.Read(b) }
+
+// waitForTun cancels the tun goroutine and waits for its deferred teardown
+// (route restore + adapter close); false on timeout.
+func waitForTun(cancel context.CancelFunc, done <-chan struct{}, d time.Duration) bool {
+	if cancel == nil || done == nil {
+		return true
+	}
+	cancel()
+	select {
+	case <-done:
+		return true
+	case <-time.After(d):
+		return false
+	}
+}

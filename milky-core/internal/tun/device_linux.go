@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -65,23 +64,47 @@ func openDevice(cfg *Config) (Device, error) {
 // the client with `cap_net_admin+ep` which still shows euid 0 in most cases.
 func IsElevated() bool { return os.Geteuid() == 0 }
 
+// Name reports the kernel-acknowledged interface name (TUNSETIFF may rename).
+func (d *linuxDevice) Name() string { return d.name }
+
+// DefaultEgress reports the current default-route egress device so carrier
+// sockets can be bound to it even before the TUN device is configured
+// (the first session dials before Configure runs).
+func DefaultEgress() string {
+	_, dev, _ := defaultRoute()
+	return dev
+}
+
 // defaultRoute returns the current default gateway IP and egress device.
 func defaultRoute() (gw, dev string, err error) {
 	out, err := exec.Command("ip", "-4", "route", "show", "default").Output()
 	if err != nil {
 		return "", "", fmt.Errorf("ip route: %w", err)
 	}
-	// "default via 192.0.2.1 dev eth0 ..."
-	f := strings.Fields(string(out))
-	for i := 0; i+1 < len(f); i++ {
-		if f[i] == "via" {
-			gw = f[i+1]
-		}
-		if f[i] == "dev" && dev == "" {
-			dev = f[i+1]
-		}
-	}
+	gw, dev = parseDefaultRoute(string(out))
 	return gw, dev, nil
+}
+
+// parseDefaultRoute reads the first default line only — parsing all output
+// in one Fields() pass can pair a "via" from one line with a "dev" from
+// another when several defaults exist (multipath, stale DHCP leases).
+func parseDefaultRoute(out string) (gw, dev string) {
+	for _, l := range strings.Split(out, "\n") {
+		f := strings.Fields(l)
+		if len(f) == 0 || f[0] != "default" {
+			continue
+		}
+		for i := 1; i+1 < len(f); i++ {
+			if f[i] == "via" {
+				gw = f[i+1]
+			}
+			if f[i] == "dev" {
+				dev = f[i+1]
+			}
+		}
+		return gw, dev
+	}
+	return "", ""
 }
 
 func ipRun(args ...string) error {
@@ -98,8 +121,14 @@ func (d *linuxDevice) configure() error {
 		addr = DefaultAddr
 	}
 	gw, dev, err := defaultRoute()
-	if err == nil {
+	if err == nil && dev != "" {
 		d.gw, d.dev = gw, dev
+		// Carrier sockets bind to the egress device — they bypass the tunnel
+		// without FIB entries, so kill -9 leaves no residual routes behind.
+		// (main.go also sets this before the first dial; idempotent.)
+		if d.conf.Bind != nil {
+			d.conf.Bind.Set(dev)
+		}
 	}
 	if err := ipRun("link", "set", "dev", d.name, "mtu", fmt.Sprint(defaultMTU), "up"); err != nil {
 		return err
@@ -107,30 +136,26 @@ func (d *linuxDevice) configure() error {
 	if err := ipRun("addr", "replace", addr+"/24", "dev", d.name); err != nil {
 		return err
 	}
-	// Bypass routes for the tunnel servers themselves — without them the
-	// tunnel's own carrier traffic loops back into the tunnel.
-	for _, sip := range d.conf.ServerIPs {
-		if net.ParseIP(sip) == nil || d.gw == "" {
-			continue
-		}
-		_ = ipRun("route", "replace", sip+"/32", "via", d.gw, "dev", d.dev)
-	}
 	// Split-horizon default: /1 pair beats the ordinary default without
-	// touching the original route table entry.
+	// touching the original route table entry. Every route we install is
+	// dev-scoped so the kernel drops it with the interface.
 	if err := ipRun("route", "replace", "0.0.0.0/1", "dev", d.name); err != nil {
 		return err
 	}
-	return ipRun("route", "replace", "128.0.0.0/1", "dev", d.name)
+	if err := ipRun("route", "replace", "128.0.0.0/1", "dev", d.name); err != nil {
+		return err
+	}
+	// Same for IPv6 so v6 traffic doesn't leak around the tunnel on
+	// dual-stack hosts. Best effort: ignored when v6 is disabled.
+	_ = ipRun("-6", "route", "replace", "::/1", "dev", d.name)
+	_ = ipRun("-6", "route", "replace", "8000::/1", "dev", d.name)
+	return nil
 }
 
 func (d *linuxDevice) restore() {
 	_ = ipRun("route", "del", "0.0.0.0/1", "dev", d.name)
 	_ = ipRun("route", "del", "128.0.0.0/1", "dev", d.name)
-	for _, sip := range d.conf.ServerIPs {
-		if net.ParseIP(sip) == nil {
-			continue
-		}
-		_ = ipRun("route", "del", sip+"/32")
-	}
+	_ = ipRun("-6", "route", "del", "::/1", "dev", d.name)
+	_ = ipRun("-6", "route", "del", "8000::/1", "dev", d.name)
 	_ = ipRun("link", "del", "dev", d.name)
 }
