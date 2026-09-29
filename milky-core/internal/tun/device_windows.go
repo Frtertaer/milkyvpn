@@ -159,6 +159,10 @@ func (d *wintunDevice) Close() error {
 	return d.adapter.Close()
 }
 
+// DefaultEgress is unused on Windows — the wintun device installs its own
+// routes through the elevated ctl path; carrier sockets are not bound.
+func DefaultEgress() string { return "" }
+
 // IsElevated reports whether the process runs with administrator rights.
 func IsElevated() bool {
 	var token windows.Token

@@ -16,6 +16,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/carrier"
@@ -69,7 +70,7 @@ type ServerConfig struct {
 	UDPResend int
 	// UDPRate caps the quasar packet output rate in bytes/s (0 = unlimited).
 	UDPRate int
-	Logf      func(string, ...any)
+	Logf    func(string, ...any)
 }
 
 // User is a provisioned client credential pair.
@@ -124,11 +125,16 @@ type ClientConfig struct {
 	// (KCP stream, TCP byte stream) makes every stream wait behind bulk
 	// backlogs, so spreading streams over several connections keeps
 	// interactive traffic on nearly-empty lanes.
-	Lanes    int
+	Lanes int
 	// Deprecated: same as Lanes (kept for older CLI flags).
 	QuasarLanes int
 	// DialContext overrides the base TCP dial (e.g. via HTTP CONNECT proxy).
-	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
+	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
+	// DialControl hooks socket creation in the built-in dialers (signature of
+	// net.Dialer.Control): TUN mode pins carrier sockets to the physical
+	// egress device so they bypass the tunnel without FIB bypass routes.
+	// Ignored when DialContext is set.
+	DialControl      func(network, address string, c syscall.RawConn) error
 	HandshakeTimeout time.Duration
 	Logf             func(string, ...any)
 	// Resume, set internally by the migration path, makes dialers run a
@@ -146,6 +152,11 @@ type Client struct {
 	mu       sync.Mutex
 	lanes    []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
 	laneRR   atomic.Uint32
+	// laneRTT records the last watchdog pong RTT per lane (ns; 0 = not yet
+	// measured). A lane whose pongs crawl is throttled rather than dead —
+	// the kill path would never fire on it, so it must be quarantined out of
+	// Session() picks instead of attracting every new stream.
+	laneRTT  []atomic.Int64
 	stop     chan struct{}
 	stopOnce sync.Once
 	rrIdx    atomic.Int32
@@ -156,25 +167,62 @@ type Client struct {
 	scores   *core.Scorecard
 }
 
+// laneQuarantineRTT is the watchdog pong RTT above which a lane is
+// quarantined: it still answers (so it must not be killed), but it is too
+// slow to carry new streams. Recovered lanes return to the pool on their
+// next healthy pong. Atomic (nanoseconds) for the same test-knob rationale.
+var laneQuarantineRTT atomic.Int64
+
+// lanePingEvery / lanePingTimeout / lanePingRetryTimeout pace the per-lane
+// watchdog. Two consecutive failures kill the lane; a single lost pong must
+// not. Atomics (nanoseconds) so tests can compress the timeline while a
+// stray watchdog goroutine is still shutting down.
+var (
+	lanePingEvery        atomic.Int64 // default 15s
+	lanePingTimeout      atomic.Int64 // default 10s
+	lanePingRetryTimeout atomic.Int64 // default 5s
+)
+
+func init() {
+	dialOneFn.Store(dialFunc(dialOne))
+	laneQuarantineRTT.Store(int64(3 * time.Second))
+	lanePingEvery.Store(int64(15 * time.Second))
+	lanePingTimeout.Store(int64(10 * time.Second))
+	lanePingRetryTimeout.Store(int64(5 * time.Second))
+}
+
 // Session returns a live session, or nil between loss and redial.
 // With lanes it picks the session that has emitted the fewest wire bytes:
 // a lane deep into a bulk transfer keeps accumulating sent bytes, so new
 // streams land on the quiet lanes instead of queueing behind its backlog.
+// Lanes quarantined by the watchdog (pong RTT above laneQuarantineRTT) are
+// skipped while at least one healthy lane is up; when every lane is
+// throttled the least-loaded one still serves rather than failing streams.
 func (c *Client) Session() *kal2.Session {
 	if len(c.lanes) > 0 {
-		var best *kal2.Session
-		var bestSent uint64
+		var best, fallback *kal2.Session
+		var bestSent, fbSent uint64
 		start := c.laneRR.Add(1)
 		for k := uint32(0); k < uint32(len(c.lanes)); k++ {
-			s := c.lanes[(start+k)%uint32(len(c.lanes))].Load()
+			idx := (start + k) % uint32(len(c.lanes))
+			s := c.lanes[idx].Load()
 			if s == nil {
+				continue
+			}
+			if fallback == nil || s.SentBytes() < fbSent {
+				fallback, fbSent = s, s.SentBytes()
+			}
+			if rtt := c.laneRTT[idx].Load(); rtt > laneQuarantineRTT.Load() {
 				continue
 			}
 			if best == nil || s.SentBytes() < bestSent {
 				best, bestSent = s, s.SentBytes()
 			}
 		}
-		return best
+		if best != nil {
+			return best
+		}
+		return fallback
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -350,6 +398,7 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	}
 	if n > 1 {
 		cli.lanes = make([]atomic.Pointer[kal2.Session], n)
+		cli.laneRTT = make([]atomic.Int64, n)
 		errs := make([]error, n)
 		var wg sync.WaitGroup
 		for i := 0; i < n; i++ {
@@ -461,7 +510,7 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 		c2 := cfg
 		c2.Carrier = cs[0]
 		t0 := time.Now()
-		s, err := dialOneFn(ctx, c2)
+		s, err := dialOneFn.Load().(dialFunc)(ctx, c2)
 		if scores != nil {
 			scores.ReportDial(cs[0], err == nil, time.Since(t0).Seconds())
 		}
@@ -488,7 +537,7 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 			c2 := cfg
 			c2.Carrier = name
 			t0 := time.Now()
-			s, err := dialOneFn(sub, c2)
+			s, err := dialOneFn.Load().(dialFunc)(sub, c2)
 			ch <- result{name: name, s: s, err: err, secs: time.Since(t0).Seconds()}
 		}(name, time.Duration(i)*150*time.Millisecond)
 	}
@@ -543,8 +592,11 @@ func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scor
 	return nil, lastErr
 }
 
-// dialOneFn is the per-carrier dialer (a var for tests).
-var dialOneFn = dialOne
+// dialOneFn is the per-carrier dialer (a knob for tests). Atomic value:
+// tests swap it while hedged-dial goroutines may still be in flight.
+type dialFunc func(context.Context, ClientConfig) (*kal2.Session, error)
+
+var dialOneFn atomic.Value // dialFunc
 
 func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 	cc := carrier.ClientConfig{
@@ -553,6 +605,7 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		ServerPub:          cfg.ServerPub,
 		PSK:                cfg.PSK,
 		DialContext:        cfg.DialContext,
+		DialControl:        cfg.DialControl,
 		HandshakeTimeout:   cfg.HandshakeTimeout,
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
 		PinSHA256:          cfg.PinSHA256,
@@ -770,7 +823,7 @@ func (c *Client) reconnectLane(i int) {
 		sess := c.lanes[i].Load()
 		if sess != nil {
 			go func(s *kal2.Session) {
-				t := time.NewTicker(15 * time.Second)
+				t := time.NewTicker(time.Duration(lanePingEvery.Load()))
 				defer t.Stop()
 				for {
 					select {
@@ -779,12 +832,17 @@ func (c *Client) reconnectLane(i int) {
 						// (e.g. the server forgot it): close so WaitClosed
 						// fires and this lane gets redialed. Two strikes —
 						// a single lost pong must not kill a live session.
-						if err := s.Ping([]byte("k"), 10*time.Second); err != nil {
-							if err2 := s.Ping([]byte("k"), 5*time.Second); err2 != nil {
+						// A slow-but-arriving pong is a throttle signal, not
+						// death: it quarantines the lane via laneRTT.
+						t0 := time.Now()
+						if err := s.Ping([]byte("k"), time.Duration(lanePingTimeout.Load())); err != nil {
+							t0 = time.Now()
+							if err2 := s.Ping([]byte("k"), time.Duration(lanePingRetryTimeout.Load())); err2 != nil {
 								_ = s.Close()
 								return
 							}
 						}
+						c.laneRTT[i].Store(int64(time.Since(t0)))
 					case <-s.WaitClosed():
 						return
 					case <-c.stop:
@@ -811,6 +869,7 @@ func (c *Client) reconnectLane(i int) {
 			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)), c.scores)
 			cancel()
 			if err == nil {
+				c.laneRTT[i].Store(0) // fresh session, unmeasured = healthy
 				c.lanes[i].Store(s)
 				c.logf("core: lane %d restored", i)
 				break

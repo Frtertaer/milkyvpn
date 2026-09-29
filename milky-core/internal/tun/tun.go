@@ -32,9 +32,14 @@ type Config struct {
 	Name string
 	// Addr is the IPv4 address assigned to the TUN interface.
 	Addr string
-	// ServerIPs are the tunnel server's own addresses. Each gets a /32 route
-	// through the real default gateway so the tunnel's own traffic is not
-	// routed back into the tunnel.
+	// Bind pins carrier sockets to the physical egress device once the
+	// device is configured (on Darwin it also owns the scoped /32 bypass
+	// routes a bound socket needs). May be nil.
+	Bind *BindGuard
+	// ServerIPs are the tunnel server's own addresses. Darwin needs a /32
+	// host route for each (via the real gateway) so bound carrier sockets
+	// keep a scoped route once the /1 pair is installed; also covers UDP
+	// carriers whose ListenConfig hook only sees the bind address.
 	ServerIPs []string
 	// OpenTCP opens a kal2 TCP stream to host:port (netstack-side connect).
 	OpenTCP func(ctx context.Context, addr string) (Stream, error)
@@ -71,11 +76,15 @@ func Run(ctx context.Context, cfg *Config) error {
 		return fmt.Errorf("tun: %w", err)
 	}
 	defer dev.Close()
-	if err := dev.Configure(cfg.ServerIPs); err != nil {
+	if err := dev.Configure(nil); err != nil {
 		return fmt.Errorf("tun: %w", err)
 	}
 	defer dev.Restore()
-	logf("tun: adapter %s up at %s", cfg.Name, cfg.Addr)
+	name := cfg.Name
+	if nd, ok := dev.(interface{ Name() string }); ok && nd.Name() != "" {
+		name = nd.Name()
+	}
+	logf("tun: adapter %s up at %s", name, cfg.Addr)
 	return runStack(ctx, dev, cfg)
 }
 

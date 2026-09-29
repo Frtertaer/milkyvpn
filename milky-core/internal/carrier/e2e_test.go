@@ -13,6 +13,7 @@ import (
 	"math/big"
 	"net"
 	"net/http"
+	"sync"
 	"testing"
 	"time"
 
@@ -89,12 +90,24 @@ func newTestServerWith(t *testing.T, echKeys []tls.EncryptedClientHelloKey) *tes
 	}
 	cert := mkSelfSigned(t, "kal.test")
 
+	// Serve conn-goroutines outlive the test — a bare t.Logf here races with
+	// tRunner teardown (and can panic). Buffer under a mutex and flush from
+	// Cleanup while t is still valid; late lines are dropped.
+	var logMu sync.Mutex
+	logBuf := []string{}
+	logging := true
 	v := NewVeilListener(VeilConfig{
 		Domain:   "kal.test",
 		Cert:     cert,
 		Identity: priv,
 		ECHKeys:  echKeys,
-		Logf:     func(f string, a ...any) { t.Logf(f, a...) },
+		Logf: func(f string, a ...any) {
+			logMu.Lock()
+			defer logMu.Unlock()
+			if logging {
+				logBuf = append(logBuf, fmt.Sprintf(f, a...))
+			}
+		},
 		Users:    []User{{ID: "u1", PSK: psk}},
 		OnSession: func(s *kal2.Session) {
 			go func() {
@@ -141,7 +154,16 @@ func newTestServerWith(t *testing.T, echKeys []tls.EncryptedClientHelloKey) *tes
 		t.Fatal(err)
 	}
 	go v.Serve(ln)
-	t.Cleanup(func() { ln.Close() })
+	t.Cleanup(func() {
+		ln.Close()
+		logMu.Lock()
+		logging = false
+		for _, l := range logBuf {
+			t.Log(l)
+		}
+		logBuf = nil
+		logMu.Unlock()
+	})
 	return &testServer{ln: ln.(*net.TCPListener), v: v, pub: pub, psk: psk}
 }
 

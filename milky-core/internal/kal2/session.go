@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -91,7 +92,12 @@ type Session struct {
 	closed    chan struct{}
 	closeOnce sync.Once
 	readDone  chan struct{}
-	pongReg   chan []byte
+	// pongMu guards pongQ: the FIFO queue of outstanding Ping waiters.
+	// Concurrent Pings used to overwrite a single shared channel, so pongs
+	// were misdelivered and callers timed out on a live session (a spurious
+	// failure the lanes watchdog reads as lane death).
+	pongMu    sync.Mutex
+	pongQ     []chan []byte
 }
 
 type outRec struct {
@@ -287,6 +293,12 @@ func (s *Session) nonce(seq uint64) []byte {
 // priority lane; DATA senders block on the bounded data lane (write
 // backpressure). Actual write failures surface via s.fail.
 func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
+	return s.sendRecordDeadline(t, streamID, payload, nil)
+}
+
+// sendRecordDeadline is sendRecord with a caller-supplied timeout channel
+// for the blocking queue points (the net.Conn write deadline path).
+func (s *Session) sendRecordDeadline(t byte, streamID uint32, payload []byte, timeout <-chan time.Time) error {
 	if len(payload) > MaxPayload {
 		return ErrFraming
 	}
@@ -320,6 +332,8 @@ func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
 		case s.data.slots <- struct{}{}:
 		case <-s.closed:
 			return ErrClosed
+		case <-timeout:
+			return os.ErrDeadlineExceeded
 		}
 		s.data.enqueue(rec)
 		return nil
@@ -329,6 +343,8 @@ func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
 		return nil
 	case <-s.closed:
 		return ErrClosed
+	case <-timeout:
+		return os.ErrDeadlineExceeded
 	}
 }
 
@@ -912,7 +928,10 @@ func (s *Session) OpenNet(network, host string, port uint16, timeout time.Durati
 	return &Stream{stream: st}, nil
 }
 
-// Ping sends PING and waits for the echo.
+// Ping sends PING and waits for the echo. Multiple callers are supported:
+// waiters queue FIFO and each incoming PONG satisfies the oldest one — the
+// ordered carrier returns echoes in request order, and a PONG from any peer
+// activity answers exactly one outstanding ping.
 func (s *Session) Ping(payload []byte, timeout time.Duration) error {
 	ch := s.registerPong()
 	defer s.unregisterPong(ch)
@@ -952,6 +971,11 @@ type stream struct {
 	closed      bool // guards the once-only close transition (mu)
 	recvBuf     []byte
 	openPayload []byte
+	// net.Conn deadline contract (unix ns, 0 = none). These were no-op
+	// placeholders: callers relying on them (SOCKS idle timeouts, the mux
+	// soak churn) blocked forever.
+	readDeadline  atomic.Int64
+	writeDeadline atomic.Int64
 }
 
 func newStream(s *Session, id uint32) *stream {
@@ -1018,8 +1042,13 @@ func (st *stream) pump() {
 			st.rawQ = st.rawQ[1:]
 			st.mu.Unlock()
 			if b == nil {
-				// EOF sentinel: report close only after all queued data
+				// EOF sentinel: report close only after all queued data,
+				// then evict — a remotely-closed stream must not linger in
+				// the map or long-lived sessions leak an entry per stream.
 				st.sendEOF()
+				st.s.smu.Lock()
+				delete(st.s.streams, st.id)
+				st.s.smu.Unlock()
 				return
 			}
 			select {
@@ -1075,9 +1104,13 @@ func (st *stream) remoteClose() {
 }
 
 func (st *stream) reset() {
-	// Abrupt close (RST or session death): abort reads immediately.
+	// Abrupt close (RST or session death): abort reads immediately and
+	// evict — same terminal-state lifecycle as the graceful EOF path.
 	if st.markClosed() {
 		close(st.closedCh)
+		st.s.smu.Lock()
+		delete(st.s.streams, st.id)
+		st.s.smu.Unlock()
 	}
 }
 
@@ -1104,14 +1137,32 @@ type Stream struct {
 // Read implements net.Conn.
 func (st *Stream) Read(b []byte) (int, error) {
 	for len(st.rbuf) == 0 {
+		var timer *time.Timer
+		var timeout <-chan time.Time
+		if dl := st.readDeadline.Load(); dl != 0 {
+			if rem := time.Until(time.Unix(0, dl)); rem > 0 {
+				timer = time.NewTimer(rem)
+				timeout = timer.C
+			} else {
+				return 0, os.ErrDeadlineExceeded
+			}
+		}
 		select {
 		case chunk, ok := <-st.recvCh:
+			if timer != nil {
+				timer.Stop()
+			}
 			if !ok {
 				return 0, io.EOF
 			}
 			st.rbuf = chunk
 		case <-st.closedCh:
+			if timer != nil {
+				timer.Stop()
+			}
 			return 0, io.EOF
+		case <-timeout:
+			return 0, os.ErrDeadlineExceeded
 		}
 	}
 	n := copy(b, st.rbuf)
@@ -1119,15 +1170,27 @@ func (st *Stream) Read(b []byte) (int, error) {
 	return n, nil
 }
 
-// Write implements net.Conn.
+// Write implements net.Conn. The write deadline covers the whole call
+// across chunks (a deadline is a point in time, not a per-chunk budget).
 func (st *Stream) Write(b []byte) (int, error) {
+	var timer *time.Timer
+	var timeout <-chan time.Time
+	if dl := st.writeDeadline.Load(); dl != 0 {
+		if rem := time.Until(time.Unix(0, dl)); rem > 0 {
+			timer = time.NewTimer(rem)
+			timeout = timer.C
+			defer timer.Stop()
+		} else {
+			return 0, os.ErrDeadlineExceeded
+		}
+	}
 	total := 0
 	for total < len(b) {
 		n := len(b) - total
 		if n > MaxPayload {
 			n = MaxPayload
 		}
-		if err := st.write(b[total : total+n]); err != nil {
+		if err := st.s.sendRecordDeadline(MsgData, st.id, b[total:total+n], timeout); err != nil {
 			return total, err
 		}
 		total += n
@@ -1143,12 +1206,26 @@ func (st *Stream) Close() error {
 	return st.close()
 }
 
-// LocalAddr / RemoteAddr / deadlines are placeholders (carrier-level).
-func (st *Stream) LocalAddr() net.Addr                { return nil }
-func (st *Stream) RemoteAddr() net.Addr               { return nil }
-func (st *Stream) SetDeadline(t time.Time) error      { return nil }
-func (st *Stream) SetReadDeadline(t time.Time) error  { return nil }
-func (st *Stream) SetWriteDeadline(t time.Time) error { return nil }
+// LocalAddr / RemoteAddr are placeholders (carrier-level).
+func (st *Stream) LocalAddr() net.Addr  { return nil }
+func (st *Stream) RemoteAddr() net.Addr { return nil }
+
+// SetDeadline implements net.Conn: real read/write deadline semantics —
+// the previous placeholders returned nil and silently discarded deadlines,
+// so any caller relying on them blocked indefinitely.
+func (st *Stream) SetDeadline(t time.Time) error {
+	st.readDeadline.Store(t.UnixNano())
+	st.writeDeadline.Store(t.UnixNano())
+	return nil
+}
+func (st *Stream) SetReadDeadline(t time.Time) error {
+	st.readDeadline.Store(t.UnixNano())
+	return nil
+}
+func (st *Stream) SetWriteDeadline(t time.Time) error {
+	st.writeDeadline.Store(t.UnixNano())
+	return nil
+}
 
 // Accept returns the next inbound stream (server side).
 func (s *Session) Accept() (*Stream, error) {
@@ -1177,19 +1254,31 @@ func (st *Stream) Target() (network, host string, port uint16, err error) {
 // pong registry ---------------------------------------------------------------
 
 func (s *Session) pongCh() chan []byte {
-	if s.pongReg == nil {
-		s.pongReg = make(chan []byte, 1)
+	s.pongMu.Lock()
+	defer s.pongMu.Unlock()
+	if len(s.pongQ) == 0 {
+		return nil
 	}
-	return s.pongReg
+	ch := s.pongQ[0]
+	s.pongQ = s.pongQ[1:]
+	return ch
 }
 
 func (s *Session) registerPong() chan []byte {
-	s.pongReg = make(chan []byte, 1)
-	return s.pongReg
+	ch := make(chan []byte, 1)
+	s.pongMu.Lock()
+	s.pongQ = append(s.pongQ, ch)
+	s.pongMu.Unlock()
+	return ch
 }
 
 func (s *Session) unregisterPong(ch chan []byte) {
-	if s.pongReg == ch {
-		s.pongReg = nil
+	s.pongMu.Lock()
+	defer s.pongMu.Unlock()
+	for i, w := range s.pongQ {
+		if w == ch {
+			s.pongQ = append(s.pongQ[:i], s.pongQ[i+1:]...)
+			return
+		}
 	}
 }
