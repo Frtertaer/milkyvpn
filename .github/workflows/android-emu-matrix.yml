@@ -74,14 +74,8 @@ jobs:
           api-level: ${{ matrix.api }}
           arch: x86_64
           disable-animations: true
-          script: |
-            adb install -r build/app/outputs/flutter-apk/app-debug.apk
-            KAL2_TEST_LINK='${{ secrets.KAL2_TEST_LINK }}' \
-              ./testing/scenarios.sh --apk build/app/outputs/flutter-apk/app-debug.apk \
-                --serial emulator-5554 --scenario connect
-            for s in wifi_lte net_loss dns_change dns_leak fgs_doze; do
-              ./testing/scenarios.sh --serial emulator-5554 --scenario "$s" || true
-            done
+          # emulator-runner executes each script line via `sh -c` — one line only
+          script: chmod +x testing/run_emu_ci.sh && KAL2_TEST_LINK='${{ secrets.KAL2_TEST_LINK }}' ./testing/run_emu_ci.sh
 
       - name: logcat on failure
         if: failure()
