@@ -4,6 +4,7 @@ import 'package:provider/provider.dart';
 
 import '../../app/app_info.dart';
 import '../../app/milky_device.dart';
+import '../../core/diagnostics/crash_reporter.dart';
 import '../../core/errors/milky_error.dart';
 import '../../core/security/redactor.dart';
 import '../../core/subscription/subscription_repository.dart';
@@ -30,6 +31,7 @@ class DiagnosticsScreen extends StatefulWidget {
 
 class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
   String _core = '…';
+  CrashRecord? _crash;
 
   @override
   void initState() {
@@ -43,6 +45,9 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         .catchError((Object _) {
           if (mounted) setState(() => _core = 'unavailable');
         });
+    CrashReporter.latest().then((r) {
+      if (mounted) setState(() => _crash = r);
+    });
   }
 
   @override
@@ -206,6 +211,12 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         err?.category.diagnosticsToken ??
             MilkyFailureCategory.none.diagnosticsToken,
       ),
+      (
+        t.diagLastCrash,
+        _crash == null
+            ? t.diagNone
+            : '${_crash!.errorClass} ${_crash!.ts.toLocal()}',
+      ),
       (t.version, kAppVersion),
     ];
   }
@@ -239,6 +250,10 @@ class _DiagnosticsScreenState extends State<DiagnosticsScreen> {
         'Category: ${err?.category.diagnosticsToken ?? MilkyFailureCategory.none.diagnosticsToken}',
         ...stageLines,
         'Subscription: ${repo.hasSubscription ? 'present' : 'none'}',
+        if (_crash != null)
+          'Last crash: ${_crash!.errorClass} ${_crash!.ts.toUtc().toIso8601String()}'
+          '\n${_crash!.message}',
+        if (_crash?.stack != null) _crash!.stack!,
         'Counts trusted: ${stats.countsTrusted}',
         'Entries received: ${stats.receivedEntryCount}, parsed: ${stats.parsedProfileCount}, '
             'post-dedupe: ${stats.postDedupeProfileCount}, compatible: ${stats.compatibleProfileCount}, '
