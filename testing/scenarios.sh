@@ -101,6 +101,15 @@ ui_tap_desc() {  # ui_tap_desc <regex on text/content-desc> [fallback_x% fallbac
   "${ADB[@]}" shell input tap $xy
 }
 
+ui_tap_desc_wait() {  # poll up to ~20s for a clickable match, then tap it
+  local i
+  for i in $(seq 1 10); do
+    ui_tap_desc "$1" && return 0
+    sleep 2
+  done
+  return 1
+}
+
 ui_tap_class() {  # tap first node of a class (e.g. android.widget.EditText)
   local re="class=\"${1}\"" line b
   line=$(ui_xml | tr '<' '\n' | grep -m1 "$re")
@@ -113,9 +122,9 @@ ui_tap_class() {  # tap first node of a class (e.g. android.widget.EditText)
 
 onboarding_and_import() {
   # fresh install → 3-page onboarding, then ImportScreen paste+confirm.
-  ui_tap_desc "Продолжить\|Continue" || true; sleep 2
-  ui_tap_desc "Понятно\|Got it" || true; sleep 2
-  ui_tap_desc "Добавить подписку\|Add subscription" || true; sleep 3
+  ui_tap_desc_wait "Продолжить\|Continue" && sleep 2
+  ui_tap_desc_wait "Понятно\|Got it" && sleep 2
+  ui_tap_desc_wait "Добавить подписку\|Add subscription" && sleep 3
   [ -n "$LINK" ] || { log "no --link/KAL2_TEST_LINK — expecting profile already present"; return; }
   local esc=${LINK//&/\\&}
   ui_tap_class android.widget.EditText; sleep 1   # focus the url field
@@ -123,19 +132,15 @@ onboarding_and_import() {
     log "input text failed — paste link in UI manually next run"
   "${ADB[@]}" shell input keyevent 111 2>/dev/null || true  # close keyboard
   sleep 1
-  ui_tap_desc "Добавить\|^Add$" || true; sleep 4        # import
-  ui_tap_desc "Перейти\|Go to" || true; sleep 3         # success sheet
+  ui_tap_desc_wait "Добавить\|^Add$" && sleep 4         # import
+  ui_tap_desc_wait "Перейти\|Go to" && sleep 3          # success sheet
 }
 
 tap_connect() {
-  ui_tap_desc "MilkyVPN\|подключиться\|Connect" || ui_tap_pct 50 42
+  ui_tap_desc_wait "MilkyVPN\|подключиться\|Connect" || ui_tap_pct 50 42
   sleep 2
   # consent dialog may take a few seconds — poll for its OK button
-  for _ in 1 2 3 4 5 6 7 8; do
-    ui_tap_desc "OK\|ОК" && return
-    sleep 2
-  done
-  return 0
+  ui_tap_desc_wait "OK\|ОК" || true
 }
 
 verify_tunnel() {  # SOCKS liveness: real bytes through the tunnel
