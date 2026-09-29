@@ -57,22 +57,29 @@ ok()   { PASS=$((PASS+1)); echo "PASS  $*"; }
 bad()  { FAIL=$((FAIL+1)); echo "FAIL  $*"; }
 log()  { echo "[$(date +%H:%M:%S)] $*"; }
 
-# wait_state <logcat-regex> [timeout_s]
-# NOTE: callers must clear_log before the disruptive part of a scenario —
-# logcat -d replays the whole buffer, so a stale CONNECTED line from an earlier
-# scenario would match instantly otherwise.
+# wait_state <logcat-regex> [timeout_s] [byte_mark]
+# Reads the STREAMED logcat (run_emu_ci.sh runs `adb logcat` into $LOGFILE
+# for the whole job). mark_log gives a byte offset; passing it as $3 makes the
+# wait see only lines appended since the mark — no stale matches, and the
+# file keeps every MilkyVPN line even when the device ring buffer wraps.
+# Falls back to `logcat -d` when no streamed file exists (local runs).
+LOGFILE=${LOGFILE:-/tmp/milky_ci_logcat.txt}
+mark_log() { [ -f "$LOGFILE" ] && wc -c < "$LOGFILE" || echo 0; }
 wait_state() {
-  local want=$1 to=${2:-90} t0=$SECONDS
+  local want=$1 to=${2:-90} mark=${3:-0} t0=$SECONDS
   while (( SECONDS - t0 < to )); do
-    if "${ADB[@]}" logcat -d -s MilkyVPN 2>/dev/null | grep -qE "$want"; then
-      return 0
+    if [ -f "$LOGFILE" ]; then
+      tail -c +$((mark + 1)) "$LOGFILE" | grep -s "MilkyVPN" | grep -qE "$want" && return 0
+    else
+      "${ADB[@]}" logcat -d -s MilkyVPN 2>/dev/null | grep -qE "$want" && return 0
     fi
     sleep 2
   done
   return 1
 }
-
-clear_log() { "${ADB[@]}" logcat -c || true; }
+log_since() {  # dump MilkyVPN lines appended since a byte mark
+  [ -f "$LOGFILE" ] && tail -c +$(($1 + 1)) "$LOGFILE" | grep -s "MilkyVPN"
+}
 
 launch_app() {
   "${ADB[@]}" shell am force-stop "$PKG" || true
@@ -203,65 +210,73 @@ verify_tunnel_wait() {
 }
 
 s_connect() {
-  log "scenario: connect (2 attempts — first EOF after a server restart is transient)"
+  log "scenario: connect (watch + one manual retry; first EOF after a server restart is transient)"
   launch_app; onboarding_and_import
-  local i ip
+  local i ip m
+  # The app itself retries recoverable failures (<=3, 2/4/6s backoff + its own
+  # attempt budget) — the outer watch has to outlive that whole horizon.
   for i in 1 2; do
+    m=$(mark_log)
     tap_connect
-    clear_log
-    if wait_state ' CONNECTED' 90; then
+    if wait_state ' CONNECTED' 150 "$m"; then
       if ip=$(verify_tunnel_wait 45); then
         ok "connected (attempt $i), real traffic through tunnel, exit $ip"
         return
       fi
       log "attempt $i: CONNECTED but real traffic check empty"
     else
-      log "attempt $i: no CONNECTED in 90s"
+      log "attempt $i: no CONNECTED in 150s — MilkyVPN log since attempt:"
+      log_since "$m" | tail -30
     fi
-    # retry affordance on the error sheet, then the connect button again
-    ui_tap_desc_wait "Попробовать снова\|Повторить\|Retry\|Try again" || true
+    # manual retry only makes sense once the app sits on an error sheet
+    ui_tap_desc_wait "Попробовать снова\|Повторить\|Retry\|Try again" || ui_tap_desc_wait "подключиться\|Connect"
     sleep 2
   done
   bad "connect failed after 2 attempts"
-  "${ADB[@]}" logcat -d | tail -60
+  "${ADB[@]}" shell dumpsys activity processes | grep -A8 "$PKG" | head -20
 }
 
 s_wifi_lte() {
   log "scenario: wifi<->lte switch (guest wifi toggle ↔ cellular data)"
-  clear_log
+  local m ip
+  m=$(mark_log)
   "${ADB[@]}" shell svc wifi disable
   sleep 8
   "${ADB[@]}" shell svc data enable
-  # kal2 must redial over cellular and the app must re-verify — CONNECTED line
-  # is fresh because the log was cleared before the toggle.
-  if wait_state ' CONNECTED' 90 && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+  # kal2 must redial over cellular and the app must re-verify — the CONNECTED
+  # wait only sees lines appended after the mark (fresh, not stale).
+  if wait_state ' CONNECTED' 90 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
     ok "wifi→data: session re-established (exit $ip)"
   else
     bad "wifi→data: session never recovered"
+    log_since "$m" | tail -20
   fi
-  clear_log
+  m=$(mark_log)
   "${ADB[@]}" shell svc wifi enable
   sleep 6
-  if wait_state ' CONNECTED' 60 && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+  if wait_state ' CONNECTED' 60 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
     ok "data→wifi: tunnel alive (exit $ip)"
   else
     bad "data→wifi: tunnel dead"
+    log_since "$m" | tail -20
   fi
 }
 
 s_net_loss() {
   log "scenario: total net loss 15s"
-  clear_log
+  local m ip
+  m=$(mark_log)
   "${ADB[@]}" shell svc wifi disable; "${ADB[@]}" shell svc data disable
   sleep 15
   "${ADB[@]}" shell svc wifi enable; "${ADB[@]}" shell svc data enable
   # The kal2 carrier socket dies or blackholes with the underlay; the session
   # must be killed by liveness probes and redialed, then the app re-verifies.
   sleep 5
-  if wait_state ' CONNECTED' 90 && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+  if wait_state ' CONNECTED' 90 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
     ok "net loss: session recovered (exit $ip)"
   else
     bad "net loss: no recovery in 90s"
+    log_since "$m" | tail -20
   fi
 }
 
@@ -333,12 +348,13 @@ s_on_revoke() {
     ok "on_revoke: skipped (appop unsupported on this API)"
     return
   fi
-  clear_log
+  local m
+  m=$(mark_log)
   "${ADB[@]}" shell appops set "$PKG" ACTIVATE_VPN deny 2>/dev/null || true
   sleep 6
-  if "${ADB[@]}" shell logcat -d -s MilkyVPN 2>/dev/null | grep -q "onRevoke"; then
+  if log_since "$m" | grep -q "onRevoke"; then
     ok "revoke: onRevoke fired and logged"
-  elif wait_state 'DISCONNECTED|ERROR' 15; then
+  elif wait_state 'DISCONNECTED|ERROR' 15 "$m"; then
     ok "revoke: tunnel torn down (state DISCONNECTED/ERROR)"
   else
     bad "revoke: no onRevoke / teardown signal in 20s"

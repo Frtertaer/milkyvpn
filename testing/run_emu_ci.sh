@@ -13,7 +13,18 @@ LINK=${KAL2_TEST_LINK:?KAL2_TEST_LINK must be set}
 # time the workflow's post steps run, the emulator is already killed.
 ART_DIR=${GITHUB_WORKSPACE:-$PWD}/ci-artifacts
 mkdir -p "$ART_DIR"
+# Stream the device log for the whole job — the ring buffer wraps on noisy
+# APIs and drops MilkyVPN lines before post-mortem collection, so nothing in
+# this pipeline may rely on `logcat -d` alone. scenarios.sh reads this file
+# via mark_log/wait_state byte offsets.
+LOGFILE=$ART_DIR/logcat-full.txt
+export LOGFILE
+adb -s "$SERIAL" logcat -c 2>/dev/null || true
+adb -s "$SERIAL" logcat -v threadtime > "$LOGFILE" 2>/dev/null &
+LOGPID=$!
+
 collect_logs() {
+  kill "$LOGPID" 2>/dev/null || true
   adb -s "$SERIAL" logcat -d > "$ART_DIR/logcat.txt" 2>/dev/null || true
   adb -s "$SERIAL" shell 'run-as vpn.milky.app.debug cat /data/data/vpn.milky.app.debug/files/crashes.jsonl 2>/dev/null' \
     > "$ART_DIR/app-crashes.jsonl" || true
