@@ -68,7 +68,7 @@ func main() {
 		} else {
 			logFile = f
 			defer logFile.Close()
-			log.SetOutput(io.MultiWriter(os.Stderr, logFile))
+			log.SetOutput(io.MultiWriter(failsoft{os.Stderr}, failsoft{logFile}))
 			log.Printf("kal2: logging to %s", *logPath)
 		}
 	}
@@ -185,9 +185,9 @@ func main() {
 			log.Fatalf("ctl: %v", err)
 		}
 		defer ctl.close()
-		outs := []io.Writer{os.Stderr, ctl}
+		outs := []io.Writer{failsoft{os.Stderr}, failsoft{ctl}}
 		if logFile != nil {
-			outs = append(outs, logFile)
+			outs = append(outs, failsoft{logFile})
 		}
 		log.SetOutput(io.MultiWriter(outs...))
 		ctl.echo("kal2: session up via " + *carrier)
@@ -265,6 +265,16 @@ func main() {
 		}
 	}
 	select {}
+}
+
+// failsoft swallows Write errors so a dead sink cannot starve the rest of
+// the MultiWriter chain — an elevated GUI-subsystem spawn has an invalid
+// stderr handle, and without this every line died on the first Write.
+type failsoft struct{ io.Writer }
+
+func (f failsoft) Write(p []byte) (int, error) {
+	_, _ = f.Writer.Write(p)
+	return len(p), nil
 }
 
 // waitForTun cancels the tun goroutine and waits for its deferred teardown

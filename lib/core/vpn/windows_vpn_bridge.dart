@@ -196,6 +196,17 @@ class WindowsProcessVpnBridge implements VpnBridge {
     subErr.cancel();
 
     await _applyProxy();
+    // The client can die mid-applyProxy (e.g. SOCKS bind failure races the
+    // 'session up' line): its exit handler's _restoreProxy may already have
+    // run as a no-op before _proxySet flipped — leaving our proxy pointing at
+    // a dead listener. Re-check and undo synchronously.
+    if (_proc == null) {
+      await _restoreProxy();
+      _set(
+        const VpnSnapshot(state: VpnState.error, errorCode: 'core_exit'),
+      );
+      throw VpnBridgeException('core_exit');
+    }
     _set(
       VpnSnapshot(
         state: VpnState.connected,

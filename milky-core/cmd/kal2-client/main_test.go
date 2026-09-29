@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -96,6 +97,33 @@ func TestCtlMirrorAndStop(t *testing.T) {
 	case <-ctl.stopCh:
 	case <-time.After(2 * time.Second):
 		t.Fatal("stop command never released the runner")
+	}
+}
+
+type brokenWriter struct{}
+
+func (brokenWriter) Write(p []byte) (int, error) {
+	return 0, fmt.Errorf("invalid handle")
+}
+
+// Regression BUG-2026-09-29-10: an elevated GUI-subsystem spawn has an
+// invalid stderr handle — a bare MultiWriter(os.Stderr, file, ctl) starved
+// every later sink on the first Write, leaving the log empty after the
+// banner. failsoft keeps a dead sink from eating the chain.
+func TestFailsoftKeepsChainAlive(t *testing.T) {
+	var buf strings.Builder
+	w := io.MultiWriter(failsoft{brokenWriter{}}, failsoft{&buf})
+	if _, err := w.Write([]byte("survive me\n")); err != nil {
+		t.Fatalf("failsoft returned error: %v", err)
+	}
+	if buf.String() != "survive me\n" {
+		t.Fatalf("later sink starved: %q", buf.String())
+	}
+	// Contract: a bare MultiWriter with a broken head DOES starve — that was
+	// the bug; failsoft is the fix, not decoration.
+	var buf2 strings.Builder
+	if _, err := io.MultiWriter(brokenWriter{}, &buf2).Write([]byte("x")); err == nil || buf2.Len() != 0 {
+		t.Skip("environment cannot demonstrate the starve — unexpected")
 	}
 }
 
