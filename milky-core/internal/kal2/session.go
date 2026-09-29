@@ -35,7 +35,12 @@ type Session struct {
 
 	// padBucket is this direction's padding multiple (default PadBucketSize);
 	// randomized per session so wire packet-size histograms differ run to run.
+	// Used only when padMode == PadBucketMode.
 	padBucket int
+
+	// padMode selects the record padding strategy (PadMimicMode by default).
+	// The peer needs no matching mode — padding is self-delimiting.
+	padMode PadMode
 
 	// Outbound scheduler: control records (OPEN/ACK/CLOSE/RST/PING/PONG)
 	// go out ahead of queued DATA so stream control never starves behind
@@ -176,8 +181,9 @@ func (s *Session) writeLoop() {
 			return
 		}
 		buf := s.appendFrame(nil, first)
+		target := s.batchTarget()
 	batch:
-		for len(buf) < writeBatchBytes {
+		for len(buf) < target {
 			select {
 			case r := <-s.ctrlCh:
 				buf = s.appendFrame(buf, r)
@@ -202,11 +208,17 @@ func (s *Session) writeLoop() {
 // appendFrame encrypts one record into buf. Runs only on the writer goroutine;
 // an undeliverable payload is dropped (the session continues).
 func (s *Session) appendFrame(buf []byte, r outRec) []byte {
-	bucket := s.padBucket
-	if bucket < MinPadBytes {
-		bucket = PadBucketSize
+	var padded []byte
+	var err error
+	if s.padMode == PadMimicMode {
+		padded, err = PadMimic(r.p)
+	} else {
+		bucket := s.padBucket
+		if bucket < MinPadBytes {
+			bucket = PadBucketSize
+		}
+		padded, err = PadBucket(r.p, bucket)
 	}
-	padded, err := PadBucket(r.p, bucket)
 	if err != nil {
 		return buf
 	}
@@ -218,6 +230,10 @@ func (s *Session) appendFrame(buf []byte, r outRec) []byte {
 	s.sendSeq++
 	return buf
 }
+
+// SetPadMode selects the padding strategy for records this session emits.
+// Set it before Attach so the writer goroutine sees the final choice.
+func (s *Session) SetPadMode(m PadMode) { s.padMode = m }
 
 // flushBuf writes one coalesced batch; failure marks the session dead.
 func (s *Session) flushBuf(buf []byte) bool {

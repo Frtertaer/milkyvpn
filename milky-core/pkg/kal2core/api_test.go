@@ -16,8 +16,8 @@ func TestCarriersExpansion(t *testing.T) {
 		in   string
 		want []string
 	}{
-		{"", []string{"veil", "drift", "cdn"}},
-		{"auto", []string{"veil", "drift", "cdn"}},
+		{"", []string{"veil", "drift", "cdn", "mosaic"}},
+		{"auto", []string{"veil", "drift", "cdn", "mosaic"}},
 		{"veil", []string{"veil"}},
 		{"drift", []string{"drift"}},
 		{"cdn", []string{"cdn"}},

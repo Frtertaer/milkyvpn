@@ -83,6 +83,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
       '-socks',
       _socksAddr,
       if (p.ech != null && p.ech!.isNotEmpty) ...['-ech', p.ech!],
+      if (p.pin != null && p.pin!.isNotEmpty) ...['-pin', p.pin!],
       if (p.cover == '0' || p.cover == 'false') '-cover=false',
     ];
   }

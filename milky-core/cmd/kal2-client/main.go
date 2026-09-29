@@ -50,6 +50,7 @@ func main() {
 	proxyURL := flag.String("proxy", "", "base-dial proxy (http://user:pass@host:port)")
 	insecure := flag.Bool("insecure", false, "skip carrier TLS chain verify (inner handshake still authenticates the server pubkey)")
 	ech := flag.String("ech", "", "base64 ECHConfigList — Encrypted Client Hello on veil (outer SNI shows only the cover name)")
+	pin := flag.String("pin", "", "comma list of sha256(SPKI) pins (hex|b64) replacing CA verification")
 	cover := flag.Bool("cover", true, "jittered chaff traffic against timing/size DPI heuristics")
 	flag.Parse()
 
@@ -88,6 +89,16 @@ func main() {
 		Logf:               log.Printf,
 		InsecureSkipVerify: *insecure,
 		Cover:              *cover,
+	}
+	for _, p := range strings.Split(*pin, ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		b, err := kal2core.DecodeKey(p)
+		if err != nil {
+			log.Fatalf("bad -pin: %v", err)
+		}
+		cfg.PinSHA256 = append(cfg.PinSHA256, b)
 	}
 	if *ech != "" {
 		list, err := base64.StdEncoding.DecodeString(*ech)

@@ -329,6 +329,7 @@ func deriveSessionKeys(transcriptBytes, salt []byte) (*Session, error) {
 		verify:     v,
 		streams:    map[uint32]*stream{},
 		padBucket:  sessionPadBucket(),
+		padMode:    PadMimicMode,
 	}
 	return s, nil
 }

@@ -215,20 +215,7 @@ func (v *VeilListener) wsAccept(w http.ResponseWriter, r *http.Request) *wsConn 
 		return nil
 	}
 	var ra net.Addr
-	// Behind a CDN the real client IP rides in CF-Connecting-IP /
-	// X-Forwarded-For; the TCP peer is the edge node.
-	ipStr := r.Header.Get("CF-Connecting-IP")
-	if ipStr == "" {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			ipStr = strings.TrimSpace(strings.Split(xff, ",")[0])
-		}
-	}
-	if ipStr == "" {
-		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-			ipStr = host
-		}
-	}
-	if ipStr != "" {
+	if ipStr := requestClientIP(r); ipStr != "" {
 		ra = &net.TCPAddr{IP: net.ParseIP(ipStr)}
 	}
 	return &wsConn{conn: nc, r: brw.Reader, closed: reg.closed, remote: ra}
@@ -271,6 +258,23 @@ func wsDial(conn net.Conn, host, path string) (*wsConn, error) {
 		return nil, fmt.Errorf("ws: bad accept key")
 	}
 	return &wsConn{conn: conn, r: br, mask: true, closed: make(chan struct{}), remote: conn.RemoteAddr()}, nil
+}
+
+// requestClientIP is the real client IP of r: behind a CDN it rides in
+// CF-Connecting-IP / X-Forwarded-For; the TCP peer is the edge node.
+func requestClientIP(r *http.Request) string {
+	ipStr := r.Header.Get("CF-Connecting-IP")
+	if ipStr == "" {
+		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
+			ipStr = strings.TrimSpace(strings.Split(xff, ",")[0])
+		}
+	}
+	if ipStr == "" {
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			ipStr = host
+		}
+	}
+	return ipStr
 }
 
 func headerContains(h http.Header, name, token string) bool {
