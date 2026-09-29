@@ -195,7 +195,73 @@
   должен ответить destination==ip И gateway==текущий, иначе
   безусловный delete+add. hosts-map остаётся только ledger для Restore
 
+## Закрытые (iOS-трек, milky-app)
+
+### BUG-2026-09-29-13 — iOS: prepare() сохраняет пустой proto → VPN-consent невозможен
+- Severity: block (первый запуск на девайсе: `prepare()` →
+  saveToPreferences → NEVPNErrorDomain Code=1 "Missing server address" →
+  Dart видит vpn_permission_denied — connect() недостижим; в симуляторе
+  дополнительно нет nehelper — IPC failed)
+- Platform: ios
+- Status: fixed-in-PR (в sim NE нет вообще — полноценная проверка только
+  на железе; XCTest пинает инвариант «proto для save всегда валиден»)
+- Repro: fresh install → Import kal2:// → Connect → prepare() падает до
+  prompt'а "Add VPN Configuration"
+- Found by: iOS sim integration run (iPhone 17, iOS 26.5)
+- Issue: —  PR: milky-app  Regression test:
+  ios/RunnerTests::testPlaceholderProtocolIsSaveable
+- Fix: prepare() сохраняет placeholderProtocol() — полный
+  NETunnelProviderProtocol (providerBundleIdentifier +
+  placeholder serverAddress + includeAllNetworks); connect() переписывает
+  его реальным configuredProtocol(configJSON:profile:)
+
+### BUG-2026-09-29-14 — iOS: kal2ConfigJSON теряет ech/cover и половину carrier'ов
+- Severity: major (ECH-параметр из kal2:// ссылки отбрасывался → внешний
+  TLS без ECHConfigList; cover-флаг терялся → DPI-шум всегда дефолтный;
+  carriers cdn/mosaic/quasar сворачивались в auto вместо явного выбора)
+- Platform: ios
+- Status: fixed-in-PR
+- Repro: подключиться профилем с ech=…&cover=0&carrier=mosaic → в JSON,
+  уходящий в Kal2mobileStart, нет ни ech, ни cover, carrier=auto
+- Found by: iOS sim run (code review против android/Kal2Config.toJson)
+- Issue: —  PR: milky-app  Regression test:
+  ios/RunnerTests::testKal2ConfigJSONPassesEchCoverAndCarriers
+- Fix: kal2ConfigJSON пишет ech + cover(=false только при "0"/"false") и
+  принимает veil/drift/cdn/mosaic/quasar — паритет с Android
+
+### BUG-2026-09-29-15 — Diagnostics показывает «Windows 26.5» на iOS
+- Severity: minor
+- Platform: ios
+- Status: fixed-in-PR
+- Repro: iOS → Diagnostics → platform label
+- Found by: iOS sim run
+- Issue: —  PR: milky-app  Regression test:
+  test/milky_device_test.dart::platformLabel maps every supported platform
+- Fix: platformLabel — switch по platform (ios/macos/android/windows)
+  вместо бинарного android|Windows
+
+### BUG-2026-09-29-16 — Текст permission-ошибки упоминает Android на iOS
+- Severity: minor
+- Platform: ios
+- Status: fixed-in-PR
+- Repro: отклонить/провалить VPN-consent на iOS → баннер «Android не
+  разрешил создать VPN-туннель»
+- Found by: iOS sim run
+- Issue: —  PR: milky-app  Regression test: — (строка, не логика)
+- Fix: permissionDenied-копия ветвится по Platform.isIOS/isMacOS —
+  «Разрешите добавление конфигурации VPN»
+
 ## Открытые / известные ограничения
+
+### iOS: NetworkExtension недоступен в симуляторах (платформенное)
+- Не баг нашего кода: в iOS Simulator нет nehelper/nesessionmanager/
+  neagent — `loadAllFromPreferences` → "Connection invalid"/IPC failed на
+  26.5 и 27.0. NEPacketTunnelProvider проверяется только на физическом
+  девайсе. Что реально прогнано вместо него: сборка Runner+PacketTunnel
+  под sim (после установки iOS platform component), XCTest-набор,
+  `kal2mobile.Start`→SOCKS→HTTPS на живом macOS (тот же путь, что
+  вызывает MirageBridge), RSS ≈22MB под нагрузкой 20 параллельных
+  10MB-потоков (heap ~1.6MB, плато — утечки нет).
 
 ### BUG-2026-09-29-07 — idle-сессия под «тихим» blackhole не детектируется
 - Severity: minor
