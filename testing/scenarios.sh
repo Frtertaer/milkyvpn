@@ -240,9 +240,11 @@ s_wifi_lte() {
   log "scenario: wifi<->lte switch (guest wifi toggle ↔ cellular data)"
   local m ip
   m=$(mark_log)
-  "${ADB[@]}" shell svc wifi disable
+  # svc/settings calls can return non-zero on some APIs (radio absent,
+  # service timing) — the assertions below decide pass/fail, not these.
+  "${ADB[@]}" shell svc wifi disable || true
   sleep 8
-  "${ADB[@]}" shell svc data enable
+  "${ADB[@]}" shell svc data enable || true
   # kal2 must redial over cellular and the app must re-verify — the CONNECTED
   # wait only sees lines appended after the mark (fresh, not stale).
   if wait_state '[= ]CONNECTED' 90 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
@@ -252,7 +254,7 @@ s_wifi_lte() {
     log_since "$m" | tail -20
   fi
   m=$(mark_log)
-  "${ADB[@]}" shell svc wifi enable
+  "${ADB[@]}" shell svc wifi enable || true
   sleep 6
   if wait_state '[= ]CONNECTED' 60 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
     ok "data→wifi: tunnel alive (exit $ip)"
@@ -266,9 +268,9 @@ s_net_loss() {
   log "scenario: total net loss 15s"
   local m ip
   m=$(mark_log)
-  "${ADB[@]}" shell svc wifi disable; "${ADB[@]}" shell svc data disable
+  "${ADB[@]}" shell svc wifi disable || true; "${ADB[@]}" shell svc data disable || true
   sleep 15
-  "${ADB[@]}" shell svc wifi enable; "${ADB[@]}" shell svc data enable
+  "${ADB[@]}" shell svc wifi enable || true; "${ADB[@]}" shell svc data enable || true
   # The kal2 carrier socket dies or blackholes with the underlay; the session
   # must be killed by liveness probes and redialed, then the app re-verifies.
   sleep 5
@@ -282,7 +284,7 @@ s_net_loss() {
 
 s_dns_change() {
   log "scenario: private DNS flip while connected"
-  "${ADB[@]}" shell settings put global private_dns_specifier dns.google
+  "${ADB[@]}" shell settings put global private_dns_specifier dns.google || true
   sleep 4
   # The underlay network renegotiates; the tunnel must stay (or re-dial) and
   # real traffic must still pass.
@@ -291,7 +293,7 @@ s_dns_change() {
   else
     bad "dns flip: tunnel dead"
   fi
-  "${ADB[@]}" shell settings delete global private_dns_specifier
+  "${ADB[@]}" shell settings delete global private_dns_specifier || true
 }
 
 s_dns_leak() {
@@ -301,8 +303,8 @@ s_dns_leak() {
   # The VPN link must carry ONLY the tunnel resolvers — an underlay DNS on the
   # VPN interface means queries could escape around the tunnel.
   local dnsvpn dnsall
-  dnsall=$("${ADB[@]}" shell dumpsys connectivity 2>/dev/null | grep -i "dnsaddresses")
-  dnsvpn=$(printf '%s\n' "$dnsall" | grep -i "1\.1\.1\.1\|8\.8\.8\.8" | head -3)
+  dnsall=$("${ADB[@]}" shell dumpsys connectivity 2>/dev/null | grep -i "dnsaddresses" || true)
+  dnsvpn=$(printf '%s\n' "$dnsall" | grep -i "1\.1\.1\.1\|8\.8\.8\.8" | head -3 || true)
   log "DnsAddresses view: $(printf '%s' "$dnsall" | tr '\n' ';')"
   if [ -n "$dnsvpn" ]; then
     ok "dns: vpn link carries tunnel resolvers ($(printf '%s' "$dnsvpn" | head -1 | cut -c1-90))"
