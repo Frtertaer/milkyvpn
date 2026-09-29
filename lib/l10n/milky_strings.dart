@@ -335,6 +335,14 @@ class S {
     'Через edge-кэш — для самых жёстких сетей',
     'Via edge cache — for the harshest networks',
   );
+  String get transportMosaicHint => t(
+    'Сессия из коротких плиток — переживает обрывы потоков',
+    'Session over short tiles — survives per-flow cuts',
+  );
+  String get transportQuasarHint => t(
+    'UDP/KCP — запасной, когда TCP мёртв (медленнее)',
+    'UDP/KCP — fallback when TCP is dead (slower)',
+  );
   String get theme => t('Тема', 'Theme');
   String get themeSystem => t('Системная', 'System');
   String get themeLight => t('Светлая', 'Light');

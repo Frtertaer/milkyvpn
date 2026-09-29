@@ -254,7 +254,15 @@ class _SettingsScreenState extends State<SettingsScreen> {
     );
   }
 
-  static const _carrierValues = ['', 'auto', 'veil', 'drift', 'cdn'];
+  static const _carrierValues = [
+    '',
+    'auto',
+    'veil',
+    'drift',
+    'cdn',
+    'mosaic',
+    'quasar',
+  ];
 
   String _carrierLabel(S t, String v) => switch (v) {
     'auto' => t.transportAuto,
@@ -267,6 +275,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
     'veil' => t.transportVeilHint,
     'drift' => t.transportDriftHint,
     'cdn' => t.transportCdnHint,
+    'mosaic' => t.transportMosaicHint,
+    'quasar' => t.transportQuasarHint,
     _ => t.transportDefaultHint,
   };
 

@@ -79,7 +79,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
       // transport override) is honored; anything else hedges veil+drift.
       network == 'relay'
           ? 'relay'
-          : const {'veil', 'drift', 'cdn'}.contains(network)
+          : const {'veil', 'drift', 'cdn', 'mosaic', 'quasar'}.contains(network)
           ? network
           : 'auto',
       '-drift',
