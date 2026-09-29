@@ -4,6 +4,8 @@ name: android-emu-matrix
 # Needs a KAL2_TEST_LINK secret holding a kal2:// test profile.
 on:
   workflow_dispatch:
+  pull_request:
+    paths: ["android/**", "lib/**", "milky-core/**", "testing/**", ".github/workflows/android-emu-matrix.yml"]
   push:
     paths: ["android/**", "lib/**", "milky-core/**", "testing/**", ".github/workflows/android-emu-matrix.yml"]
 
