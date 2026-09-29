@@ -67,20 +67,39 @@ launch_app() {
   sleep 5
 }
 
-import_link() {
-  [ -n "$LINK" ] || { log "no --link/KAL2_TEST_LINK — expecting profile already present"; return; }
-  local esc=${LINK//&/\\&}
-  "${ADB[@]}" shell input keyevent 4 || true   # dismiss anything
-  "${ADB[@]}" shell input text "$esc" 2>/dev/null || \
-    log "direct input failed — paste link in UI manually next run"
-  "${ADB[@]}" shell input keyevent 66 || true
-  sleep 2
+screen_wh() {
+  "${ADB[@]}" shell wm size 2>/dev/null | sed -n 's/.*: \([0-9]*\)x\([0-9]*\).*/\1 \2/p' | tail -1
 }
 
-tap_connect() {  # orb ≈ 540,799 on 1080x2400; consent OK ≈ 540,1340
-  "${ADB[@]}" shell input tap 540 799
+ui_tap_pct() {  # ui_tap_pct <x%> <y%> — taps are fractions of the actual screen
+  local w h x y
+  read -r w h <<<"$(screen_wh)"
+  [ -n "${w:-}" ] && [ -n "${h:-}" ] || { w=1080; h=1920; }
+  x=$(( w * $1 / 100 )); y=$(( h * $2 / 100 ))
+  "${ADB[@]}" shell input tap "$x" "$y"
+}
+
+onboarding_and_import() {
+  # fresh install → 3-page onboarding, then ImportScreen paste+confirm.
+  # Footer primary button sits at the bottom on every onboarding page.
+  ui_tap_pct 50 92; sleep 2   # page 0 → 1
+  ui_tap_pct 50 92; sleep 2   # page 1 → 2 (or home when a subscription exists)
+  ui_tap_pct 50 92; sleep 3   # page 2 → "Добавить подписку" → ImportScreen
+  [ -n "$LINK" ] || { log "no --link/KAL2_TEST_LINK — expecting profile already present"; return; }
+  local esc=${LINK//&/\\&}
+  ui_tap_pct 50 33; sleep 1                     # focus the url field
+  "${ADB[@]}" shell input text "$esc" 2>/dev/null || \
+    log "input text failed — paste link in UI manually next run"
+  "${ADB[@]}" shell input keyevent 111 2>/dev/null || true  # close keyboard
+  sleep 1
+  ui_tap_pct 50 92; sleep 4   # "Импорт"
+  ui_tap_pct 50 82; sleep 3   # success sheet continue
+}
+
+tap_connect() {
+  ui_tap_pct 50 42            # connect orb
   sleep 2
-  "${ADB[@]}" shell input tap 540 1340 2>/dev/null || true  # VPN consent OK if shown
+  ui_tap_pct 62 70 || true    # VPN consent OK if shown
 }
 
 verify_tunnel() {  # SOCKS liveness: real bytes through the tunnel
@@ -90,12 +109,12 @@ verify_tunnel() {  # SOCKS liveness: real bytes through the tunnel
 
 s_connect() {
   log "scenario: connect"
-  launch_app; import_link; tap_connect
+  launch_app; onboarding_and_import; tap_connect
   if wait_state CONNECTED 90; then
     local ip; ip=$(verify_tunnel)
     [ -n "$ip" ] && ok "connected, tunnel exit $ip" || { ok "connected (SOCKS probe empty)"; }
   else
-    bad "no CONNECTED in 90s"; "${ADB[@]}" logcat -d -s MilkyVPN | tail -20
+    bad "no CONNECTED in 90s"; "${ADB[@]}" logcat -d | tail -60
   fi
 }
 
