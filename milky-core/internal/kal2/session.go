@@ -1,6 +1,7 @@
 package kal2
 
 import (
+	"container/heap"
 	"crypto/cipher"
 	"encoding/binary"
 	"fmt"
@@ -8,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -44,16 +46,21 @@ type Session struct {
 
 	// Outbound scheduler: control records (OPEN/ACK/CLOSE/RST/PING/PONG)
 	// go out ahead of queued DATA so stream control never starves behind
-	// bulk transfer. DATA senders block when dataCh is full — that is the
-	// per-stream write backpressure.
+	// bulk transfer. DATA records queue per stream and the writer emits
+	// from the stream that has sent the fewest bytes so far (start-time
+	// fair queueing): a fresh stream's first records leave in the next
+	// batch even while bulk streams hold deep queues — on lossy carriers
+	// the queue tail is seconds of wire time, so a plain FIFO would pin
+	// interactive TTFB to it. DATA senders block when the lane cap fills.
 	ctrlCh chan outRec
-	dataCh chan outRec
+	data   *dataLane
 
 	smu       sync.RWMutex // guards streams
 	streams   map[uint32]*stream
 	acceptCh  chan *stream
 	nextID    uint32
 	writeErr  error
+	sentBytes atomic.Uint64 // wire bytes emitted; lane picker reads it
 	closed    chan struct{}
 	closeOnce sync.Once
 	readDone  chan struct{}
@@ -66,6 +73,93 @@ type outRec struct {
 	p  []byte
 }
 
+// dataLane is the per-stream fair queue behind the writer's DATA lane:
+// each stream's records stay FIFO, streams interleave by least emitted
+// bytes. slots bounds total pending records (senders block), wake
+// signals the writer when work arrives.
+type dataLane struct {
+	mu      sync.Mutex
+	heap    dataHeap
+	queues  map[uint32][]outRec
+	emitted map[uint32]uint64
+	slots   chan struct{}
+	wake    chan struct{}
+}
+
+// dataLaneCap bounds records pending in the data lane across streams.
+const dataLaneCap = 1024
+
+func newDataLane() *dataLane {
+	return &dataLane{
+		queues:  map[uint32][]outRec{},
+		emitted: map[uint32]uint64{},
+		slots:   make(chan struct{}, dataLaneCap),
+		wake:    make(chan struct{}, 1),
+	}
+}
+
+// enqueue appends rec to its stream's FIFO. The caller must already
+// hold a slot token; pop releases it when the record is emitted.
+func (l *dataLane) enqueue(rec outRec) {
+	l.mu.Lock()
+	if len(l.queues[rec.id]) == 0 {
+		heap.Push(&l.heap, dataItem{id: rec.id, emitted: l.emitted[rec.id]})
+	}
+	l.queues[rec.id] = append(l.queues[rec.id], rec)
+	l.mu.Unlock()
+	select {
+	case l.wake <- struct{}{}:
+	default:
+	}
+}
+
+// pop removes the head record of the stream that has emitted the fewest
+// bytes so far and releases its slot token.
+func (l *dataLane) pop() (outRec, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	for l.heap.Len() > 0 {
+		it := heap.Pop(&l.heap).(dataItem)
+		q := l.queues[it.id]
+		if len(q) == 0 {
+			continue // the heap only holds non-empty queues
+		}
+		rec := q[0]
+		l.emitted[it.id] += uint64(len(rec.p))
+		if len(q) > 1 {
+			l.queues[it.id] = q[1:]
+			heap.Push(&l.heap, dataItem{id: it.id, emitted: l.emitted[it.id]})
+		} else {
+			delete(l.queues, it.id)
+			delete(l.emitted, it.id)
+		}
+		<-l.slots
+		return rec, true
+	}
+	return outRec{}, false
+}
+
+// dataItem is a ready (non-empty) stream in the fair queue, ordered by
+// total bytes the stream has emitted.
+type dataItem struct {
+	id      uint32
+	emitted uint64
+}
+
+type dataHeap []dataItem
+
+func (h dataHeap) Len() int           { return len(h) }
+func (h dataHeap) Less(i, j int) bool { return h[i].emitted < h[j].emitted }
+func (h dataHeap) Swap(i, j int)      { h[i], h[j] = h[j], h[i] }
+func (h *dataHeap) Push(x any)        { *h = append(*h, x.(dataItem)) }
+func (h *dataHeap) Pop() any {
+	old := *h
+	n := len(old)
+	it := old[n-1]
+	*h = old[:n-1]
+	return it
+}
+
 // Transcript returns the handshake transcript (for PSK proofs).
 func (s *Session) Transcript() []byte { return s.transcript }
 
@@ -76,7 +170,7 @@ func (s *Session) Attach(rw io.ReadWriteCloser) {
 	s.closed = make(chan struct{})
 	s.readDone = make(chan struct{})
 	s.ctrlCh = make(chan outRec, 512)
-	s.dataCh = make(chan outRec, 1024)
+	s.data = newDataLane()
 	if s.isClient {
 		s.nextID = 1 // clients use odd stream ids
 	} else {
@@ -148,11 +242,12 @@ func (s *Session) sendRecord(t byte, streamID uint32, payload []byte) error {
 	// peer sees close before trailing data).
 	if t == MsgData || t == MsgClose {
 		select {
-		case s.dataCh <- rec:
-			return nil
+		case s.data.slots <- struct{}{}:
 		case <-s.closed:
 			return ErrClosed
 		}
+		s.data.enqueue(rec)
+		return nil
 	}
 	select {
 	case s.ctrlCh <- rec:
@@ -174,13 +269,33 @@ const writeBatchBytes = 1 << 14
 func (s *Session) writeLoop() {
 	for {
 		var first outRec
+		haveFirst := false
 		select {
 		case first = <-s.ctrlCh:
-		case first = <-s.dataCh:
-		case <-s.closed:
-			return
+			haveFirst = true
+		default:
+			if r, ok := s.data.pop(); ok {
+				first = r
+				haveFirst = true
+			}
 		}
-		buf := s.appendFrame(nil, first)
+		if !haveFirst {
+			select {
+			case first = <-s.ctrlCh:
+				haveFirst = true
+			case <-s.data.wake:
+				if r, ok := s.data.pop(); ok {
+					first = r
+					haveFirst = true
+				}
+			case <-s.closed:
+				return
+			}
+		}
+		var buf []byte
+		if haveFirst {
+			buf = s.appendFrame(buf, first)
+		}
 		target := s.batchTarget()
 	batch:
 		for len(buf) < target {
@@ -193,11 +308,16 @@ func (s *Session) writeLoop() {
 			select {
 			case r := <-s.ctrlCh:
 				buf = s.appendFrame(buf, r)
-			case r := <-s.dataCh:
-				buf = s.appendFrame(buf, r)
 			default:
+				if r, ok := s.data.pop(); ok {
+					buf = s.appendFrame(buf, r)
+					continue
+				}
 				break batch
 			}
+		}
+		if len(buf) == 0 {
+			continue // spurious wake
 		}
 		if !s.flushBuf(buf) {
 			return
@@ -231,12 +351,16 @@ func (s *Session) appendFrame(buf []byte, r outRec) []byte {
 	return buf
 }
 
+// SentBytes reports total wire bytes this session has emitted.
+func (s *Session) SentBytes() uint64 { return s.sentBytes.Load() }
+
 // SetPadMode selects the padding strategy for records this session emits.
 // Set it before Attach so the writer goroutine sees the final choice.
 func (s *Session) SetPadMode(m PadMode) { s.padMode = m }
 
 // flushBuf writes one coalesced batch; failure marks the session dead.
 func (s *Session) flushBuf(buf []byte) bool {
+	s.sentBytes.Add(uint64(len(buf)))
 	if _, err := s.rw.Write(buf); err != nil {
 		s.smu.Lock()
 		s.writeErr = err
@@ -321,6 +445,9 @@ func (s *Session) dispatch(rec *Record) {
 	case MsgOpenAck:
 		if st, ok := s.getStream(rec.StreamID); ok {
 			st.setDialResult(rec.Payload)
+			if !(len(rec.Payload) == 1 && rec.Payload[0] == 0x00) {
+				st.fail(fmt.Errorf("session: remote dial failed: %v", rec.Payload))
+			}
 		}
 	case MsgData:
 		if st, ok := s.getStream(rec.StreamID); ok {
@@ -458,13 +585,23 @@ func (s *Session) Open(host string, port uint16, timeout time.Duration) (*Stream
 	return s.OpenNet("tcp", host, port, timeout)
 }
 
-// OpenNet opens a stream with an explicit network ("tcp" or "udp").
-func (s *Session) OpenNet(network, host string, port uint16, timeout time.Duration) (*Stream, error) {
-	s.smu.Lock()
-	id := s.nextID
-	s.nextID += 2
-	s.smu.Unlock()
+// OpenOpt returns the stream as soon as OPEN is on the wire — the caller may
+// start writing immediately (the server buffers data until its target dial
+// completes), so request+open travel in the same flight and first byte costs
+// ~1 RTT instead of ~2. A refused dial arrives later as RST/reset; callers
+// needing the synchronous dial result use OpenNet.
+func (s *Session) OpenOpt(host string, port uint16) (*Stream, error) {
+	st, err := s.openStream("tcp", host, port)
+	if err != nil {
+		return nil, err
+	}
+	return &Stream{stream: st}, nil
+}
 
+// openStream allocates and registers a stream and puts OPEN on the wire. It
+// does not wait for OPEN_ACK.
+func (s *Session) openStream(network, host string, port uint16) (*stream, error) {
+	id := s.allocID()
 	st := newStream(s, id)
 	s.smu.Lock()
 	s.streams[id] = st
@@ -476,17 +613,34 @@ func (s *Session) OpenNet(network, host string, port uint16, timeout time.Durati
 		st.remoteClose()
 		return nil, err
 	}
+	return st, nil
+}
+
+func (s *Session) allocID() uint32 {
+	s.smu.Lock()
+	defer s.smu.Unlock()
+	id := s.nextID
+	s.nextID += 2
+	return id
+}
+
+// OpenNet opens a stream with an explicit network ("tcp" or "udp").
+func (s *Session) OpenNet(network, host string, port uint16, timeout time.Duration) (*Stream, error) {
+	st, err := s.openStream(network, host, port)
+	if err != nil {
+		return nil, err
+	}
 	if !st.waitDial(timeout) {
 		s.smu.Lock()
-		delete(s.streams, id)
+		delete(s.streams, st.id)
 		s.smu.Unlock()
 		st.remoteClose()
-		_ = s.sendRecord(MsgRst, id, []byte("open timeout"))
+		_ = s.sendRecord(MsgRst, st.id, []byte("open timeout"))
 		return nil, fmt.Errorf("session: open timeout or refused")
 	}
 	if st.dialErr != nil {
 		s.smu.Lock()
-		delete(s.streams, id)
+		delete(s.streams, st.id)
 		s.smu.Unlock()
 		st.remoteClose()
 		return nil, st.dialErr

@@ -45,7 +45,9 @@ func handleSocks(c net.Conn, sessFn func() *kal2.Session) {
 		socksReply(c, 0x05)
 		return
 	}
-	st, err := sess.Open(host, port, 15*time.Second)
+	// Optimistic open: put the client's request in the same flight as OPEN
+	// (~1 RTT to first byte). A refused dial arrives later as a stream reset.
+	st, err := sess.OpenOpt(host, port)
 	if err != nil {
 		socksReply(c, 0x05) // connection refused
 		return
