@@ -64,7 +64,12 @@ salt       = shared                        (binding пуст)
 ```
 
 HKDF-SHA256(ikm = salt, salt = SHA256(transcript), info =
-`mxs-in-v2/transcript/<label>/<transcript>`) выводит:
+`mxs-in-v2/transcript/<label>/<transcript>`, где `<label>` — **полное**
+имя из таблицы ниже с префиксом `mxs-in-v2/`, а `<transcript>` — сырые
+байты транскрипта) выводит:
+
+Пример: info клиентского record-ключа =
+`mxs-in-v2/transcript/mxs-in-v2/record/client/<transcript>`.
 
 | label | назначение |
 |-------|-----------|
@@ -74,9 +79,23 @@ HKDF-SHA256(ikm = salt, salt = SHA256(transcript), info =
 | `mxs-in-v2/handshake-verify` | finished-проверка |
 | `mxs-in-v2/client-preauth`, `server-sig-input`, `finished`, `exporter-bind` | служебные |
 
-Nonce записи = `nonce-base[8] || seq[8, BE]` ⊕ / concat как в эталонной
-реализации; `seq` монотонен на направление, повтор/внепорядок = `ErrReplay`
+Nonce записи (12B): `n = nonce-base || 0^4`; `n[4:12] ^= seq[8,BE]` —
+т.е. `n[0:4]=nb[0:4]`, `n[4:8]=nb[4:8]⊕seq[0:4]`, `n[8:12]=seq[4:8]`.
+`seq` монотонен на направление, повтор/внепорядок = `ErrReplay`
 → разрыв сессии.
+
+### Третий полёт (клиент → сервер)
+
+После серверного полёта клиент подтверждает владение PSK и согласие на
+выведенные ключи:
+
+```
+pskMAC[32]   = HMAC-SHA256(psk, labelClientPSK || transcript || serverFlight)
+finished[32] = HMAC-SHA256(handshakeVerify, labelFinished || "/client")
+```
+
+Сервер отвечает `finished(server) = HMAC-SHA256(handshakeVerify,
+labelFinished || "/server")` — после чего сессия открыта для записей.
 
 ## 3. Записи (records)
 
@@ -88,10 +107,10 @@ type[1]      — тип сообщения
 seq[8, BE]   — монотонный счётчик (replay window: строго по порядку)
 streamID[4, BE] — мультиплексированный поток (0 = контрольный)
 ctLen[4, BE] — длина ciphertext
-ct[ctLen]    = AEAD(payload || padLen[2,LE] || pad[padLen])
+ct[ctLen]    = AEAD(payload || pad[padLen] || padLen[2,LE])
 ```
 
-**Паддинг**: `payload || padLen || pad` добивается до кратного 256
+**Паддинг**: `payload || pad || padLen` добивается до кратного 256
 (`PadBucketSize`), с вероятностью 1/2 — ещё один бакет сверху
 (`MaxPadBucketsAbove = 1`). Макс. payload — 64 КиБ.
 
@@ -108,6 +127,7 @@ ct[ctLen]    = AEAD(payload || padLen[2,LE] || pad[padLen])
 | 0x07 | RST | аварийный разрыв потока |
 | 0x08 | OPEN_ACK | результат dial на сервере; payload = код (0x00 ок, 0x05 отказ) |
 | 0x09 | CHALLENGE | зарезервировано (anti-replay расширение) |
+| 0x0A | TICKET | v2.1: resumption-тикет, поток 0 (§9.1) |
 
 ## 4. Цель OPEN (SOCKS5-подобный адрес)
 
@@ -249,8 +269,8 @@ ticketLen[2,LE] || ticket[ticketLen]
 resumePreauth[32] = HMAC-SHA256(resumeSecret,
                     "mxs-in-v2/resume-preauth" || magic || version ||
                     sessionID || clientEph || ticket || binding?)
-checkpoint:  lastRecvSeq[8] || nStreams[2,LE] ||
-             { streamID[4], flags[1] }*   (flags bit0 = write-сторона закрыта)
+checkpoint:  lastRecvSeq[8,BE] || nStreams[2,BE] ||
+             { streamID[4,BE], flags[1] }*   (flags bit0 = write-сторона закрыта)
 ```
 
 Сервер: AEAD-открытие тикета → проверка expiry/userID/one-time →
@@ -276,8 +296,8 @@ transcript2)` — новые эфемерные ключи на каждое в�
 (поток 0):
 
 ```
-payload = lastRecvSeq[8] || nStreams[2,LE] ||
-          { streamID[4], flags[1] }*   — снапшот живых потоков
+payload = lastRecvSeq[8,BE] || nStreams[2,BE] ||
+          { streamID[4,BE], flags[1] }*   — снапшот живых потоков
 ```
 
 Правила примирения:
@@ -344,6 +364,8 @@ Wire-перенос: base64url(descriptor) в параметре `cd=` ссыл�
 ```
 epoch = unix / 21600
 path  = "/r/" + hex16(HMAC-SHA256(psk, "kal2-rdvs/" || epoch))
+        — epoch сериализуется десятичным ASCII (напр. "kal2-rdvs/78703"),
+          hex16 = первые 8 байт HMAC в hex
 ```
 
 Клиент опрашивает текущую и предыдущую эпоху обычным GET поверх любого
