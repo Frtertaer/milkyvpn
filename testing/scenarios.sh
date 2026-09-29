@@ -35,7 +35,9 @@ done
 PKG=${PKG:-}
 if [ -z "$PKG" ]; then
   for _ in 1 2 3 4 5; do
-    PKG=$("${ADB[@]}" shell pm list packages 2>/dev/null | sed -n 's/^package:\(.*milky.*\)$/\1/p' | tr -d '\r' | { grep -m1 '\.debug$' || grep -m1 .; })
+    _pkgs=$("${ADB[@]}" shell pm list packages 2>/dev/null | sed -n 's/^package:\(.*milky.*\)$/\1/p' | tr -d '\r')
+    PKG=$(printf '%s\n' "$_pkgs" | grep -m1 '\.debug$' || true)
+    [ -n "$PKG" ] || PKG=$(printf '%s\n' "$_pkgs" | grep -m1 . || true)
     [ -n "$PKG" ] && break
     sleep 2
   done
