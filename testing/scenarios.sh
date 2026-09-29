@@ -35,7 +35,7 @@ done
 PKG=${PKG:-}
 if [ -z "$PKG" ]; then
   for _ in 1 2 3 4 5; do
-    PKG=$("${ADB[@]}" shell pm list packages 2>/dev/null | sed -n 's/^package:\(.*milky.*\)$/\1/p' | head -1 | tr -d '\r')
+    PKG=$("${ADB[@]}" shell pm list packages 2>/dev/null | sed -n 's/^package:\(.*milky.*\)$/\1/p' | tr -d '\r' | { grep -m1 '\.debug$' || grep -m1 .; })
     [ -n "$PKG" ] && break
     sleep 2
   done
@@ -79,27 +79,63 @@ ui_tap_pct() {  # ui_tap_pct <x%> <y%> — taps are fractions of the actual scre
   "${ADB[@]}" shell input tap "$x" "$y"
 }
 
+ui_xml() {
+  "${ADB[@]}" shell uiautomator dump /sdcard/__ci.xml >/dev/null 2>&1
+  "${ADB[@]}" shell cat /sdcard/__ci.xml 2>/dev/null
+}
+
+_ui_center_of_match() {  # first clickable node matching regex → "x y"
+  local re=$1 line b
+  line=$(ui_xml | tr '<' '\n' | grep 'clickable="true"' | grep -m1 "\(content-desc=\"[^\"]*${re}[^\"]*\"\|text=\"[^\"]*${re}[^\"]*\"\)")
+  [ -n "$line" ] || return 1
+  b=$(echo "$line" | sed -n 's/.*bounds="\[\([0-9]*\),\([0-9]*\)\]\[\([0-9]*\),\([0-9]*\)\]".*/\1 \2 \3 \4/p')
+  [ -n "$b" ] || return 1
+  local x1 y1 x2 y2
+  read -r x1 y1 x2 y2 <<<"$b"
+  echo "$(( (x1+x2)/2 )) $(( (y1+y2)/2 ))"
+}
+
+ui_tap_desc() {  # ui_tap_desc <regex on text/content-desc> [fallback_x% fallback_y%]
+  local xy
+  xy=$(_ui_center_of_match "$1") || { log "ui: no clickable '$1'"; [ -n "${2:-}" ] && ui_tap_pct "$2" "$3"; return 1; }
+  "${ADB[@]}" shell input tap $xy
+}
+
+ui_tap_class() {  # tap first node of a class (e.g. android.widget.EditText)
+  local re="class=\"${1}\"" line b
+  line=$(ui_xml | tr '<' '\n' | grep -m1 "$re")
+  [ -n "$line" ] || return 1
+  b=$(echo "$line" | sed -n 's/.*bounds="\[\([0-9]*\),\([0-9]*\)\]\[\([0-9]*\),\([0-9]*\)\]".*/\1 \2 \3 \4/p')
+  local x1 y1 x2 y2
+  read -r x1 y1 x2 y2 <<<"$b"
+  "${ADB[@]}" shell input tap $(( (x1+x2)/2 )) $(( (y1+y2)/2 ))
+}
+
 onboarding_and_import() {
   # fresh install → 3-page onboarding, then ImportScreen paste+confirm.
-  # Footer primary button sits at the bottom on every onboarding page.
-  ui_tap_pct 50 92; sleep 2   # page 0 → 1
-  ui_tap_pct 50 92; sleep 2   # page 1 → 2 (or home when a subscription exists)
-  ui_tap_pct 50 92; sleep 3   # page 2 → "Добавить подписку" → ImportScreen
+  ui_tap_desc "Продолжить\|Continue" || true; sleep 2
+  ui_tap_desc "Понятно\|Got it" || true; sleep 2
+  ui_tap_desc "Добавить подписку\|Add subscription" || true; sleep 3
   [ -n "$LINK" ] || { log "no --link/KAL2_TEST_LINK — expecting profile already present"; return; }
   local esc=${LINK//&/\\&}
-  ui_tap_pct 50 33; sleep 1                     # focus the url field
+  ui_tap_class android.widget.EditText; sleep 1   # focus the url field
   "${ADB[@]}" shell input text "$esc" 2>/dev/null || \
     log "input text failed — paste link in UI manually next run"
   "${ADB[@]}" shell input keyevent 111 2>/dev/null || true  # close keyboard
   sleep 1
-  ui_tap_pct 50 92; sleep 4   # "Импорт"
-  ui_tap_pct 50 82; sleep 3   # success sheet continue
+  ui_tap_desc "Добавить\|^Add$" || true; sleep 4        # import
+  ui_tap_desc "Перейти\|Go to" || true; sleep 3         # success sheet
 }
 
 tap_connect() {
-  ui_tap_pct 50 42            # connect orb
+  ui_tap_desc "MilkyVPN\|подключиться\|Connect" || ui_tap_pct 50 42
   sleep 2
-  ui_tap_pct 62 70 || true    # VPN consent OK if shown
+  # consent dialog may take a few seconds — poll for its OK button
+  for _ in 1 2 3 4 5 6 7 8; do
+    ui_tap_desc "OK\|ОК" && return
+    sleep 2
+  done
+  return 0
 }
 
 verify_tunnel() {  # SOCKS liveness: real bytes through the tunnel

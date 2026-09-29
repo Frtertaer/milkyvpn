@@ -73,6 +73,9 @@ jobs:
         with:
           api-level: ${{ matrix.api }}
           arch: x86_64
+          # default HVGA skin (320x640) crashes the emulator when the Flutter UI
+          # renders — use a standard phone profile (1440x2560)
+          profile: Nexus 6
           disable-animations: true
           # emulator-runner executes each script line via `sh -c` — one line only
           script: chmod +x testing/run_emu_ci.sh && KAL2_TEST_LINK='${{ secrets.KAL2_TEST_LINK }}' ./testing/run_emu_ci.sh
