@@ -141,18 +141,24 @@ type Client struct {
 }
 
 // Session returns a live session, or nil between loss and redial.
-// With quasar lanes it round-robins over them so each new stream lands
-// on a different ordered stream.
+// With lanes it picks the session that has emitted the fewest wire bytes:
+// a lane deep into a bulk transfer keeps accumulating sent bytes, so new
+// streams land on the quiet lanes instead of queueing behind its backlog.
 func (c *Client) Session() *kal2.Session {
 	if len(c.lanes) > 0 {
-		n := uint32(len(c.lanes))
+		var best *kal2.Session
+		var bestSent uint64
 		start := c.laneRR.Add(1)
-		for k := uint32(0); k < n; k++ {
-			if s := c.lanes[(start+k)%n].Load(); s != nil {
-				return s
+		for k := uint32(0); k < uint32(len(c.lanes)); k++ {
+			s := c.lanes[(start+k)%uint32(len(c.lanes))].Load()
+			if s == nil {
+				continue
+			}
+			if best == nil || s.SentBytes() < bestSent {
+				best, bestSent = s, s.SentBytes()
 			}
 		}
-		return nil
+		return best
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()

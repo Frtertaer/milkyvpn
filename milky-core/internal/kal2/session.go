@@ -9,6 +9,7 @@ import (
 	"net"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/crypto/chacha20poly1305"
@@ -54,6 +55,7 @@ type Session struct {
 	acceptCh  chan *stream
 	nextID    uint32
 	writeErr  error
+	sentBytes atomic.Uint64 // wire bytes emitted; lane picker reads it
 	closed    chan struct{}
 	closeOnce sync.Once
 	readDone  chan struct{}
@@ -337,8 +339,12 @@ func (s *Session) appendFrame(buf []byte, r outRec) []byte {
 	return buf
 }
 
+// SentBytes reports total wire bytes this session has emitted.
+func (s *Session) SentBytes() uint64 { return s.sentBytes.Load() }
+
 // flushBuf writes one coalesced batch; failure marks the session dead.
 func (s *Session) flushBuf(buf []byte) bool {
+	s.sentBytes.Add(uint64(len(buf)))
 	if _, err := s.rw.Write(buf); err != nil {
 		s.smu.Lock()
 		s.writeErr = err
