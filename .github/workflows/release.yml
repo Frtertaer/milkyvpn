@@ -1,0 +1,173 @@
+name: release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v1.0.0)'
+        required: true
+        default: 'v1.0.0'
+
+permissions:
+  contents: write
+
+env:
+  FLUTTER_VERSION: '3.47.5'
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: milky-core/go.mod
+
+      - name: NDK (for kal2native rebuild check)
+        run: echo "ANDROID_NDK=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
+
+      - name: Signing key (release keystore from secrets, debug fallback)
+        working-directory: android
+        run: |
+          if [ -n "${{ secrets.ANDROID_KEYSTORE_B64 }}" ]; then
+            echo "${{ secrets.ANDROID_KEYSTORE_B64 }}" | base64 -d > app/release.keystore
+            {
+              echo "storeFile=release.keystore"
+              echo "storePassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
+              echo "keyAlias=milky"
+              echo "keyPassword=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}"
+            } > key.properties
+            echo "signed=release" >> "$GITHUB_OUTPUT"
+          else
+            echo "No keystore secrets — APK will be debug-signed (installs fine, but signature differs from future signed releases)."
+            echo "signed=debug" >> "$GITHUB_OUTPUT"
+          fi
+        id: sign
+
+      - name: Flutter APKs (release, split per ABI)
+        run: |
+          flutter pub get
+          flutter build apk --release --split-per-abi
+          ls -la build/app/outputs/flutter-apk/
+
+      - name: Rename artifacts
+        run: |
+          cd build/app/outputs/flutter-apk
+          mv app-armeabi-v7a-release.apk  MilkyVPN-android-armeabi-v7a.apk
+          mv app-arm64-v8a-release.apk    MilkyVPN-android-arm64-v8a.apk
+          mv app-x86_64-release.apk       MilkyVPN-android-x86_64.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-apks
+          path: build/app/outputs/flutter-apk/MilkyVPN-android-*.apk
+          retention-days: 30
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: milky-core/go.mod
+
+      - name: Flutter app (release)
+        run: |
+          flutter pub get
+          flutter build windows --release
+
+      - name: kal2-client (console-less GUI subsystem)
+        working-directory: milky-core
+        shell: bash
+        run: |
+          mkdir -p ../build/windows/x64/runner/Release/kal2
+          GOOS=windows GOARCH=amd64 go build -trimpath \
+            -ldflags '-s -w -H windowsgui' \
+            -o ../build/windows/x64/runner/Release/kal2/kal2-client.exe \
+            ./cmd/kal2-client
+
+      - name: wintun.dll (official signed build, hash-pinned)
+        shell: pwsh
+        run: |
+          $zip = 'wintun.zip'
+          Invoke-WebRequest -Uri 'https://www.wintun.net/builds/wintun-0.14.1.zip' -OutFile $zip
+          $h = (Get-FileHash $zip -Algorithm SHA256).Hash.ToLower()
+          if ($h -ne '07c256185d6ee3652e09fa55c0b673e2624b565e02c4b9091c79ca7d2f24ef51') {
+            throw "wintun sha256 mismatch: $h"
+          }
+          Expand-Archive $zip -DestinationPath wintun-dist
+          Copy-Item 'wintun-dist\wintun\bin\amd64\wintun.dll' `
+            'build\windows\x64\runner\Release\kal2\wintun.dll'
+
+      - name: Bundle VC++ redist DLLs
+        shell: pwsh
+        run: |
+          $rel = 'build\windows\x64\runner\Release'
+          $crt = Get-ChildItem `
+            "$env:VCToolsRedistDir\x64\Microsoft.VC*.CRT\*.dll",
+            "$env:VCToolsRedistDir\x64\Microsoft.VC*.CXXAMP\*.dll",
+            "$env:VCToolsRedistDir\x64\Microsoft.VC*.OpenMP\*.dll" -ErrorAction SilentlyContinue
+          foreach ($d in $crt) { Copy-Item $d.FullName $rel }
+
+      - name: Inno Setup installer
+        shell: pwsh
+        run: |
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path $iscc)) {
+            choco install innosetup --no-progress -y
+          }
+          & $iscc 'installer\windows.iss'
+          Get-ChildItem build\installer
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          path: build/installer/MilkyVPN-Setup.exe
+          retention-days: 30
+
+  publish:
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: '*'
+          merge-multiple: true
+          path: dist
+
+      - name: Tag for dispatch builds
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" != v* ]]; then TAG="${{ inputs.tag }}"; fi
+          echo "TAG=$TAG" >> "$GITHUB_ENV"
+          ls -la dist
+
+      - name: GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: MilkyVPN ${{ env.TAG }}
+          files: dist/*
+          generate_release_notes: true
