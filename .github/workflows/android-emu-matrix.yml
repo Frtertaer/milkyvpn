@@ -80,6 +80,18 @@ jobs:
           # emulator-runner executes each script line via `sh -c` — one line only
           script: chmod +x testing/run_emu_ci.sh && KAL2_TEST_LINK='${{ secrets.KAL2_TEST_LINK }}' ./testing/run_emu_ci.sh
 
-      - name: logcat on failure
-        if: failure()
-        run: timeout 20 $ANDROID_HOME/platform-tools/adb logcat -d 2>/dev/null | tail -300 || true
+      - name: collect crash logs
+        if: always()
+        run: |
+          mkdir -p ci-artifacts
+          timeout 20 $ANDROID_HOME/platform-tools/adb logcat -d > ci-artifacts/logcat-api${{ matrix.api }}.txt 2>/dev/null || true
+          timeout 15 $ANDROID_HOME/platform-tools/adb shell 'run-as vpn.milky.app.debug cat /data/data/vpn.milky.app.debug/files/crashes.jsonl 2>/dev/null' > ci-artifacts/app-crashes-api${{ matrix.api }}.jsonl || true
+
+      - name: upload crash artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: emu-logs-api${{ matrix.api }}
+          path: ci-artifacts/
+          retention-days: 14
+          if-no-files-found: ignore
