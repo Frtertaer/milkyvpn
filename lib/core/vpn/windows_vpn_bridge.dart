@@ -75,9 +75,13 @@ class WindowsProcessVpnBridge implements VpnBridge {
       '-psk',
       p.secret,
       '-carrier',
-      // 'relay' is its own carrier; everything else goes through the hedged
-      // veil+drift dial so a blocked carrier still connects.
-      network == 'relay' ? 'relay' : 'auto',
+      // 'relay' is its own carrier; an explicit carrier (from the link or the
+      // transport override) is honored; anything else hedges veil+drift.
+      network == 'relay'
+          ? 'relay'
+          : const {'veil', 'drift', 'cdn'}.contains(network)
+          ? network
+          : 'auto',
       '-drift',
       p.path ?? '',
       '-socks',

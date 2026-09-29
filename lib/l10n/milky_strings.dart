@@ -316,6 +316,25 @@ class S {
     'Весь трафик ПК через VPN (запросит права администратора)',
     'Route all PC traffic through the VPN (asks for admin rights)',
   );
+  String get transport => t('Транспорт', 'Transport');
+  String get transportDefault => t('По умолчанию', 'Default');
+  String get transportDefaultHint =>
+      t('Носитель из подписки', 'Carrier from the subscription');
+  String get transportAuto => t('Авто', 'Auto');
+  String get transportAutoHint => t(
+    'Умный выбор, запасной носитель при деградации',
+    'Smart pick, backup carrier on degradation',
+  );
+  String get transportVeilHint => t(
+    'TLS-маскировка — быстрый и незаметный',
+    'TLS camouflage — fast and low-key',
+  );
+  String get transportDriftHint =>
+      t('Долгоживущий HTTP-туннель', 'Long-lived HTTP tunnel');
+  String get transportCdnHint => t(
+    'Через edge-кэш — для самых жёстких сетей',
+    'Via edge cache — for the harshest networks',
+  );
   String get theme => t('Тема', 'Theme');
   String get themeSystem => t('Системная', 'System');
   String get themeLight => t('Светлая', 'Light');

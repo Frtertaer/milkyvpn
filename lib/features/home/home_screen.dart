@@ -186,6 +186,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ok = await vpn.connect(
         repo.snapshot?.profiles ?? const <VpnProfile>[],
         settings.location,
+        carrierOverride: settings.carrierOverride,
       );
     } finally {
       if (mounted) setState(() => _working = false);

@@ -140,6 +140,36 @@ class VpnProfile {
     return ServerLocation.unknown;
   }
 
+  /// Copy with a different network/carrier field — used by the transport
+  /// override in settings (kal2 carriers live in `network`).
+  VpnProfile withNetwork(String network) => VpnProfile(
+    id: id,
+    protocol: protocol,
+    address: address,
+    port: port,
+    secret: secret,
+    remark: remark,
+    network: network,
+    security: security,
+    sni: sni,
+    fingerprint: fingerprint,
+    publicKey: publicKey,
+    shortId: shortId,
+    ech: ech,
+    cover: cover,
+    spiderX: spiderX,
+    flow: flow,
+    host: host,
+    path: path,
+    xhttpMode: xhttpMode,
+    alpn: alpn,
+    allowInsecure: allowInsecure,
+    obfsPassword: obfsPassword,
+    alterId: alterId,
+    cipher: cipher,
+    plugin: plugin,
+  );
+
   /// Payload sent to the native bridge. Contains credentials by design (in-process only).
   Map<String, Object?> toBridgeMap() => {
     'id': id,

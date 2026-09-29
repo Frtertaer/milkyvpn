@@ -90,6 +90,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     showChevron: true,
                     onTap: () => bridge.openVpnSettings(),
                   ),
+                  const MilkyHairline(indent: MilkySpace.lg),
+                  MilkySettingRow(
+                    icon: Icons.alt_route_rounded,
+                    title: t.transport,
+                    subtitle: _carrierLabel(t, s.carrierOverride),
+                    showChevron: true,
+                    onTap: () => _pickCarrier(context, s),
+                  ),
                 ],
               ),
             ),
@@ -241,6 +249,76 @@ class _SettingsScreenState extends State<SettingsScreen> {
             const SizedBox(height: MilkySpace.xl),
             Center(child: MilkyWordmark(size: 15)),
           ],
+        ),
+      ),
+    );
+  }
+
+  static const _carrierValues = ['', 'auto', 'veil', 'drift', 'cdn'];
+
+  String _carrierLabel(S t, String v) => switch (v) {
+    'auto' => t.transportAuto,
+    '' => t.transportDefault,
+    _ => v[0].toUpperCase() + v.substring(1),
+  };
+
+  String _carrierHint(S t, String v) => switch (v) {
+    'auto' => t.transportAutoHint,
+    'veil' => t.transportVeilHint,
+    'drift' => t.transportDriftHint,
+    'cdn' => t.transportCdnHint,
+    _ => t.transportDefaultHint,
+  };
+
+  void _pickCarrier(BuildContext context, AppSettings s) {
+    final t = S.of(context);
+    final c = context.milky;
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      barrierColor: c.scrim,
+      builder: (ctx) => SafeArea(
+        top: false,
+        child: MilkyColumn(
+          maxWidth: MilkyLayout.maxReadingWidth,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              MilkySpace.md,
+              0,
+              MilkySpace.md,
+              MilkySpace.md,
+            ),
+            child: MilkyGlassCard(
+              radius: MilkyRadius.sheet,
+              padding: const EdgeInsets.all(MilkySpace.lg),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(
+                      left: MilkySpace.sm,
+                      bottom: MilkySpace.sm,
+                    ),
+                    child: Text(t.transport, style: MilkyType.headline),
+                  ),
+                  for (final v in _carrierValues)
+                    MilkySettingRow(
+                      title: _carrierLabel(t, v),
+                      subtitle: _carrierHint(t, v),
+                      trailing: s.carrierOverride == v
+                          ? Icon(Icons.check_rounded, color: c.accent, size: 20)
+                          : null,
+                      onTap: () {
+                        s.setCarrierOverride(v);
+                        Navigator.of(ctx).pop();
+                      },
+                    ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );

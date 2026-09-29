@@ -237,13 +237,21 @@ class VpnController extends ChangeNotifier {
   }
 
   /// Returns true when a verified tunnel is up.
-  Future<bool> connect(List<VpnProfile> all, LocationChoice choice) async {
+  ///
+  /// [carrierOverride]: non-empty value replaces the kal2 profile's carrier
+  /// ('auto' | 'veil' | 'drift' | 'cdn'); '' honors the carrier in the link.
+  Future<bool> connect(
+    List<VpnProfile> all,
+    LocationChoice choice, {
+    String carrierOverride = '',
+  }) async {
     if (_autoConnecting) return false;
     _autoConnecting = true;
     _cancelRequested = false;
     _lastErrorClass = null;
     _attemptsMade = 0;
     _attemptTotal = 0;
+    _carrierOverride = carrierOverride;
     notifyListeners();
     try {
       final granted = await _bridge.prepare();
@@ -286,7 +294,12 @@ class VpnController extends ChangeNotifier {
     }
   }
 
+  String _carrierOverride = '';
+
   Future<bool> _attempt(VpnProfile p) async {
+    if (_carrierOverride.isNotEmpty && p.kind == ProfileKind.kal2) {
+      p = p.withNetwork(_carrierOverride);
+    }
     final waiter = Completer<VpnSnapshot>();
     _waiter = waiter;
     _attemptingProfile = p;

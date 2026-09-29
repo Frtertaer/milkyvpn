@@ -28,6 +28,10 @@ class AppSettings extends ChangeNotifier {
   /// of the SOCKS system proxy. Ignored elsewhere.
   bool get fullTunnel => _prefs.getBool('tun_mode') ?? false;
 
+  /// KAL/2 carrier override: '' = use the carrier from the profile link,
+  /// otherwise 'auto' | 'veil' | 'drift' | 'cdn'. Applies to kal2 profiles only.
+  String get carrierOverride => _prefs.getString('carrier_override') ?? '';
+
   Future<void> setOnboardingDone() async {
     await _prefs.setBool('onboarding_done', true);
     notifyListeners();
@@ -50,6 +54,11 @@ class AppSettings extends ChangeNotifier {
 
   Future<void> setFullTunnel(bool v) async {
     await _prefs.setBool('tun_mode', v);
+    notifyListeners();
+  }
+
+  Future<void> setCarrierOverride(String v) async {
+    await _prefs.setString('carrier_override', v);
     notifyListeners();
   }
 }

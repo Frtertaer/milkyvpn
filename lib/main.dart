@@ -131,7 +131,11 @@ class _RootScreenState extends State<RootScreen> {
       final snapshot = repo.snapshot;
       if (settings.autoConnect && repo.hasSubscription && snapshot != null) {
         if (!vpn.isConnected && !vpn.isBusy) {
-          vpn.connect(snapshot.profiles, settings.location);
+          vpn.connect(
+            snapshot.profiles,
+            settings.location,
+            carrierOverride: settings.carrierOverride,
+          );
         }
       }
     });
