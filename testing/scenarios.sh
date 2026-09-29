@@ -154,7 +154,7 @@ ui_tap_desc_wait() {  # poll up to ~30s for a clickable match, then tap it
 
 ui_tap_class() {  # tap first node of a class (e.g. android.widget.EditText)
   local re="class=\"${1}\"" line b
-  line=$(ui_xml | tr '<' '\n' | grep -m1 "$re")
+  line=$(ui_xml | tr '<' '\n' | grep -m1 "$re" || true)
   [ -n "$line" ] || return 1
   b=$(echo "$line" | sed -n 's/.*bounds="\[\([0-9]*\),\([0-9]*\)\]\[\([0-9]*\),\([0-9]*\)\]".*/\1 \2 \3 \4/p')
   local x1 y1 x2 y2
@@ -324,7 +324,9 @@ s_battery_opt() {
   "${ADB[@]}" shell dumpsys deviceidle whitelist +"$PKG" >/dev/null 2>&1 || true
   sleep 1
   local wl
-  wl=$("${ADB[@]}" shell dumpsys deviceidle 2>/dev/null | grep -i "whitelist" | grep -i "$PKG" | head -1)
+  # dumpsys prints 'Whitelist user apps:' then one package per line — the
+  # header and the package never share a line, so grep for the pkg directly.
+  wl=$("${ADB[@]}" shell dumpsys deviceidle 2>/dev/null | grep -m1 "$PKG" || true)
   if [ -z "$wl" ]; then
     bad "battery: $PKG did not appear in deviceidle whitelist"
   else
