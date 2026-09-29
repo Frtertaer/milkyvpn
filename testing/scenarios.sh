@@ -152,6 +152,29 @@ clear_field() {
   "${ADB[@]}" shell input keyevent $dels
 }
 
+# short_link — `input text` stops landing past ~280 chars on some emus;
+# better to drop optional tail params (ech/cover/pin) at a '&' boundary than
+# feed a link whose last param arrives truncated. The #remark goes too —
+# display-only and often untypable (Cyrillic).
+short_link() {
+  local link=$1 head q out sep part
+  [ ${#link} -le 250 ] && { printf '%s' "$link"; return; }
+  head=${link%%\?*}
+  case $link in *\?*) q=${link#*\?};; *) printf '%s' "$link"; return;; esac
+  q=${q%%\#*}
+  out=$head sep='?'
+  local IFS='&'
+  for part in $q; do
+    if [ $(( ${#out} + ${#part} + 1 )) -le 250 ]; then
+      out=$out$sep$part
+      sep='&'
+    else
+      break
+    fi
+  done
+  printf '%s' "$out"
+}
+
 # ui_tree_useful — the API29 ghost-tree flake: uiautomator returns nodes but
 # every text/content-desc is empty, so no desc-match can ever succeed.
 ui_tree_useful() {
@@ -223,24 +246,27 @@ onboarding_and_import() {
   [ -n "$LINK" ] || { log "no --link/KAL2_TEST_LINK — expecting profile already present"; return; }
   ui_tap_class android.widget.EditText; sleep 1   # focus the url field
   # The link must land verbatim: `input text` truncates long strings silently
-  # (ech= links are ~350 chars), so chunk + verify against the field content.
-  # Fragment (#remark) may contain untypable chars — compare only the query.
-  local want typed try
-  want=$(printf '%s' "${LINK%%#*}" | tr -cd '\40-\176')
+  # (ech= links are ~300+ chars), so chunk + shorten to a param boundary +
+  # verify against the field content. Fragment (#remark) is dropped — it is
+  # display-only and may be untypable (Cyrillic).
+  local paste want typed try
+  paste=$(short_link "$LINK")
+  [ "$paste" != "$LINK" ] && log "link ${#LINK} chars → typing ${#paste} (tail params dropped at & boundary)"
+  want=$(printf '%s' "$paste" | tr -cd '\40-\176')
   for try in 1 2; do
-    type_text "$LINK" || true
+    type_text "$paste" || true
     sleep 1
     typed=$(ui_edittext_value)
-    if [ "$typed" = "$want" ] || [ "$typed" = "$(printf '%s' "$LINK" | tr -cd '\40-\176')" ]; then
+    if [ "$typed" = "$want" ]; then
       break
     fi
     log "link field mismatch (try $try): want ${#want} chars, got ${#typed} — clear+retry"
     clear_field $((${#typed} + 8))
     ui_tap_class android.widget.EditText 2>/dev/null || true; sleep 1
   done
-  if [ "$typed" != "$want" ] && [ "$typed" != "$(printf '%s' "$LINK" | tr -cd '\40-\176')" ]; then
-    # The dump's text= may itself truncate (~280 chars observed); a mismatch
-    # is a warning, not a verdict — the import/connect path validates for real.
+  if [ "$typed" != "$want" ]; then
+    # The dump's text= may itself truncate; a mismatch is a warning, not a
+    # verdict — the import/connect path validates for real.
     log "WARN: url field reads ${#typed} chars vs want ${#want} — proceeding; connect will judge"
   fi
   "${ADB[@]}" shell input keyevent 111 2>/dev/null || true  # close keyboard
