@@ -239,12 +239,45 @@ s_connect() {
 s_wifi_lte() {
   log "scenario: wifi<->lte switch (guest wifi toggle ↔ cellular data)"
   local m ip
-  m=$(mark_log)
   # svc/settings calls can return non-zero on some APIs (radio absent,
   # service timing) — the assertions below decide pass/fail, not these.
+  # Cellular-capable? pm features is a capability check (the connectivity
+  # dump only lists a cellular agent while data is actually up).
+  local flap=0
+  if ! "${ADB[@]}" shell pm list features 2>/dev/null | grep -qi "telephony"; then
+    flap=1
+    log "SKIP: no telephony feature — wifi off/on flap instead"
+  fi
+  if [ $flap -eq 0 ]; then
+    # Bring cellular data up BEFORE cutting wifi: attach takes 10-30s on some
+    # images and would otherwise race the reconnect window.
+    "${ADB[@]}" shell svc data enable || true
+    flap=1
+    for i in $(seq 1 15); do
+      if "${ADB[@]}" shell dumpsys connectivity 2>/dev/null \
+          | grep -E "type: MOBILE|TRANSPORT_CELLULAR|MOBILE\[" | grep -q CONNECTED; then
+        flap=0; break
+      fi
+      sleep 3
+    done
+    [ $flap -eq 1 ] && log "SKIP: telephony present but MOBILE never attached — wifi flap"
+  fi
+  if [ $flap -eq 1 ]; then
+    m=$(mark_log)
+    "${ADB[@]}" shell svc wifi disable || true
+    sleep 8
+    "${ADB[@]}" shell svc wifi enable || true
+    if wait_state '[= ]CONNECTED' 90 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
+      ok "wifi flap: tunnel recovered (exit $ip; no usable cellular on device)"
+    else
+      bad "wifi flap: tunnel never recovered"
+      log_since "$m" | tail -20
+    fi
+    return
+  fi
+  m=$(mark_log)
   "${ADB[@]}" shell svc wifi disable || true
   sleep 8
-  "${ADB[@]}" shell svc data enable || true
   # kal2 must redial over cellular and the app must re-verify — the CONNECTED
   # wait only sees lines appended after the mark (fresh, not stale).
   if wait_state '[= ]CONNECTED' 90 "$m" && ip=$(verify_tunnel_wait 45) && [ -n "$ip" ]; then
