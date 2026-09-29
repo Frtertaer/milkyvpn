@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -89,6 +90,39 @@ func TestMuxSFQInteractiveUnderBulk(t *testing.T) {
 	<-bulkDone
 }
 
+// A remotely-closed stream must be evicted from the session's stream map:
+// before the fix, MsgClose/MsgRst never deleted the entry, so a long-lived
+// session accumulated a zombie per client-closed stream.
+func TestMuxRemoteCloseEvicts(t *testing.T) {
+	client, server := pipeSessions(t)
+	accepted := serveLoop(t, server)
+
+	const n = 50
+	for i := 0; i < n; i++ {
+		st, err := client.Open("evict.example", 443, 3*time.Second)
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		<-accepted
+		if err := st.Close(); err != nil {
+			t.Fatalf("close %d: %v", i, err)
+		}
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		server.smu.RLock()
+		left := len(server.streams)
+		server.smu.RUnlock()
+		if left == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("%d zombie streams left on the server after remote close", left)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
 // Long-run mux soak under -race: churn opens, reads, writes, closes, and
 // pings across sessions while a bulk writer saturates the data lane. Gated —
 // runs only when KAL2_SOAK=1 (the carrier-track 15-minute soak gate).
@@ -108,6 +142,30 @@ func TestMuxSoak(t *testing.T) {
 	deadline := time.Now().Add(duration)
 	var ops atomic.Int64
 	stop := make(chan struct{})
+
+	// Memory watch: a leak in either direction shows as rising heap or a
+	// growing stream map between samples.
+	go func() {
+		tick := time.NewTicker(time.Minute)
+		defer tick.Stop()
+		for {
+			select {
+			case <-tick.C:
+				var m runtime.MemStats
+				runtime.ReadMemStats(&m)
+				server.smu.RLock()
+				srvStreams := len(server.streams)
+				server.smu.RUnlock()
+				client.smu.RLock()
+				cliStreams := len(client.streams)
+				client.smu.RUnlock()
+				t.Logf("soak: heap=%dMB streams cli=%d srv=%d ops=%d",
+					m.HeapAlloc>>20, cliStreams, srvStreams, ops.Load())
+			case <-stop:
+				return
+			}
+		}
+	}()
 
 	// Bulk writer saturating the data lane for the whole soak.
 	go func() {
@@ -146,6 +204,7 @@ func TestMuxSoak(t *testing.T) {
 				srv := <-accepted
 				if _, err := st.Write(payload); err == nil {
 					go func(s *Stream) {
+						defer s.Close()
 						buf := make([]byte, len(payload))
 						_ = s.SetReadDeadline(time.Now().Add(5 * time.Second))
 						if _, err := io.ReadFull(s, buf); err == nil {

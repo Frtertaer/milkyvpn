@@ -762,8 +762,13 @@ func (st *stream) pump() {
 			st.rawQ = st.rawQ[1:]
 			st.mu.Unlock()
 			if b == nil {
-				// EOF sentinel: report close only after all queued data
+				// EOF sentinel: report close only after all queued data,
+				// then evict — a remotely-closed stream must not linger in
+				// the map or long-lived sessions leak an entry per stream.
 				st.sendEOF()
+				st.s.smu.Lock()
+				delete(st.s.streams, st.id)
+				st.s.smu.Unlock()
 				return
 			}
 			select {
@@ -819,9 +824,13 @@ func (st *stream) remoteClose() {
 }
 
 func (st *stream) reset() {
-	// Abrupt close (RST or session death): abort reads immediately.
+	// Abrupt close (RST or session death): abort reads immediately and
+	// evict — same terminal-state lifecycle as the graceful EOF path.
 	if st.markClosed() {
 		close(st.closedCh)
+		st.s.smu.Lock()
+		delete(st.s.streams, st.id)
+		st.s.smu.Unlock()
 	}
 }
 

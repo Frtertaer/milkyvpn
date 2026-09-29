@@ -40,6 +40,23 @@ BUG-2026-09-29-01…12 — Windows-трек, заведены в BUGS.md на в
 - Issue: —  PR: —  Regression test:
   `milky-core/internal/kal2/stress_test.go::TestMuxConcurrentPings`
 
+### BUG-2026-09-29-15 — mux: карта streams течёт на remote close
+- Severity: major (unbounded leak: долгоживущая сессия накапливает zombie-
+  entry на каждый закрытый пиром стрим → рост RSS на длинном soak'е;
+  15-мин -race soak был убит OOM-киллером через ~6.5 мин)
+- Platform: core (kal2 mux — все платформы)
+- Status: fixed-in-PR
+- Repro: пир закрывает стрим (`MsgClose`) или сбрасывает (`MsgRst`):
+  `remoteClose()`/`reset()` помечали stream closed, но НИКОГДА не удаляли
+  запись из `s.streams`. Локальный `Stream.Close()` удалял — удалённый
+  конец нет. Server-side за churn-прогон скапливал по записи на стрим
+- Fix: evict в терминальной точке жизненного цикла — pump удаляет запись
+  после EOF-дрейна (graceful), `reset()` удаляет немедленно (abrupt);
+  half-close ordering сохранён (данные до MsgClose доставляются)
+- Found by: carrier-track mux -race soak (killed at ~395s) + map audit
+- Issue: —  PR: —  Regression test:
+  `milky-core/internal/kal2/stress_test.go::TestMuxRemoteCloseEvicts`
+
 ### BUG-2026-09-29-14 — lanes: задушенный lane собирает все новые стримы
   (kill-vs-quarantine инверсия)
 - Severity: major (scorecard-контракт нарушен: живой-но-задушенный lane
