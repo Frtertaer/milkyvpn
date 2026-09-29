@@ -163,7 +163,7 @@ class MilkyVpnService : VpnService() {
 
     // ---------------------------------------------------------------- connect
 
-    private suspend fun connect(attemptId: Long) = mutex.withLock {
+    private suspend fun connect(attemptId: Long): Unit = mutex.withLock {
         // wantsConnected re-checked under the mutex: a disconnect landing after
         // the recovery launch must still win over a stale auto-retry.
         if (!attempts.isActive(attemptId) || !wantsConnected.get()) return@withLock
