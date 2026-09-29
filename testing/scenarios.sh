@@ -118,6 +118,23 @@ ui_ready() {
   return 1
 }
 
+# ui_tree_useful — the API29 ghost-tree flake: uiautomator returns nodes but
+# every text/content-desc is empty, so no desc-match can ever succeed.
+ui_tree_useful() {
+  ui_xml | grep -qE '(text|content-desc)="[^"]+"'
+}
+
+# ui_heal — pre-connect only: force-stop would kill a live tunnel. Relaunch
+# once when the accessibility tree is ghosted, then re-check.
+ui_heal() {
+  ui_tree_useful && return 0
+  log "ui: ghost tree (nodes without texts) — relaunching app once"
+  launch_app
+  sleep 3
+  ui_ready || true
+  ui_tree_useful
+}
+
 _ui_center_of_match() {  # first clickable node matching regex → "x y"
   local re=$1 line b
   line=$(ui_xml | tr '<' '\n' | grep 'clickable="true"' | grep -m1 "\(content-desc=\"[^\"]*${re}[^\"]*\"\|text=\"[^\"]*${re}[^\"]*\"\)")
@@ -165,6 +182,7 @@ ui_tap_class() {  # tap first node of a class (e.g. android.widget.EditText)
 onboarding_and_import() {
   # fresh install → 3-page onboarding, then ImportScreen paste+confirm.
   ui_ready || log "ui: no view tree yet — continuing anyway"
+  ui_heal || log "ui: tree still ghosted — falls back to pct taps"
   ui_tap_desc_wait "Продолжить\|Continue" && sleep 2
   ui_tap_desc_wait "Понятно\|Got it" && sleep 2
   ui_tap_desc_wait "Добавить подписку\|Add subscription" && sleep 3
@@ -228,7 +246,9 @@ s_connect() {
       log "attempt $i: no CONNECTED in 150s — MilkyVPN log since attempt:"
       log_since "$m" | tail -30
     fi
-    # manual retry only makes sense once the app sits on an error sheet
+    # manual retry only makes sense once the app sits on an error sheet;
+    # ghost-tree flake → heal once before tapping (pre-connect, safe)
+    ui_heal || true
     ui_tap_desc_wait "Попробовать снова\|Повторить\|Retry\|Try again" || ui_tap_desc_wait "подключиться\|Connect"
     sleep 2
   done
