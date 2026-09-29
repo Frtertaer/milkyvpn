@@ -51,7 +51,24 @@ type ServerConfig struct {
 	// frozen sessions for migration and issues one-time tickets. Ticket keys
 	// derive from Identity so they survive restarts.
 	Resume bool
-	Logf   func(string, ...any)
+	// UDPListen enables the quasar (UDP/KCP) listener, e.g. ":20443".
+	// Set Listen to "off" to run a UDP-only server without TLS material.
+	UDPListen string
+	// UDPFECData/UDPFECParity enable Reed-Solomon FEC on the quasar
+	// listener (e.g. 10,3). 0,0 = off.
+	UDPFECData   int
+	UDPFECParity int
+	// UDPSndWnd caps the KCP send window (segments) the server applies to
+	// quasar sessions. It bounds the in-flight backlog — at 16384 segs the
+	// tail is ~22 MB (~6 s of added latency for new streams under load),
+	// so ~4096 keeps bulk rate near the path cap while control stays fast.
+	// 0 = 16384.
+	UDPSndWnd int
+	// UDPResend is the dup-ack fast-retransmit threshold for quasar sessions.
+	UDPResend int
+	// UDPRate caps the quasar packet output rate in bytes/s (0 = unlimited).
+	UDPRate int
+	Logf      func(string, ...any)
 }
 
 // User is a provisioned client credential pair.
@@ -67,14 +84,17 @@ type ClientConfig struct {
 	SNI       string   // TLS SNI (server domain)
 	ServerPub []byte   // server Ed25519 public key (32B)
 	PSK       []byte   // per-user PSK (32B)
-	Carrier   string   // "veil" (default), "drift", "cdn" (WS-shaped drift), "auto" (hedged), or "a,b" list
+	Carrier   string   // "veil" (default), "drift", "cdn" (WS-shaped drift), "mosaic" (tiled), "auto" (hedged), or "a,b" list
 	DriftPath string   // secret path when Carrier=drift
 	// InsecureSkipVerify disables chain verification on the carrier TLS layer.
-	// Safe here: the KAL/2 inner handshake authenticates the server by its
-	// Ed25519 pubkey and binds to the TLS exporter (RFC 9266), so a MitM cannot
-	// forge the session. Needed on devices with stale CA stores (old Android
-	// system images lack newer roots like ISRG Root X1/X2).
+	// The KAL/2 inner handshake still authenticates the server by its Ed25519
+	// pubkey and (veil) binds to the TLS exporter, so an interceptor cannot
+	// relay the session — but it does see the inner first flight. Prefer
+	// PinSHA256 on devices with stale CA stores.
 	InsecureSkipVerify bool
+	// PinSHA256 pins the outer TLS leaf by SHA-256 of its SPKI instead of
+	// CA-chain verification (link param pin=).
+	PinSHA256 [][]byte
 	// ECHConfigList enables Encrypted Client Hello on the veil carrier
 	// (serialized ECHConfigList). On a veil dial failure it is retried once
 	// without ECH — availability beats the marginal stealth loss.
@@ -82,6 +102,30 @@ type ClientConfig struct {
 	// Cover sends jittered randomized PING records while the session is up so
 	// idle periods don't read as a "quiet tunnel" timing signature.
 	Cover bool
+	// QuasarFEC sets Reed-Solomon FEC shards [data,parity] for the quasar
+	// carrier; [0,0] = off.
+	QuasarFEC [2]int
+	// QuasarRcvWnd caps the KCP receive window the client advertises to the
+	// server, throttling its offered rate to ~wnd*mtu/RTT — paths that police
+	// inbound UDP to a fixed rate drop everything above the cap, so a window
+	// just under it beats a big window that loses ~40%. 0 = 16384.
+	QuasarRcvWnd int
+	// QuasarResend is the dup-ack fast-retransmit threshold (0 = RTO only).
+	QuasarResend int
+	// QuasarLanes is the number of parallel quasar sessions (>1 = multi
+	// lane). KCP delivers an ordered byte stream, so anything written lands
+	// behind every earlier byte — a bulk download makes the tail of its
+	// lane's stream seconds deep. Spreading streams round-robin across
+	// lanes keeps interactive streams on nearly-empty ordered streams.
+	// 0/1 = single session.
+	// Lanes pools N parallel sessions over the configured carrier and
+	// round-robins new streams across them: a single ordered transport
+	// (KCP stream, TCP byte stream) makes every stream wait behind bulk
+	// backlogs, so spreading streams over several connections keeps
+	// interactive traffic on nearly-empty lanes.
+	Lanes    int
+	// Deprecated: same as Lanes (kept for older CLI flags).
+	QuasarLanes int
 	// DialContext overrides the base TCP dial (e.g. via HTTP CONNECT proxy).
 	DialContext      func(ctx context.Context, network, addr string) (net.Conn, error)
 	HandshakeTimeout time.Duration
@@ -99,14 +143,34 @@ type Client struct {
 	cfg      ClientConfig
 	logf     func(string, ...any)
 	mu       sync.Mutex
+	lanes    []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
+	laneRR   atomic.Uint32
 	stop     chan struct{}
 	stopOnce sync.Once
 	rrIdx    atomic.Int32
 	scores   *core.Scorecard
 }
 
-// Session returns the current session, or nil between loss and redial.
+// Session returns a live session, or nil between loss and redial.
+// With lanes it picks the session that has emitted the fewest wire bytes:
+// a lane deep into a bulk transfer keeps accumulating sent bytes, so new
+// streams land on the quiet lanes instead of queueing behind its backlog.
 func (c *Client) Session() *kal2.Session {
+	if len(c.lanes) > 0 {
+		var best *kal2.Session
+		var bestSent uint64
+		start := c.laneRR.Add(1)
+		for k := uint32(0); k < uint32(len(c.lanes)); k++ {
+			s := c.lanes[(start+k)%uint32(len(c.lanes))].Load()
+			if s == nil {
+				continue
+			}
+			if best == nil || s.SentBytes() < bestSent {
+				best, bestSent = s, s.SentBytes()
+			}
+		}
+		return best
+	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.Sess
@@ -142,15 +206,16 @@ func Serve(cfg ServerConfig) error {
 			}
 		}
 	}
+	udpOnly := cfg.Listen == "off"
 	var cert *tls.Certificate
 	var autocertMgr *autocert.Manager
-	if cfg.CertFile != "" {
+	if !udpOnly && cfg.CertFile != "" {
 		c, err := tls.LoadX509KeyPair(cfg.CertFile, cfg.KeyFile)
 		if err != nil {
 			return fmt.Errorf("load cert: %w", err)
 		}
 		cert = &c
-	} else if cfg.AutocertDir != "" {
+	} else if !udpOnly && cfg.AutocertDir != "" {
 		autocertMgr = &autocert.Manager{
 			Prompt: autocert.AcceptTOS,
 			// Whitelist the real domain plus ECH cover names so autocert
@@ -170,7 +235,7 @@ func Serve(cfg ServerConfig) error {
 			}))
 			_ = http.ListenAndServe(httpAddr, h)
 		}()
-	} else {
+	} else if !udpOnly {
 		return fmt.Errorf("need CertFile/KeyFile or AutocertDir")
 	}
 	driftPath := cfg.DriftPath
@@ -182,9 +247,13 @@ func Serve(cfg ServerConfig) error {
 		logf = func(string, ...any) {}
 	}
 
-	ln, err := net.Listen("tcp", cfg.Listen)
-	if err != nil {
-		return err
+	var ln net.Listener
+	if !udpOnly {
+		var lerr error
+		ln, lerr = net.Listen("tcp", cfg.Listen)
+		if lerr != nil {
+			return lerr
+		}
 	}
 
 	vc := carrier.VeilConfig{
@@ -220,6 +289,8 @@ func Serve(cfg ServerConfig) error {
 	mux := http.NewServeMux()
 	mux.Handle(driftPath, v.DriftHandler(driftPath))
 	mux.Handle(driftPath+"/", v.DriftHandler(driftPath))
+	mux.Handle(carrier.DefaultMosaicPath, v.MosaicHandler(carrier.DefaultMosaicPath))
+	mux.Handle(carrier.DefaultMosaicPath+"/", v.MosaicHandler(carrier.DefaultMosaicPath))
 	if cfg.DecoyDir != "" {
 		mux.Handle("/", http.FileServer(http.Dir(cfg.DecoyDir)))
 	} else {
@@ -230,6 +301,31 @@ func Serve(cfg ServerConfig) error {
 	}
 	v.SetMux(mux)
 
+	if cfg.UDPListen != "" {
+		wireKey := carrier.QuasarWireKey(ed25519.PrivateKey(cfg.Identity).Public().(ed25519.PublicKey))
+		ql, err := carrier.NewQuasarListener(v, &carrier.QuasarConfig{
+			WireKey:      wireKey,
+			DataShards:   cfg.UDPFECData,
+			ParityShards: cfg.UDPFECParity,
+			SndWnd:       cfg.UDPSndWnd,
+			Resend:       cfg.UDPResend,
+			RateLimit:    cfg.UDPRate,
+		}, cfg.UDPListen)
+		if err != nil {
+			return fmt.Errorf("quasar listen: %w", err)
+		}
+		go func() {
+			if err := ql.Serve(); err != nil {
+				logf("core: quasar listener %s stopped: %v", cfg.UDPListen, err)
+			}
+		}()
+		logf("core: quasar udp on %s (fec %d,%d)", ql.Addr(), cfg.UDPFECData, cfg.UDPFECParity)
+	}
+
+	if udpOnly {
+		logf("core: udp-only server on %s", cfg.UDPListen)
+		select {}
+	}
 	logf("core: serving %s on %s", cfg.Domain, cfg.Listen)
 	return v.Serve(ln)
 }
@@ -238,15 +334,53 @@ func Serve(cfg ServerConfig) error {
 // endpoint in Addrs (or Addr) in order.
 func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	scores := core.NewScorecard()
-	sess, err := dialAny(ctx, cfg, 0, scores)
-	if err != nil {
-		return nil, err
-	}
 	logf := cfg.Logf
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
-	cli := &Client{Sess: sess, cfg: cfg, logf: logf, stop: make(chan struct{}), scores: scores}
+	cli := &Client{cfg: cfg, logf: logf, stop: make(chan struct{}), scores: scores}
+	n := cfg.Lanes
+	if n <= 0 {
+		n = cfg.QuasarLanes
+	}
+	if n > 1 {
+		cli.lanes = make([]atomic.Pointer[kal2.Session], n)
+		errs := make([]error, n)
+		var wg sync.WaitGroup
+		for i := 0; i < n; i++ {
+			wg.Add(1)
+			go func(i int) {
+				defer wg.Done()
+				s, err := dialAny(ctx, cfg, i, scores)
+				if err == nil {
+					cli.lanes[i].Store(s)
+				}
+				errs[i] = err
+			}(i)
+		}
+		wg.Wait()
+		var firstErr error
+		up := 0
+		for i := 0; i < n; i++ {
+			if cli.lanes[i].Load() != nil {
+				up++
+			} else if firstErr == nil {
+				firstErr = errs[i]
+			}
+		}
+		if up == 0 {
+			return nil, firstErr
+		}
+		if up < n {
+			logf("core: %d/%d carrier lanes up at dial", up, n)
+		}
+	} else {
+		sess, err := dialAny(ctx, cfg, 0, scores)
+		if err != nil {
+			return nil, err
+		}
+		cli.Sess = sess
+	}
 	if cfg.Cover {
 		go cli.coverLoop()
 	}
@@ -284,14 +418,15 @@ func endpoints(cfg ClientConfig) []string {
 }
 
 // carriers expands the Carrier field into the concrete carriers to try.
-// "auto" (or empty) hedges across veil and drift: both are dialed in
-// parallel and the first session that completes wins — during throttling
-// windows one carrier usually still squeezes through (observed live: veil
-// dials timed out while drift completed).
+// "auto" (or empty) hedges across every carrier: all are dialed in parallel
+// and the first session that completes wins — during throttling windows one
+// carrier usually still squeezes through (observed live: veil dials timed
+// out while drift completed). Mosaic completes last on a clean path, so it
+// wins exactly when the connection-shaped carriers are being cut.
 func carriers(cfg ClientConfig) []string {
 	c := strings.TrimSpace(cfg.Carrier)
 	if c == "" || c == "auto" {
-		return []string{"veil", "drift", "cdn"}
+		return []string{"veil", "drift", "cdn", "mosaic"}
 	}
 	parts := strings.Split(c, ",")
 	out := parts[:0]
@@ -413,6 +548,7 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		DialContext:        cfg.DialContext,
 		HandshakeTimeout:   cfg.HandshakeTimeout,
 		InsecureSkipVerify: cfg.InsecureSkipVerify,
+		PinSHA256:          cfg.PinSHA256,
 		ECHConfigList:      cfg.ECHConfigList,
 		Resume:             cfg.Resume,
 	}
@@ -433,6 +569,19 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 	case "cdn":
 		s, _, err := carrier.DialDriftWS(ctx, cc, cfg.DriftPath)
 		return s, err
+	case "quasar":
+		s, _, err := carrier.DialQuasar(ctx, cc, &carrier.QuasarConfig{
+			DataShards:   cfg.QuasarFEC[0],
+			ParityShards: cfg.QuasarFEC[1],
+			RcvWnd:       cfg.QuasarRcvWnd,
+			Resend:       cfg.QuasarResend,
+		})
+		return s, err
+	case "mosaic":
+		cc.Endpoints = endpoints(cfg)
+		cc.Logf = cfg.Logf
+		s, _, err := carrier.DialMosaic(ctx, cc, "")
+		return s, err
 	default:
 		return nil, fmt.Errorf("unknown carrier %q", cfg.Carrier)
 	}
@@ -448,6 +597,13 @@ func (c *Client) EnableReconnect() {
 }
 
 func (c *Client) reconnectLoop() {
+	if len(c.lanes) > 0 {
+		for i := range c.lanes {
+			go c.reconnectLane(i)
+		}
+		<-c.stop
+		return
+	}
 	for {
 		sess := c.Session()
 		if sess == nil {
@@ -525,6 +681,71 @@ func (c *Client) tryMigrate(sess *kal2.Session) bool {
 // Scores exposes the live carrier scorecard for reporting.
 func (c *Client) Scores() *core.Scorecard { return c.scores }
 
+// reconnectLane watches one quasar lane, keeps it warm with pings, and
+// redials into its slot when it dies. Contract with failover scoring (PR #7
+// scorecard, when merged): this watchdog only kills *dead* lanes — a ping
+// must actually error twice; a merely slow pong keeps the lane alive and the
+// least-loaded stream picker simply starves it. Degradation is handled by
+// score/quarantine logic, never by the kill path, so a throttled lane is
+// backed off rather than destroyed.
+func (c *Client) reconnectLane(i int) {
+	for {
+		sess := c.lanes[i].Load()
+		if sess != nil {
+			go func(s *kal2.Session) {
+				t := time.NewTicker(15 * time.Second)
+				defer t.Stop()
+				for {
+					select {
+					case <-t.C:
+						// A ping failure means the session is silently dead
+						// (e.g. the server forgot it): close so WaitClosed
+						// fires and this lane gets redialed. Two strikes —
+						// a single lost pong must not kill a live session.
+						if err := s.Ping([]byte("k"), 10*time.Second); err != nil {
+							if err2 := s.Ping([]byte("k"), 5*time.Second); err2 != nil {
+								_ = s.Close()
+								return
+							}
+						}
+					case <-s.WaitClosed():
+						return
+					case <-c.stop:
+						return
+					}
+				}
+			}(sess)
+			select {
+			case <-sess.WaitClosed():
+				c.lanes[i].CompareAndSwap(sess, nil)
+			case <-c.stop:
+				return
+			}
+		}
+		c.logf("core: lane %d lost; redialing", i)
+		backoff := time.Second
+		for {
+			select {
+			case <-c.stop:
+				return
+			case <-time.After(backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))):
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)), c.scores)
+			cancel()
+			if err == nil {
+				c.lanes[i].Store(s)
+				c.logf("core: lane %d restored", i)
+				break
+			}
+			c.logf("core: lane %d redial failed: %v", i, err)
+			if backoff < 30*time.Second {
+				backoff *= 2
+			}
+		}
+	}
+}
+
 // ServeSocks exposes a local SOCKS5 proxy that forwards through whichever
 // session is live — survives reconnects.
 func (c *Client) ServeSocks(laddr string) (net.Listener, error) {
@@ -545,12 +766,22 @@ func (c *Client) Ping(ctx context.Context) error {
 	return core.PingSession(ctx, s)
 }
 
-// Close ends the session and stops the reconnect watchdog.
+// Close ends the session(s) and stops the reconnect watchdog.
 func (c *Client) Close() error {
 	var err error
 	c.stopOnce.Do(func() {
 		if c.stop != nil {
 			close(c.stop)
+		}
+		if len(c.lanes) > 0 {
+			for i := range c.lanes {
+				if s := c.lanes[i].Swap(nil); s != nil {
+					if e := s.Close(); e != nil {
+						err = e
+					}
+				}
+			}
+			return
 		}
 		if s := c.Session(); s != nil {
 			err = s.Close()

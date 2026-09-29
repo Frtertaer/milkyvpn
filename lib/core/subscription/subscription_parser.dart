@@ -336,6 +336,13 @@ class SubscriptionParser {
         : (_isIpLiteral(address) ? '' : address);
     final effectiveSni = explicitSni.isEmpty ? fallbackSni : explicitSni;
     final remark = profile.remark.trim();
+    // kal2-only fields are appended only when set so ids of every other
+    // profile stay stable.
+    final kal2Extras = [
+      _nz(profile.ech) ?? '',
+      _nz(profile.cover) ?? '',
+      _nz(profile.pin) ?? '',
+    ];
 
     return jsonEncode([
       2, // identity schema
@@ -362,6 +369,7 @@ class SubscriptionParser {
       _nz(profile.plugin) ?? '',
       remark,
       VpnProfile.locationFromRemark(remark).name,
+      if (kal2Extras.any((e) => e.isNotEmpty)) ...kal2Extras,
     ]);
   }
 
@@ -379,6 +387,9 @@ class SubscriptionParser {
     fingerprint: profile.fingerprint,
     publicKey: profile.publicKey,
     shortId: profile.shortId,
+    ech: profile.ech,
+    cover: profile.cover,
+    pin: profile.pin,
     spiderX: profile.spiderX,
     flow: profile.flow,
     host: profile.host,
@@ -667,7 +678,7 @@ class SubscriptionParser {
     );
   }
 
-  /// `kal2://psk@host:port?sni=domain&pub=hex&carrier=veil|drift&path=/p#remark`
+  /// `kal2://psk@host:port?sni=domain&pub=hex&carrier=veil|drift|cdn|mosaic&path=/p&pin=b64#remark`
   VpnProfile? _parseKal2(String line) {
     final parts = _split(line);
     if (parts == null) return null;
@@ -677,7 +688,8 @@ class SubscriptionParser {
     final query = parts.params;
     final carrier = (query['carrier'] ?? 'veil').trim().toLowerCase();
     if (carrier != 'veil' && carrier != 'drift' &&
-        carrier != 'cdn' && carrier != 'auto' && carrier != 'relay') {
+        carrier != 'cdn' && carrier != 'mosaic' && carrier != 'auto' &&
+        carrier != 'relay') {
       return null;
     }
     final remark = parts.remark.isEmpty
@@ -699,6 +711,7 @@ class SubscriptionParser {
         path: _nz(query['path']),
         ech: _nz(query['ech']),
         cover: _nz(query['cover']),
+        pin: _nz(query['pin']),
       ),
     );
   }
@@ -1465,7 +1478,8 @@ class SubscriptionParser {
         if (psk == null) return null;
         final carrier = (s('carrier') ?? 'veil').trim().toLowerCase();
         if (carrier != 'veil' && carrier != 'drift' &&
-        carrier != 'cdn' && carrier != 'auto' && carrier != 'relay') {
+        carrier != 'cdn' && carrier != 'mosaic' && carrier != 'auto' &&
+        carrier != 'relay') {
           return null;
         }
         return _identified(
@@ -1483,6 +1497,7 @@ class SubscriptionParser {
             path: _nz(s('path')),
             ech: _nz(s('ech')),
             cover: _nz(s('cover')),
+            pin: _nz(s('pin')),
           ),
         );
       default:

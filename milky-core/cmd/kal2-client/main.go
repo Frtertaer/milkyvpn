@@ -50,7 +50,12 @@ func main() {
 	proxyURL := flag.String("proxy", "", "base-dial proxy (http://user:pass@host:port)")
 	insecure := flag.Bool("insecure", false, "skip carrier TLS chain verify (inner handshake still authenticates the server pubkey)")
 	ech := flag.String("ech", "", "base64 ECHConfigList — Encrypted Client Hello on veil (outer SNI shows only the cover name)")
+	pin := flag.String("pin", "", "comma list of sha256(SPKI) pins (hex|b64) replacing CA verification")
 	cover := flag.Bool("cover", true, "jittered chaff traffic against timing/size DPI heuristics")
+	qfec := flag.String("qfec", "0,0", "quasar carrier Reed-Solomon FEC shards data,parity (e.g. 10,3)")
+	qres := flag.Int("qresend", 0, "quasar client KCP dup-ack fast-retransmit threshold (0 = RTO only)")
+	lanes := flag.Int("lanes", 0, "number of parallel carrier sessions (multi-lane stream spreading)"); qlanes := flag.Int("qlanes", 1, "quasar parallel sessions; streams round-robin across lanes")
+	qwnd := flag.Int("qwnd", 0, "quasar receive window in segments; paces the server's offered rate to ~wnd*mtu/RTT (0 = 16384)")
 	flag.Parse()
 
 	serverPub, err := kal2core.DecodeKey(*pub)
@@ -77,6 +82,12 @@ func main() {
 	if len(addrs) == 0 {
 		log.Fatal("need -addr")
 	}
+	fecD, fecP := 0, 0
+	if *qfec != "0,0" {
+		if _, err := fmt.Sscanf(*qfec, "%d,%d", &fecD, &fecP); err != nil || fecD < 0 || fecP < 0 {
+			log.Fatalf("bad -qfec %q (want data,parity)", *qfec)
+		}
+	}
 	cfg := kal2core.ClientConfig{
 		Addr:               addrs[0],
 		Addrs:              addrs,
@@ -88,6 +99,21 @@ func main() {
 		Logf:               log.Printf,
 		InsecureSkipVerify: *insecure,
 		Cover:              *cover,
+		QuasarFEC:          [2]int{fecD, fecP},
+		QuasarRcvWnd:       *qwnd,
+		QuasarResend:       *qres,
+		Lanes:              *lanes,
+		QuasarLanes:        *qlanes,
+	}
+	for _, p := range strings.Split(*pin, ",") {
+		if p = strings.TrimSpace(p); p == "" {
+			continue
+		}
+		b, err := kal2core.DecodeKey(p)
+		if err != nil {
+			log.Fatalf("bad -pin: %v", err)
+		}
+		cfg.PinSHA256 = append(cfg.PinSHA256, b)
 	}
 	if *ech != "" {
 		list, err := base64.StdEncoding.DecodeString(*ech)

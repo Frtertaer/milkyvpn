@@ -3,8 +3,12 @@ package carrier
 import (
 	"context"
 	"crypto/ed25519"
+	"crypto/sha256"
+	"crypto/subtle"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"math/rand/v2"
@@ -35,6 +39,10 @@ type ClientConfig struct {
 	DialContext func(ctx context.Context, network, addr string) (net.Conn, error)
 	// InsecureSkipVerify disables TLS chain verification (tests only).
 	InsecureSkipVerify bool
+	// PinSHA256 lists accepted SHA-256 hashes of the server leaf's
+	// SubjectPublicKeyInfo. When set it replaces CA-chain verification, so
+	// devices with stale root stores still authenticate the outer TLS.
+	PinSHA256 [][]byte
 	// ECHConfigList enables Encrypted Client Hello (draft-ietf-tls-esni): the
 	// real SNI travels encrypted; the outer ClientHello shows only the
 	// config's public_name — defeats SNI-based DPI blocking entirely.
@@ -48,6 +56,62 @@ type ClientConfig struct {
 	// (KLDO-rs-) on the fresh transport instead of a full handshake — the
 	// frozen session keeps its streams across the carrier swap.
 	Resume *kal2.ResumeState
+	// Endpoints lists every entry point (host:port) serving this server; the
+	// mosaic carrier spreads one session across all of them. Empty = Addr.
+	Endpoints []string
+	// Logf receives carrier diagnostics.
+	Logf func(string, ...any)
+}
+
+func (c *ClientConfig) logger() func(string, ...any) {
+	if c.Logf != nil {
+		return c.Logf
+	}
+	return func(string, ...any) {}
+}
+
+// utlsConfig is the outer TLS client config shared by every carrier: TLS 1.3
+// only, and either CA verification, SPKI pin verification, or (tests / legacy
+// opt-in) none.
+func (c *ClientConfig) utlsConfig(alpn ...string) *utls.Config {
+	uc := &utls.Config{
+		ServerName:         c.SNI,
+		MinVersion:         utls.VersionTLS13,
+		InsecureSkipVerify: c.InsecureSkipVerify,
+		NextProtos:         alpn,
+	}
+	if len(c.PinSHA256) > 0 {
+		pins := c.PinSHA256
+		uc.InsecureSkipVerify = true
+		uc.VerifyPeerCertificate = func(raw [][]byte, _ [][]*x509.Certificate) error {
+			return verifySPKIPin(raw, pins)
+		}
+	}
+	return uc
+}
+
+// verifySPKIPin accepts the chain when the leaf's SPKI hash is pinned.
+func verifySPKIPin(rawCerts [][]byte, pins [][]byte) error {
+	if len(rawCerts) == 0 {
+		return errors.New("tls: no server certificate")
+	}
+	leaf, err := x509.ParseCertificate(rawCerts[0])
+	if err != nil {
+		return err
+	}
+	sum := sha256.Sum256(leaf.RawSubjectPublicKeyInfo)
+	for _, p := range pins {
+		if subtle.ConstantTimeCompare(sum[:], p) == 1 {
+			return nil
+		}
+	}
+	return errors.New("tls: server key does not match pin")
+}
+
+// SPKIPin returns the pin value for a certificate (SHA-256 of its SPKI).
+func SPKIPin(cert *x509.Certificate) []byte {
+	sum := sha256.Sum256(cert.RawSubjectPublicKeyInfo)
+	return sum[:]
 }
 
 func (c *ClientConfig) timeout() time.Duration {
@@ -111,17 +175,18 @@ func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, 
 	_ = raw.SetDeadline(time.Now().Add(to))
 
 	helloID := pickHelloID(cfg.Fingerprint)
+	if len(cfg.ECHConfigList) > 0 && helloID == utls.HelloChrome_115_PQ {
+		// The 115 preset's pre-standard Kyber share yields an outer hello
+		// that ECH servers reject as malformed.
+		helloID = utls.HelloChrome_133
+	}
 	spec, err := utls.UTLSIdToSpec(helloID)
 	if err != nil {
 		spec, _ = utls.UTLSIdToSpec(utls.HelloChrome_Auto)
 	}
-	uconn := utls.UClient(raw, &utls.Config{
-		ServerName:                     cfg.SNI,
-		MinVersion:                     utls.VersionTLS13,
-		InsecureSkipVerify:             cfg.InsecureSkipVerify,
-		NextProtos:                     []string{"h2", "http/1.1"},
-		EncryptedClientHelloConfigList: cfg.ECHConfigList,
-	}, utls.HelloCustom)
+	ucfg := cfg.utlsConfig("h2", "http/1.1")
+	ucfg.EncryptedClientHelloConfigList = cfg.ECHConfigList
+	uconn := utls.UClient(raw, ucfg, utls.HelloCustom)
 	if err := uconn.ApplyPreset(&spec); err != nil {
 		_ = raw.Close()
 		return nil, nil, fmt.Errorf("utls preset: %w", err)
@@ -132,7 +197,7 @@ func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, 
 	}
 
 	bc := &utlsBoundConn{UConn: uconn}
-	bc.binding = utlsExporter(uconn)
+	bc.binding = utlsExporter(uconn, ucfg)
 	sess, err := runClientHandshake(bc, cfg)
 	if err != nil {
 		_ = bc.Close()
@@ -239,22 +304,24 @@ type utlsBoundConn struct {
 
 func (u *utlsBoundConn) Binding() kal2.ChannelBinding { return u.binding }
 
-// utlsExporter extracts the RFC 9266 exporter when the stack exposes it.
-func utlsExporter(c *utls.UConn) kal2.ChannelBinding {
+// exporterLabel is the TLS exporter label both carrier ends bind KAL/2 to.
+const exporterLabel = "mxs-bind"
+
+// utlsExporter extracts the RFC 9266 exporter (TLS 1.3). Browser presets
+// carry renegotiation_info, which makes uTLS enable renegotiation and refuse
+// to export keying material; TLS 1.3 has no renegotiation, so it is switched
+// off once the handshake has settled on 1.3 (the hello bytes are unchanged).
+func utlsExporter(c *utls.UConn, cfg *utls.Config) kal2.ChannelBinding {
+	if c.ConnectionState().Version != utls.VersionTLS13 {
+		return nil
+	}
+	cfg.Renegotiation = utls.RenegotiateNever
 	st := c.ConnectionState()
-	type exporter interface {
-		ExportKeyingMaterial(label string, context []byte, length int) ([]byte, error)
+	b, err := st.ExportKeyingMaterial(exporterLabel, nil, 32)
+	if err != nil {
+		return nil
 	}
-	if e, ok := any(st).(exporter); ok {
-		if b, err := e.ExportKeyingMaterial("mxs-bind", nil, 32); err == nil {
-			return b
-		}
-	}
-	// Fall back to TLS-Unique (TLS<1.3) if present.
-	if len(st.TLSUnique) > 0 {
-		return st.TLSUnique
-	}
-	return nil
+	return b
 }
 
 var _ = tls.VersionTLS13 // keep tls import for dialers that need it

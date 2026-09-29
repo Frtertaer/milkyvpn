@@ -105,7 +105,7 @@ func (v *VeilListener) DriftHandler(base string) http.Handler {
 			return
 		}
 		prefix := append(magic, rest...)
-		eph, totalLen, psk, err := v.authFlight(prefix, nil)
+		eph, totalLen, psk, _, err := v.authFlight(prefix, nil)
 		if err != nil {
 			fail(http.StatusForbidden)
 			return
@@ -126,9 +126,11 @@ func (v *VeilListener) DriftHandler(base string) http.Handler {
 			bc.(*driftServerConn).started = true
 			bc.(*driftServerConn).startPump()
 		}
-		if err := v.establishKAL(bc, eph, psk, prefix); err != nil {
+		if err := v.establishKAL(bc, eph, psk, nil); err != nil {
 			return
 		}
+		// Keep the handler alive while the session lives: the session's read
+		// loop consumes the request body / WS frames; block until it ends.
 		v.holdDrift(bc, r, isWS)
 	})
 }
@@ -142,7 +144,15 @@ func (v *VeilListener) holdDrift(bc BoundConn, r *http.Request, isWS bool) {
 		}
 		return
 	}
-	<-r.Context().Done()
+	d := bc.(*driftServerConn)
+	select {
+	case <-d.closed:
+	case <-r.Context().Done():
+	}
+	// The ResponseWriter must not be touched once the handler returns:
+	// fence off in-flight session writes first (the deferred stopPump
+	// guarantees the writer pump has fully exited by then).
+	_ = d.Close()
 }
 
 // acceptResumeDrift serves a KLDO-rs- flight inside the drift transport:
@@ -351,12 +361,7 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 				return nil, err
 			}
 			spec, _ := utls.UTLSIdToSpec(pickHelloID(cfg.Fingerprint))
-			uc := utls.UClient(raw, &utls.Config{
-				ServerName:         cfg.SNI,
-				MinVersion:         utls.VersionTLS13,
-				InsecureSkipVerify: cfg.InsecureSkipVerify,
-				NextProtos:         []string{"h2"},
-			}, utls.HelloCustom)
+			uc := utls.UClient(raw, cfg.utlsConfig("h2"), utls.HelloCustom)
 			if err := uc.ApplyPreset(&spec); err != nil {
 				_ = raw.Close()
 				return nil, err
@@ -537,12 +542,7 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 			a.AlpnProtocols = []string{"http/1.1"}
 		}
 	}
-	uc := utls.UClient(raw, &utls.Config{
-		ServerName:         cfg.SNI,
-		MinVersion:         utls.VersionTLS13,
-		InsecureSkipVerify: cfg.InsecureSkipVerify,
-		NextProtos:         []string{"http/1.1"},
-	}, utls.HelloCustom)
+	uc := utls.UClient(raw, cfg.utlsConfig("http/1.1"), utls.HelloCustom)
 	if err := uc.ApplyPreset(&spec); err != nil {
 		_ = raw.Close()
 		return nil, nil, err

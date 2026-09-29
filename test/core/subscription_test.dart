@@ -413,6 +413,20 @@ proxies:
       );
     });
 
+    test('kal2 mosaic carrier and SPKI pin survive parse and export', () {
+      const pin =
+          'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
+      final p = parser.parseLine(
+        'kal2://psk@k.example:443?sni=k.example&pub=PUBK&carrier=mosaic&pin=$pin#M',
+      )!;
+      expect(p.network, 'mosaic');
+      expect(p.pin, pin);
+      final exported = const SubscriptionExporter().toShareLink(p)!;
+      final again = parser.parseLine(exported)!;
+      expect(again.network, 'mosaic');
+      expect(again.pin, pin);
+    });
+
     test('expiry from subscription-userinfo header', () {
       final r = parser.parse(fixture('subscription_16_fake.b64'), headers: {'Subscription-Userinfo': 'upload=1; download=2; total=3; expire=1900000000'});
       expect(r.expiresAt, DateTime.fromMillisecondsSinceEpoch(1900000000 * 1000, isUtc: true));
@@ -507,6 +521,23 @@ proxies:
       expect(repo2.snapshot?.profiles.length, 16);
       await repo2.remove();
       expect(store.data, isEmpty);
+    });
+    test('kal2 pin, ech and cover survive snapshot reload', () async {
+      final store = MemorySecureStore();
+      final repo = SubscriptionRepository(
+        store: store,
+        fetcher: FakeFetcher(
+          'kal2://psk@k.example:443?sni=k.example&pub=PUBK&carrier=mosaic&pin=PIN64&ech=ECH64&cover=cover.example#M\n',
+        ),
+      );
+      await repo.importFromUrl('https://sub.milky.homes/s/AbCdEf123456');
+      final repo2 = SubscriptionRepository(store: store, fetcher: FakeFetcher(''));
+      await repo2.load();
+      final p = repo2.snapshot!.profiles.single;
+      expect(p.network, 'mosaic');
+      expect(p.pin, 'PIN64');
+      expect(p.ech, 'ECH64');
+      expect(p.cover, 'cover.example');
     });
     test('rejects disallowed url without fetching', () async {
       final f = FakeFetcher('x');
