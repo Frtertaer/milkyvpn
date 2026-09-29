@@ -52,3 +52,8 @@
 | DoS | first-flight deadline, ≤512B pad read, per-IP лимит |
 | блок-IP | мульт-эндпоинты, CDN-фронт (drift), клиентский watchdog |
 | компрометация пользователя | per-user PSK, ротация = смена `-user` флага |
+| угон транспорта / RST со стороны | возобновление `KLDO-rs-` + MIGRATE-чекпоинт: SOCKS-коннекции клиента переживают своп носителя |
+| подмена endpoint-листа | подписанные дескрипторы (Ed25519 pin сервера + TTL ≤72h) |
+| энумерация rendezvous/endpoint | keyed path = HMAC(psk, эпоха) — без PSK только 404 |
+| кража resume-тикета | одноразовый кэш ID до expiry, TTL≤72h, тикет не содержит traffic-ключей (PFS) |
+| cross-session key reuse | per-session ephemeral X25519 + transcript в HKDF salt — ключи сессий структурно независимы |
