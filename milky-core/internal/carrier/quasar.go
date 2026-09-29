@@ -224,7 +224,7 @@ func (q *QuasarListener) handle(s *kcp.UDPSession) bool {
 		return false
 	}
 	flightPrefix := append(magic, rest...)
-	eph, totalLen, psk, err := q.v.authFlight(flightPrefix, nil)
+	eph, totalLen, psk, _, err := q.v.authFlight(flightPrefix, nil)
 	if err != nil {
 		return false
 	}
@@ -234,7 +234,7 @@ func (q *QuasarListener) handle(s *kcp.UDPSession) bool {
 		}
 	}
 	_ = s.SetReadDeadline(time.Time{})
-	if err := q.v.establishKAL(bc, eph, psk, flightPrefix); err != nil {
+	if err := q.v.establishKAL(bc, eph, psk, nil); err != nil {
 		q.v.cfg.logf("quasar: handshake fail %s: %v", s.RemoteAddr(), err)
 		return false
 	}

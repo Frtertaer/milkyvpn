@@ -129,6 +129,8 @@ func newTestServerWith(t *testing.T, echKeys []tls.EncryptedClientHelloKey) *tes
 	mux := http.NewServeMux()
 	mux.Handle(DefaultDriftPath, v.DriftHandler(DefaultDriftPath))
 	mux.Handle(DefaultDriftPath+"/", v.DriftHandler(DefaultDriftPath))
+	mux.Handle(DefaultMosaicPath, v.MosaicHandler(DefaultMosaicPath))
+	mux.Handle(DefaultMosaicPath+"/", v.MosaicHandler(DefaultMosaicPath))
 	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte("DECOY-OK"))
 	}))
