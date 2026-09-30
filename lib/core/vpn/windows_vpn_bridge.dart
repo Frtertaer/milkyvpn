@@ -108,10 +108,17 @@ class WindowsProcessVpnBridge implements VpnBridge {
       s.destroy();
       return; // a live kal2-client owns the proxy — not a leak
     } catch (_) {}
-    for (final args in ops) {
-      await Process.run('reg', args);
+    // Re-check after the awaits: a connect racing the heal may have claimed
+    // the proxy — tearing it down now would break a live session.
+    if (_proc != null || _proxySet || _ctl != null) return;
+    try {
+      for (final args in ops) {
+        await Process.run('reg', args);
+      }
+      await _refreshProxy();
+    } catch (_) {
+      // self-heal is best-effort; a failed reg call must not break startup
     }
-    await _refreshProxy();
   }
 
   /// reg ops that undo a leaked proxy of ours, or null when the current
