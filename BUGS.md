@@ -439,6 +439,27 @@
   `test/core/windows_vpn_bridge_test.dart` — path-less → нет ''/-drift;
   drift path → сохраняется
 
+### BUG-2026-10-01-01 — Windows: прокси-утечка переживает краш/kill/удаление приложения
+- Severity: critical (интернет «умирает» у всей системы с выключенным/удалённым
+  приложением — ERR_PROXY_CONNECTION_FAILED во всех браузерах)
+- Platform: windows
+- Status: fixed-in-PR
+- Repro: приложение убито/упало/удалено ПОКА `_applyProxy` уже выставил
+  `ProxyEnable=1` + `ProxyServer=socks=127.0.0.1:11808` → следующий запуск
+  видит `_proxySet=false` и `_restoreProxy` никогда не вызывается → системный
+  прокси указывает на мёртвый listener навсегда; `uninstall.ps1` прокси не
+  восстанавливал вовсе и `kal2-client.exe` не убивал
+- Fix: (1) self-heal при старте — `currentState()`/`prepare()` вызывают
+  `_healLeakedProxy`: если реестр держит наш `socks=` при включённом
+  ProxyEnable и на :11808 никто не слушает → delete ProxyServer +
+  ProxyEnable=0 + InternetSetOption refresh; чужой прокси/выключенный прокси/
+  живой listener не трогаются; (2) `uninstall.ps1` — Stop-Process
+  kal2-client + тот же conditional restore + wininet refresh
+- Found by: user report (скрины: SERVER_UNREACHABLE + ERR_PROXY_CONNECTION_FAILED
+  при disconnected)
+- Issue: —  PR: —  Regression test:
+  `test/core/windows_vpn_bridge_test.dart::leaked proxy self-heal plan`
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 

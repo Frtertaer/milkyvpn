@@ -38,7 +38,19 @@ Set-ItemProperty $un Publisher 'MilkyVPN'
 
 @'
 $d = $PSScriptRoot
-Get-Process milkyvpn -ErrorAction SilentlyContinue | Stop-Process -Force
+Get-Process milkyvpn,kal2-client -ErrorAction SilentlyContinue | Stop-Process -Force
+# Restore the system proxy if it still points at our dead SOCKS listener —
+# otherwise every browser stays broken after uninstall.
+$is = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Internet Settings'
+$cur = (Get-ItemProperty -Path $is -Name ProxyServer -ErrorAction SilentlyContinue).ProxyServer
+if ($cur -eq 'socks=127.0.0.1:11808') {
+  Remove-ItemProperty -Path $is -Name ProxyServer -ErrorAction SilentlyContinue
+  Set-ItemProperty -Path $is -Name ProxyEnable -Value 0
+  $sig = '[DllImport("wininet.dll")] public static extern bool InternetSetOption(System.IntPtr h,int o,System.IntPtr b,int l);'
+  $t = Add-Type -MemberDefinition $sig -Name W -Namespace I -PassThru
+  [void]$t::InternetSetOption([System.IntPtr]::Zero,39,[System.IntPtr]::Zero,0)
+  [void]$t::InternetSetOption([System.IntPtr]::Zero,37,[System.IntPtr]::Zero,0)
+}
 Remove-Item -Recurse -Force $d -ErrorAction SilentlyContinue
 Remove-Item -Force "$([Environment]::GetFolderPath('Desktop'))\Milky_VPN.lnk" -ErrorAction SilentlyContinue
 Remove-Item -Force "$([Environment]::GetFolderPath('StartMenu'))\Programs\Milky_VPN.lnk" -ErrorAction SilentlyContinue

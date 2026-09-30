@@ -131,6 +131,67 @@ void main() {
     });
   });
 
+  // BUG-2026-10-01-01: crash/kill/uninstall while connected leaked
+  // ProxyEnable=1 + ProxyServer=socks=127.0.0.1:11808 with no client behind
+  // it — browsers then die with ERR_PROXY_CONNECTION_FAILED even with the
+  // app disconnected/removed. The startup self-heal must undo exactly our
+  // value and nothing else.
+  group('leaked proxy self-heal plan (BUG-2026-10-01-01)', () {
+    const our = 'socks=127.0.0.1:11808';
+    test('our enabled socks value is deleted and disabled', () {
+      final ops = WindowsProcessVpnBridge.leakedProxyPlan(
+        currentServer: our,
+        enabled: 1,
+        ourServer: our,
+      );
+      expect(
+        ops,
+        orderedEquals([
+          containsAllInOrder(['delete', '/v', 'ProxyServer', '/f']),
+          containsAllInOrder(['add', 'ProxyEnable', '/d', '0', '/f']),
+        ]),
+      );
+    });
+    test('foreign proxy is never touched', () {
+      expect(
+        WindowsProcessVpnBridge.leakedProxyPlan(
+          currentServer: 'proxy.corp.local:8080',
+          enabled: 1,
+          ourServer: our,
+        ),
+        isNull,
+      );
+      expect(
+        WindowsProcessVpnBridge.leakedProxyPlan(
+          currentServer: 'socks=127.0.0.1:9999',
+          enabled: 1,
+          ourServer: our,
+        ),
+        isNull,
+      );
+    });
+    test('our value present but proxy disabled is not a leak', () {
+      expect(
+        WindowsProcessVpnBridge.leakedProxyPlan(
+          currentServer: our,
+          enabled: 0,
+          ourServer: our,
+        ),
+        isNull,
+      );
+    });
+    test('no ProxyServer at all is not a leak', () {
+      expect(
+        WindowsProcessVpnBridge.leakedProxyPlan(
+          currentServer: null,
+          enabled: 1,
+          ourServer: our,
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('reg query output parsing', () {
     const sample = '\r\n'
         'HKEY_CURRENT_USER\\Software\\Microsoft\\Windows\\CurrentVersion\\Internet Settings\r\n'

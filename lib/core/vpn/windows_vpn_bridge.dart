@@ -66,13 +66,69 @@ class WindowsProcessVpnBridge implements VpnBridge {
   Stream<String> get links => _links.stream;
 
   @override
-  Future<VpnSnapshot> currentState() async => _snap;
+  Future<VpnSnapshot> currentState() async {
+    unawaited(_healLeakedProxy());
+    return _snap;
+  }
 
   @override
   Future<bool> isPrepared() async => true;
 
   @override
-  Future<bool> prepare() async => true;
+  Future<bool> prepare() async {
+    await _healLeakedProxy();
+    return true;
+  }
+
+  bool _healAttempted = false;
+
+  /// Self-heal for a leaked system proxy: a crash/kill/uninstall while
+  /// connected leaves ProxyServer=socks=127.0.0.1:11808 enabled with no
+  /// client behind it — every browser then dies with
+  /// ERR_PROXY_CONNECTION_FAILED. Only ever touches our own value; a live
+  /// listener on the socks port means the leak is not ours to fix.
+  Future<void> _healLeakedProxy() async {
+    if (_healAttempted) return;
+    _healAttempted = true;
+    if (_proc != null || _proxySet || _ctl != null) return;
+    final server = await _queryRegValue('ProxyServer');
+    final enabled = await _queryRegDword('ProxyEnable');
+    final ops = leakedProxyPlan(
+      currentServer: server,
+      enabled: enabled,
+      ourServer: 'socks=$_socksAddr',
+    );
+    if (ops == null) return;
+    try {
+      final s = await Socket.connect(
+        '127.0.0.1',
+        int.parse(_socksAddr.split(':').last),
+        timeout: const Duration(milliseconds: 400),
+      );
+      s.destroy();
+      return; // a live kal2-client owns the proxy — not a leak
+    } catch (_) {}
+    for (final args in ops) {
+      await Process.run('reg', args);
+    }
+    await _refreshProxy();
+  }
+
+  /// reg ops that undo a leaked proxy of ours, or null when the current
+  /// registry state is not our leak (foreign proxy, proxy off, or no
+  /// ProxyServer at all).
+  static List<List<String>>? leakedProxyPlan({
+    String? currentServer,
+    int? enabled,
+    required String ourServer,
+    String key = _proxyKey,
+  }) {
+    if (currentServer != ourServer || enabled != 1) return null;
+    return [
+      ['delete', key, '/v', 'ProxyServer', '/f'],
+      ['add', key, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f'],
+    ];
+  }
 
   @override
   Future<bool> isProfileSupported(VpnProfile profile) async =>
