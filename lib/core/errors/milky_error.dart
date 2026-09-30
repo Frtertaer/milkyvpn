@@ -176,6 +176,18 @@ class MilkyError {
       );
     }
 
+    // The kal2 core embeds the token inside its error text
+    // ("entries_blocked: all N endpoints unreachable (...)") — catch it on
+    // platforms that surface the raw Go message as the code.
+    if (raw.toLowerCase().contains('entries_blocked')) {
+      return MilkyError(
+        kind: MilkyErrorKind.entryBlocked,
+        diagnosticsCode: 'ENTRY_BLOCKED',
+        category: MilkyFailureCategory.networkFailure,
+        rawCode: raw,
+      );
+    }
+
     // HTTP status codes from the subscription fetcher: `http_404`, `http_503`, …
     final http = RegExp(r'^http_(\d{3})$').firstMatch(raw.toLowerCase());
     if (http != null) {
