@@ -1,6 +1,7 @@
 package kal2core
 
 import (
+	"encoding/base64"
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -211,5 +212,31 @@ func TestLivenessRedialsBlackhole(t *testing.T) {
 	// The recovered session must actually pass traffic probes again.
 	if err := cli.Ping(ctx); err != nil {
 		t.Fatalf("ping after redial: %v", err)
+	}
+}
+
+// BUG-2026-10-01-02: a padded base64url ech= link param failed BOTH
+// StdEncoding (rejects -_) and RawURLEncoding (rejects =) — Android
+// startSession died with "bad ech param" before dialing. DecodeBase64 must
+// accept std|url × padded|raw, all decoding to the same bytes.
+func TestDecodeBase64AllVariants(t *testing.T) {
+	raw := []byte("ech-config-list-bytes-1234")
+	variants := []string{
+		"ZWNoLWNvbmZpZy1saXN0LWJ5dGVzLTEyMzQ=",   // std padded
+		"ZWNoLWNvbmZpZy1saXN0LWJ5dGVzLTEyMzQ",     // std raw
+		base64.URLEncoding.EncodeToString(raw),     // url padded
+		base64.RawURLEncoding.EncodeToString(raw),  // url raw
+	}
+	for _, v := range variants {
+		got, err := DecodeBase64(v)
+		if err != nil {
+			t.Fatalf("DecodeBase64(%q): %v", v, err)
+		}
+		if !reflect.DeepEqual(got, raw) {
+			t.Fatalf("DecodeBase64(%q) = %q", v, got)
+		}
+	}
+	if _, err := DecodeBase64("!!!not-base64!!!"); err == nil {
+		t.Fatal("invalid input must fail")
 	}
 }

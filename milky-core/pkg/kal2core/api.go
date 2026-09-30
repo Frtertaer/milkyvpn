@@ -229,6 +229,23 @@ func (c *Client) Session() *kal2.Session {
 	return c.Sess
 }
 
+// DecodeBase64 accepts standard or URL-safe base64, padded or raw.
+// Share links carry whatever encoding the generator produced — a padded
+// URL-safe string fails both StdEncoding (rejects -_) and RawURLEncoding
+// (rejects =), so all four variants must be tried.
+func DecodeBase64(s string) ([]byte, error) {
+	for _, enc := range []*base64.Encoding{
+		base64.StdEncoding,
+		base64.URLEncoding,
+		base64.RawURLEncoding,
+	} {
+		if b, err := enc.DecodeString(s); err == nil {
+			return b, nil
+		}
+	}
+	return nil, fmt.Errorf("key must decode as base64 (std|url, padded|raw)")
+}
+
 // DecodeKey accepts hex or base64 key material.
 func DecodeKey(s string) ([]byte, error) {
 	if b, err := hex.DecodeString(s); err == nil && len(b) == 32 {

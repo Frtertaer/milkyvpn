@@ -460,6 +460,21 @@
 - Issue: —  PR: —  Regression test:
   `test/core/windows_vpn_bridge_test.dart::leaked proxy self-heal plan`
 
+### BUG-2026-10-01-02 — Android/core: `bad ech param` на padded base64url ech=
+- Severity: critical (любая ссылка с `ech=` в padded base64url не стартует —
+  KAL2_SESSION_STARTING → core_failure до диала; вся emu-матрица красная)
+- Platform: android (kal2mobile), linux/desktop (kal2-client -ech)
+- Status: fixed-in-PR
+- Repro: `Start()`/`kal2-client -ech` с ech в padded base64url (`...=`)
+  → `illegal base64 data at input byte N`: StdEncoding отвергает `-`/`_`,
+  RawURLEncoding отвергает `=` — строка проваливается сквозь обе попытки
+- Fix: `kal2core.DecodeBase64` — tolerant decode std|url × padded|raw;
+  используется в `pkg/kal2mobile/mobile.go` и `cmd/kal2-client -ech`
+- Found by: android-emu-matrix CI (connect scenario FAILED, logcat:
+  `NativeBridge$StartException: bad ech param: illegal base64 data at input byte 76`)
+- Issue: —  PR: —  Regression test:
+  `pkg/kal2core/api_test.go::TestDecodeBase64AllVariants`
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 
