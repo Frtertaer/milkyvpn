@@ -28,6 +28,12 @@ type User struct {
 type VeilConfig struct {
 	// Domain is our own SNI served by Cert (e.g. kal.example.com).
 	Domain string
+	// AltDomains are additional owned SNIs that terminate locally — the
+	// decoy pool. A blocked or burned primary domain does not kill the
+	// endpoint while the alternates stay clean. Certificates for them come
+	// from GetCertificate (ACME whitelist) or the shared Cert when it covers
+	// them (wildcard/SAN).
+	AltDomains []string
 	// Cert is a real, publicly trusted certificate for Domain. Ignored when
 	// GetCertificate is set.
 	Cert tls.Certificate
@@ -42,6 +48,10 @@ type VeilConfig struct {
 	// StealAddr optionally splices connections whose ClientHello carries a
 	// foreign SNI to this host:port (REALITY-style fallback). Empty closes.
 	StealAddr string
+	// StealMap splices specific foreign SNIs to per-SNI upstreams before
+	// falling back to StealAddr — a scanner probing different cover names
+	// reaches the matching real site for each. Keys are lowercase SNIs.
+	StealMap map[string]string
 	// ECHKeys enables Encrypted Client Hello: clients present public_name
 	// (taken from each key's Config) as the outer SNI while the real SNI stays
 	// encrypted — an observer or blocklist sees only the cover name. Load via
@@ -211,25 +221,41 @@ func (v *VeilListener) handle(c net.Conn) bool {
 		return false
 	}
 
-	// ECH clients carry the config's public_name as outer SNI.
-	echPublic := ""
+	// ECH clients carry a config's public_name as outer SNI — accept every
+	// key's name, not just the first, so key rotation keeps working.
+	echPublics := make([]string, 0, len(v.cfg.ECHKeys))
 	for _, k := range v.cfg.ECHKeys {
-		if n, err := echPublicName(k.Config); err == nil {
-			echPublic = n
-			break
+		if n, err := echPublicName(k.Config); err == nil && n != "" {
+			echPublics = append(echPublics, n)
+		}
+	}
+
+	ours := equalSNI(sni, v.cfg.Domain)
+	for _, d := range v.cfg.AltDomains {
+		if !ours && equalSNI(sni, d) {
+			ours = true
+		}
+	}
+	for _, n := range echPublics {
+		if !ours && equalSNI(sni, n) {
+			ours = true
 		}
 	}
 
 	switch {
-	case equalSNI(sni, v.cfg.Domain),
-		echPublic != "" && equalSNI(sni, echPublic):
+	case ours:
 		// ours — terminate and demux
-	case sni != "" && v.cfg.StealAddr != "":
-		v.spliceUpstream(c, peeked, v.cfg.StealAddr)
-		return false
-	case sni != "" && v.cfg.StealAddr == "":
-		// Foreign SNI without a steal target: penalize + close quietly.
-		v.penalize(ip)
+	case sni != "":
+		target := v.cfg.StealAddr
+		if t, ok := v.cfg.StealMap[strings.ToLower(strings.TrimSuffix(sni, "."))]; ok && t != "" {
+			target = t
+		}
+		if target == "" {
+			// Foreign SNI without a steal target: penalize + close quietly.
+			v.penalize(ip)
+			return false
+		}
+		v.spliceUpstream(c, peeked, target)
 		return false
 	default:
 		// Empty SNI: terminate too (many real clients do this; the decoy mux

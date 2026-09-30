@@ -76,6 +76,10 @@ object SafeLog {
                 (msg.contains("no such file") || msg.contains("failed to open")) -> "config_asset_missing"
             msg.contains("config error") || msg.contains("failed to parse json config") ||
                 msg.contains("failed to build routing") -> "config_invalid"
+            // EntriesBlockedError from the kal2 core — every entry point died
+            // at transport stage (provider/TSPU block signature). Checked
+            // before the generic unreachable/timeout matchers below.
+            msg.contains("entries_blocked") -> "entries_blocked"
             msg.contains("timeout") || msg.contains("timed out") || msg.contains("deadline exceeded") -> "timeout"
             msg.contains("refused") -> "connection_refused"
             msg.contains("unreachable") || msg.contains("no route") -> "network_unreachable"

@@ -428,6 +428,26 @@ proxies:
       expect(parser.parseLine(exported)!.id, p.id);
     });
 
+    test('kal2 alt= multi-entry param parses, dedupes and round-trips', () {
+      final p = parser.parseLine(
+        'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK'
+        '&alt=5.35.99.196:443, 9.9.9.9:443,bad-entry-no-port#M',
+      )!;
+      // Whitespace trimmed; the port-less entry is dropped, not fatal.
+      expect(p.altAddrs, '5.35.99.196:443,9.9.9.9:443');
+      // Links differing only in alt are different profiles.
+      final plain = parser.parseLine(
+        'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK#M',
+      )!;
+      expect(p.id, isNot(plain.id));
+      // Export round-trip preserves the multi-entry list.
+      final exported = const SubscriptionExporter().toShareLink(p)!;
+      expect(exported, contains('alt=5.35.99.196%3A443%2C9.9.9.9%3A443'));
+      expect(parser.parseLine(exported)!.altAddrs, p.altAddrs);
+      // No alt → null, not empty.
+      expect(plain.altAddrs, isNull);
+    });
+
     test('kal2 mosaic carrier and SPKI pin survive parse and export', () {
       const pin =
           'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';

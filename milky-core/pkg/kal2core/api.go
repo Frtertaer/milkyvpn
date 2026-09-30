@@ -39,6 +39,16 @@ type ServerConfig struct {
 	AutocertHTTPAddr string
 	Identity         []byte // server ed25519 private key (64B) for KAL/2
 	StealAddr        string // optional: decoy upstream for foreign SNI ("host:port")
+	// ExtraDomains are additional owned SNIs terminating locally — the decoy
+	// pool; a burned primary domain doesn't kill the endpoint. Certificates:
+	// with AutocertDir they auto-issue via the host whitelist; with file
+	// certs use ExtraCertFiles (or a shared wildcard/SAN cert).
+	ExtraDomains   []string
+	ExtraCertFiles map[string][2]string // domain -> {certFile, keyFile}
+	// StealMap splices specific foreign SNIs to per-SNI upstreams before
+	// StealAddr: a scanner probing different cover names reaches the real
+	// matching site for each.
+	StealMap map[string]string
 	DriftPath        string // secret drift path, default carrier.DefaultDriftPath
 	DecoyDir         string // directory served for plain HTTP probes
 	Users            []User
@@ -56,6 +66,11 @@ type ServerConfig struct {
 	// UDPListen enables the quasar (UDP/KCP) listener, e.g. ":20443".
 	// Set Listen to "off" to run a UDP-only server without TLS material.
 	UDPListen string
+	// Quic2Listen enables the quic2 (QUIC v2, RFC 9369) listener on its own
+	// UDP port, e.g. ":20444". QUIC-SNI censorship parses only v1 Initials —
+	// a v2 handshake yields no SNI to filter. Shares the veil TLS material
+	// and KAL/2 handshake path.
+	Quic2Listen string
 	// UDPFECData/UDPFECParity enable Reed-Solomon FEC on the quasar
 	// listener (e.g. 10,3). 0,0 = off.
 	UDPFECData   int
@@ -290,7 +305,9 @@ func Serve(cfg ServerConfig) error {
 			Prompt: autocert.AcceptTOS,
 			// Whitelist the real domain plus ECH cover names so autocert
 			// issues fallback certs for outer hellos too.
-			HostPolicy: autocert.HostWhitelist(append([]string{cfg.Domain}, echNames...)...),
+			// Whitelist the real domain plus decoy-pool domains plus ECH cover
+			// names so autocert issues certs for outer hellos too.
+			HostPolicy: autocert.HostWhitelist(append(append([]string{cfg.Domain}, cfg.ExtraDomains...), echNames...)...),
 			Cache:      autocert.DirCache(cfg.AutocertDir),
 		}
 		httpAddr := cfg.AutocertHTTPAddr
@@ -327,12 +344,14 @@ func Serve(cfg ServerConfig) error {
 	}
 
 	vc := carrier.VeilConfig{
-		Domain:    cfg.Domain,
-		Identity:  ed25519.PrivateKey(cfg.Identity),
-		Users:     toCarrierUsers(cfg.Users),
-		StealAddr: cfg.StealAddr,
-		Logf:      logf,
-		ECHKeys:   echKeys,
+		Domain:     cfg.Domain,
+		AltDomains: cfg.ExtraDomains,
+		Identity:   ed25519.PrivateKey(cfg.Identity),
+		Users:      toCarrierUsers(cfg.Users),
+		StealAddr:  cfg.StealAddr,
+		StealMap:   cfg.StealMap,
+		Logf:       logf,
+		ECHKeys:    echKeys,
 		OnSession: func(s *kal2.Session) {
 			go func() {
 				_ = core.ServeEgressCfg(s, nil, cfg.Egress, logf)
@@ -348,10 +367,33 @@ func Serve(cfg ServerConfig) error {
 		codec := kal2.NewTicketCodec(k1)
 		vc.Resumer = kal2.NewSessionRegistry(codec, 0)
 	}
-	if cert != nil {
-		vc.Cert = *cert
+	// Per-domain file certs + optional shared fallback, or pure ACME.
+	var extraCerts map[string]tls.Certificate
+	if len(cfg.ExtraCertFiles) > 0 {
+		extraCerts = map[string]tls.Certificate{}
+		for d, pair := range cfg.ExtraCertFiles {
+			c, err := tls.LoadX509KeyPair(pair[0], pair[1])
+			if err != nil {
+				return fmt.Errorf("load extra cert %s: %w", d, err)
+			}
+			extraCerts[strings.ToLower(d)] = c
+		}
 	}
-	if autocertMgr != nil {
+	if len(extraCerts) > 0 || (autocertMgr != nil && cert != nil) {
+		base := autocertMgr.GetCertificate
+		if base == nil && cert != nil {
+			b := cert
+			base = func(*tls.ClientHelloInfo) (*tls.Certificate, error) { return b, nil }
+		}
+		vc.GetCertificate = func(h *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			if c, ok := extraCerts[strings.ToLower(h.ServerName)]; ok {
+				return &c, nil
+			}
+			return base(h)
+		}
+	} else if cert != nil {
+		vc.Cert = *cert
+	} else if autocertMgr != nil {
 		vc.GetCertificate = autocertMgr.GetCertificate
 	}
 	v := carrier.NewVeilListener(vc)
@@ -390,6 +432,25 @@ func Serve(cfg ServerConfig) error {
 			}
 		}()
 		logf("core: quasar udp on %s (fec %d,%d)", ql.Addr(), cfg.UDPFECData, cfg.UDPFECParity)
+	}
+
+	if cfg.Quic2Listen != "" {
+		qtls := &tls.Config{MinVersion: tls.VersionTLS13}
+		if vc.GetCertificate != nil {
+			qtls.GetCertificate = vc.GetCertificate
+		} else {
+			qtls.Certificates = []tls.Certificate{vc.Cert}
+		}
+		q2, err := carrier.NewQuic2Listener(v, qtls, cfg.Quic2Listen)
+		if err != nil {
+			return fmt.Errorf("quic2 listen: %w", err)
+		}
+		go func() {
+			if err := q2.Serve(); err != nil {
+				logf("core: quic2 listener %s stopped: %v", cfg.Quic2Listen, err)
+			}
+		}()
+		logf("core: quic2 udp on %s", q2.Addr())
 	}
 
 	if udpOnly {
@@ -490,6 +551,17 @@ func endpoints(cfg ClientConfig) []string {
 	return []string{cfg.Addr}
 }
 
+// splitCommaList splits a comma list into trimmed non-empty parts.
+func splitCommaList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 // carriers expands the Carrier field into the concrete carriers to try.
 // "auto" (or empty) hedges across every carrier: all are dialed in parallel
 // and the first session that completes wins — during throttling windows one
@@ -558,7 +630,7 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 			ch <- result{name: name, s: s, err: err, secs: time.Since(t0).Seconds()}
 		}(name, time.Duration(i)*150*time.Millisecond)
 	}
-	var lastErr error
+	var lastErr, stageErr error
 	pending := len(cs)
 	for pending > 0 {
 		select {
@@ -579,6 +651,9 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 				}()
 				return r.s, nil
 			}
+			if carrier.IsHandshakeStage(r.err) {
+				stageErr = r.err
+			}
 			lastErr = r.err
 		case <-ctx.Done():
 			cancel()
@@ -586,25 +661,72 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 		}
 	}
 	cancel()
+	// A lane that reached the inner handshake proves the entry is alive —
+	// surface that error over a sibling lane's transport failure so the
+	// entry-block canary never fires on a reachable server.
+	if stageErr != nil {
+		return nil, stageErr
+	}
 	return nil, lastErr
+}
+
+// EntriesBlockedError reports that every entry point (addr x sni, all
+// carriers in the hedge) failed before reaching the KAL/2 handshake — the
+// signature of a provider/TSPU block on the entry (IP block, RST
+// injection, UDP cutoff), not of a bad config or auth failure. The app
+// maps it to "entry blocked — refresh your link/subscription".
+type EntriesBlockedError struct {
+	Attempts int   // addr x sni sweep size
+	Err      error // last transport-stage error
+}
+
+func (e *EntriesBlockedError) Error() string {
+	return fmt.Sprintf("entries_blocked: all %d endpoints unreachable (%v)", e.Attempts, e.Err)
+}
+
+func (e *EntriesBlockedError) Unwrap() error { return e.Err }
+
+// IsEntriesBlocked reports whether err is an EntriesBlockedError.
+func IsEntriesBlocked(err error) bool {
+	var eb *EntriesBlockedError
+	return errors.As(err, &eb)
 }
 
 // dialAny walks the endpoint list starting at index start, returning the
 // first session that completes the handshake (hedged across carriers).
+// SNI also accepts a comma list (decoy pool): the attempt index rotates
+// through endpoints AND cover names, so over retries the client sweeps the
+// addr×sni cross-product — a single SNI block can't kill the link.
 func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scorecard) (*kal2.Session, error) {
 	addrs := endpoints(cfg)
+	snis := splitCommaList(cfg.SNI)
 	var lastErr error
+	sawInner := false
 	for i := range addrs {
 		c2 := cfg
-		c2.Addr = addrs[(start+i)%len(addrs)]
+		attempt := start + i
+		c2.Addr = addrs[attempt%len(addrs)]
+		if len(snis) > 1 {
+			c2.SNI = snis[attempt%len(snis)]
+		}
 		s, err := dialHedged(ctx, c2, scores)
 		if err == nil {
 			return s, nil
+		}
+		if carrier.IsHandshakeStage(err) {
+			sawInner = true
 		}
 		lastErr = err
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
+	}
+	if !sawInner {
+		attempts := len(addrs)
+		if len(snis) > 1 {
+			attempts *= len(snis)
+		}
+		return nil, &EntriesBlockedError{Attempts: attempts, Err: lastErr}
 	}
 	return nil, lastErr
 }
@@ -653,6 +775,9 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 			RcvWnd:       cfg.QuasarRcvWnd,
 			Resend:       cfg.QuasarResend,
 		})
+		return s, err
+	case "quic2":
+		s, _, err := carrier.DialQuic2(ctx, cc)
 		return s, err
 	case "mosaic":
 		cc.Endpoints = endpoints(cfg)
@@ -711,6 +836,7 @@ func (c *Client) reconnectLoop() {
 		_ = sess.Close() // frozen remnants die now; streams are lost
 		c.logf("core: session lost; redialing")
 		backoff := time.Second
+		blockedRounds := 0
 		for {
 			select {
 			case <-c.stop:
@@ -730,6 +856,20 @@ func (c *Client) reconnectLoop() {
 				c.mu.Unlock()
 				c.logf("core: session restored")
 				break
+			}
+			if IsEntriesBlocked(err) {
+				blockedRounds++
+				// Canary: 3 consecutive all-dead sweeps = sustained entry
+				// block, not a transient cut. One structured log line per
+				// incident; retries continue — a block may lift.
+				if blockedRounds == 3 {
+					var eb *EntriesBlockedError
+					if errors.As(err, &eb) {
+						c.logf("core: ENTRIES_BLOCKED addrs=%d sweeps=%d — all entry points unreachable; likely provider/TSPU block", eb.Attempts, blockedRounds)
+					}
+				}
+			} else {
+				blockedRounds = 0
 			}
 			c.logf("core: redial failed: %v", err)
 			if backoff < 30*time.Second {

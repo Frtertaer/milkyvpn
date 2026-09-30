@@ -475,6 +475,19 @@
 - Issue: —  PR: —  Regression test:
   `pkg/kal2core/api_test.go::TestDecodeBase64AllVariants`
 
+### BUG-2026-10-02-01 — Windows: explicit carrier схлопывался в 'auto'
+- Severity: major (ссылка `carrier=quasar|quic2` на Windows не использовала
+  UDP вообще — мост всегда передавал `-carrier auto`, то есть бежал
+  veil+drift hedge, и UDP-ссылка отчитывалась общей ошибкой)
+- Platform: windows (lib/core/vpn/windows_vpn_bridge.dart)
+- Status: fixed-in-PR
+- Repro: профиль `network: quasar` → `argsFor` → `-carrier auto`
+- Fix: pass-through для носителей, которые `auto` не покрывает —
+  {quasar, quic2, relay}; TCP-носители сохраняют hedge
+- Found by: quic2 carrier wiring review
+- Issue: —  PR: —  Regression test:
+  `test/core/windows_vpn_bridge_test.dart::UDP carriers pass through to -carrier`
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 

@@ -17,6 +17,11 @@ enum MilkyErrorKind {
   /// A server was reached but refused / timed out / failed the handshake.
   serverUnreachable,
 
+  /// Every entry point of the server died at transport stage — the
+  /// provider/TSPU-block signature (IP block, RST injection, UDP cutoff).
+  /// The server itself may be fine; the entry is filtered.
+  entryBlocked,
+
   /// The tunnel could not be established (core, TUN, verification).
   tunnelFailed,
 
@@ -336,6 +341,12 @@ class MilkyError {
     'offline': (
       MilkyErrorKind.noInternet,
       'NETWORK_UNAVAILABLE',
+      MilkyFailureCategory.networkFailure,
+    ),
+
+    'entries_blocked': (
+      MilkyErrorKind.entryBlocked,
+      'ENTRY_BLOCKED',
       MilkyFailureCategory.networkFailure,
     ),
 

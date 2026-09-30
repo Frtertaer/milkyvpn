@@ -316,4 +316,27 @@ class XrayConfigBuilderTest {
         assertEquals("mosaic", json.getString("carrier"))
         assertEquals("cd".repeat(32), json.getString("pin"))
     }
+
+    @Test
+    fun kal2AltAddrsJoinOntoAddrAsCommaList() {
+        // Multi-entry link: altAddrs ride addr as a comma list — the native
+        // core fails over across entry points of the same server.
+        val spec = ProfileSpec.fromMap(mapOf(
+            "protocol" to "kal2", "address" to "1.2.3.4", "port" to 443,
+            "secret" to "psk", "publicKey" to "ab".repeat(32),
+            "altAddrs" to "5.35.99.196:443,9.9.9.9:443",
+        ))
+        assertEquals(
+            "1.2.3.4:443,5.35.99.196:443,9.9.9.9:443",
+            homes.milky.vpn.bridge.Kal2Config.toJson(spec).getString("addr"),
+        )
+        val plain = ProfileSpec.fromMap(mapOf(
+            "protocol" to "kal2", "address" to "1.2.3.4", "port" to 443,
+            "secret" to "psk", "publicKey" to "ab".repeat(32),
+        ))
+        assertEquals(
+            "1.2.3.4:443",
+            homes.milky.vpn.bridge.Kal2Config.toJson(plain).getString("addr"),
+        )
+    }
 }

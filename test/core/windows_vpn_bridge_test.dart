@@ -2,7 +2,14 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:milkyvpn/core/subscription/vpn_profile.dart';
 import 'package:milkyvpn/core/vpn/windows_vpn_bridge.dart';
 
-VpnProfile kal2Profile({String? ech, String? pin, String? cover, String? path}) =>
+VpnProfile kal2Profile({
+  String? ech,
+  String? pin,
+  String? cover,
+  String? path,
+  String? altAddrs,
+  String network = 'kal2',
+}) =>
     VpnProfile(
       id: 'p1',
       protocol: 'kal2',
@@ -16,6 +23,8 @@ VpnProfile kal2Profile({String? ech, String? pin, String? cover, String? path}) 
       pin: pin,
       cover: cover,
       path: path,
+      altAddrs: altAddrs,
+      network: network,
     );
 
 void main() {
@@ -36,6 +45,36 @@ void main() {
     expect(flagValue('-addr'), '23.133.88.167:443');
     expect(flagValue('-sni'), 'kal.mergescribe.dev');
     expect(flagValue('-pub'), 'PUBK');
+  });
+
+  // Multi-entry link: altAddrs must reach -addr as a comma list — the client
+  // fails over across entry points of the same server.
+  test('altAddrs join onto -addr as a comma list', () {
+    final b = WindowsProcessVpnBridge(logPath: r'C:\Logs\kal2-client.log');
+    final args = b.argsForTesting(
+      kal2Profile(altAddrs: '5.35.99.196:443,9.9.9.9:443'),
+    );
+    final i = args.indexOf('-addr');
+    expect(args[i + 1], '23.133.88.167:443,5.35.99.196:443,9.9.9.9:443');
+
+    final plain = b.argsForTesting(kal2Profile());
+    expect(plain[plain.indexOf('-addr') + 1], '23.133.88.167:443');
+  });
+
+  // BUG-2026-10-02-01: UDP carriers (quasar/quic2) were silently collapsed
+  // to 'auto', so a UDP link never used UDP at all — veil+drift ran instead
+  // and the link reported a generic failure. They must pass through; TCP
+  // carriers keep the resilient hedge (auto covers them all).
+  test('UDP carriers pass through to -carrier (BUG-2026-10-02-01)', () {
+    final b = WindowsProcessVpnBridge(logPath: r'C:\Logs\kal2-client.log');
+    for (final c in ['quic2', 'quasar', 'relay']) {
+      final args = b.argsForTesting(kal2Profile(network: c));
+      expect(args[args.indexOf('-carrier') + 1], c, reason: 'carrier $c');
+    }
+    for (final c in ['veil', 'drift', 'cdn', 'mosaic', 'bogus']) {
+      final args = b.argsForTesting(kal2Profile(network: c));
+      expect(args[args.indexOf('-carrier') + 1], 'auto', reason: 'carrier $c');
+    }
   });
 
   // BUG-2026-09-29-02: the spawned core must be told where to persist its

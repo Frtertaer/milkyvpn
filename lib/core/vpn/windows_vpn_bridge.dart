@@ -145,9 +145,11 @@ class WindowsProcessVpnBridge implements VpnBridge {
 
   List<String> _argsFor(VpnProfile p) {
     final network = p.network.toLowerCase();
-    // 'relay' is its own carrier; everything else goes through the hedged
-    // veil+drift dial so a blocked carrier still connects.
-    final carrier = network == 'relay' ? 'relay' : 'auto';
+    // Carriers 'auto' cannot hedge — UDP (quasar/quic2) and relay — pass
+    // through verbatim. TCP carriers keep the hedged veil+drift+cdn+mosaic
+    // dial so a blocked carrier still connects (BUG-2026-10-02-01).
+    const passThrough = {'quasar', 'quic2', 'relay'};
+    final carrier = passThrough.contains(network) ? network : 'auto';
     // A flag with a '' value is fatal on the -tun path: `Start-Process
     // -ArgumentList` rejects empty elements, and Go's flag pkg would read the
     // NEXT token as the value. Every client flag defaults to "" anyway —
@@ -155,7 +157,13 @@ class WindowsProcessVpnBridge implements VpnBridge {
     List<String> kv(String flag, String value) =>
         value.isEmpty ? const [] : [flag, value];
     return <String>[
-      ...kv('-addr', '${p.address}:${p.port}'),
+      // altAddrs: extra entry points of the same server; kal2-client -addr
+      // takes a comma list and fails over across them (multi-entry link).
+      ...kv(
+        '-addr',
+        '${p.address}:${p.port}'
+        '${p.altAddrs == null || p.altAddrs!.isEmpty ? '' : ',${p.altAddrs}'}',
+      ),
       ...kv('-sni', p.sni ?? ''),
       ...kv('-pub', p.publicKey ?? ''),
       ...kv('-psk', p.secret),

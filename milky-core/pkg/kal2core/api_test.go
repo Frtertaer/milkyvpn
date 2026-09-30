@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Frtertaer/milkyvpn/milky-core/internal/carrier"
 	"github.com/Frtertaer/milkyvpn/milky-core/internal/kal2"
 )
 
@@ -238,5 +239,119 @@ func TestDecodeBase64AllVariants(t *testing.T) {
 	}
 	if _, err := DecodeBase64("!!!not-base64!!!"); err == nil {
 		t.Fatal("invalid input must fail")
+	}
+}
+
+// Decoy pool client side: a comma SNI list must rotate across dial attempts
+// (paired with endpoint rotation), so a blocked cover name doesn't kill
+// every retry. Attempt i sweeps addrs[i] × snis[i].
+func TestDialAnyRotatesSNIAcrossAttempts(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	var mu sync.Mutex
+	var got []struct{ addr, sni string }
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		mu.Lock()
+		got = append(got, struct{ addr, sni string }{cfg.Addr, cfg.SNI})
+		n := len(got)
+		mu.Unlock()
+		if n < 2 {
+			return nil, errors.New("dead")
+		}
+		return &kal2.Session{}, nil
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := dialAny(ctx, ClientConfig{
+		Addrs:   []string{"a1:443", "a2:443"},
+		SNI:     "s1.test, s2.test",
+		Carrier: "veil",
+	}, 0, nil)
+	if err != nil {
+		t.Fatalf("dialAny: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("attempts = %v", got)
+	}
+	if got[0].addr != "a1:443" || got[0].sni != "s1.test" {
+		t.Fatalf("attempt0 = %+v", got[0])
+	}
+	if got[1].addr != "a2:443" || got[1].sni != "s2.test" {
+		t.Fatalf("attempt1 = %+v, want a2+s2", got[1])
+	}
+}
+
+// Entry-block canary: when every endpoint dies at transport stage (TCP
+// refused, UDP dead, TLS killed mid-flight) dialAny must surface
+// EntriesBlockedError — the signature the app maps to "entry blocked".
+func TestDialAnyEntriesBlocked(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		return nil, errors.New("tcp dial: connection refused")
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := dialAny(ctx, ClientConfig{
+		Addrs:   []string{"10.255.255.1:443", "10.255.255.2:443"},
+		SNI:     "a.example,b.example",
+		Carrier: "veil",
+	}, 0, nil)
+	var eb *EntriesBlockedError
+	if !errors.As(err, &eb) {
+		t.Fatalf("want EntriesBlockedError, got %T %v", err, err)
+	}
+	if !IsEntriesBlocked(err) {
+		t.Fatal("IsEntriesBlocked returned false")
+	}
+	if eb.Attempts != 4 { // 2 addrs x 2 snis
+		t.Fatalf("attempts=%d want 4", eb.Attempts)
+	}
+}
+
+// Positive control: an error from inside the KAL/2 handshake proves the
+// server answered — that is auth/config trouble, not a blocked entry, so
+// the canary must NOT fire.
+func TestDialAnyInnerStageNotBlocked(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	inner := errors.New("kal2: server auth rejected")
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		return nil, carrier.MarkHandshakeStage(inner)
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := dialAny(ctx, ClientConfig{
+		Addrs:   []string{"10.255.255.1:443"},
+		SNI:     "a.example",
+		Carrier: "veil",
+	}, 0, nil)
+	if IsEntriesBlocked(err) {
+		t.Fatalf("inner-stage error misclassified as blocked: %v", err)
+	}
+	if !errors.Is(err, inner) {
+		t.Fatalf("want inner error, got %v", err)
+	}
+}
+
+// Hedged carriers: one lane reaching the inner stage wins the
+// classification even when sibling lanes died at transport — the entry is
+// alive, no canary.
+func TestDialHedgedStageErrorBeatsTransport(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	inner := errors.New("kal2: bad finished")
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		if cfg.Carrier == "veil" {
+			return nil, carrier.MarkHandshakeStage(inner)
+		}
+		return nil, errors.New("tcp dial: refused")
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := dialHedged(ctx, ClientConfig{Carrier: "veil,drift", SNI: "a.example"}, nil)
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if !carrier.IsHandshakeStage(err) {
+		t.Fatalf("want stage error, got %v", err)
 	}
 }

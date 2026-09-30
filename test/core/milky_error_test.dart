@@ -106,6 +106,16 @@ void main() {
         MilkyError.fromCode('subscription_not_found').kind,
         MilkyErrorKind.subscriptionProblem,
       );
+      // Entry-block canary: every endpoint dead at transport stage — the
+      // user sees "entry blocked", never a generic unreachable.
+      expect(
+        MilkyError.fromCode('entries_blocked').kind,
+        MilkyErrorKind.entryBlocked,
+      );
+      expect(
+        MilkyError.fromCode('entries_blocked').diagnosticsCode,
+        'ENTRY_BLOCKED',
+      );
       expect(MilkyError.fromCode('cancelled').isCancelled, isTrue);
       expect(MilkyError.fromCode(null).diagnosticsCode, 'NO_ERROR_REPORTED');
       expect(
