@@ -329,15 +329,18 @@ func listenerUp(proto, addr string) bool {
 
 // ------------------------------------------------------------------ config
 
-// unitArgs returns the argv of a unit's ExecStart line.
+// unitArgs returns the argv of a unit's effective ExecStart: systemd merges
+// main file + drop-ins and the LAST non-empty ExecStart= line wins.
 func unitArgs(unit string) []string {
 	out := sh("systemctl", "cat", unit)
 	re := regexp.MustCompile(`(?m)^ExecStart=(.*)$`)
-	m := re.FindStringSubmatch(out)
-	if len(m) < 2 {
-		return nil
+	var argv []string
+	for _, m := range re.FindAllStringSubmatch(out, -1) {
+		if f := strings.Fields(m[1]); len(f) > 0 {
+			argv = f
+		}
 	}
-	return strings.Fields(m[1])
+	return argv
 }
 
 func (p *panel) config(w http.ResponseWriter, r *http.Request) {
