@@ -636,6 +636,22 @@
   (набор строк настроек платформозависим) — обновлять на платформе
   авторства голденов
 
+### BUG-2026-10-02-08 — App: строки «Профили» на одном host:port неотличимы
+- Severity: minor-ux (три профиля 23.133.88.167:443 с разными carrier/front
+  рисовали три одинаковые строки `23.133.88.167:443` — выбрать
+  fronted-вариант было невозможно)
+- Platform: all (общий _ProfilePickList)
+- Status: fixed-in-PR
+- Repro: шторка «Профили» с профилями на одном адресе — carrier/front нигде
+  не видны
+- Fix: чип-различитель справа от имени профиля: `carrier` + хост front=
+  (host URL'а фронта; >26 симв. — middle-truncate с хвостом домена,
+  напр. `milky-front.mi…workers.dev`)
+- Found by: Windows verification session (windows-test-49)
+- Issue: —  PR: #42  Regression test:
+  test/features/home_states_test.dart::'profile rows show carrier and
+  front tags'
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 
