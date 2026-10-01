@@ -43,6 +43,19 @@ class AppSettings extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// A specific profile pinned by the user in the server sheet — overrides
+  /// [location] on connect until cleared (changing location clears it).
+  String? get selectedProfileId => _prefs.getString('selected_profile');
+
+  Future<void> setSelectedProfile(String? id) async {
+    if (id == null || id.isEmpty) {
+      await _prefs.remove('selected_profile');
+    } else {
+      await _prefs.setString('selected_profile', id);
+    }
+    notifyListeners();
+  }
+
   Future<void> setAutoConnect(bool v) async {
     await _prefs.setBool('auto_connect', v);
     notifyListeners();
