@@ -145,10 +145,10 @@ class WindowsProcessVpnBridge implements VpnBridge {
 
   List<String> _argsFor(VpnProfile p) {
     final network = p.network.toLowerCase();
-    // Carriers 'auto' cannot hedge — UDP (quasar/quic2) and relay — pass
+    // Carriers 'auto' cannot hedge — UDP (quasar/quic2/rtc) and relay — pass
     // through verbatim. TCP carriers keep the hedged veil+drift+cdn+mosaic
     // dial so a blocked carrier still connects (BUG-2026-10-02-01).
-    const passThrough = {'quasar', 'quic2', 'relay'};
+    const passThrough = {'quasar', 'quic2', 'rtc', 'relay'};
     final carrier = passThrough.contains(network) ? network : 'auto';
     // A flag with a '' value is fatal on the -tun path: `Start-Process
     // -ArgumentList` rejects empty elements, and Go's flag pkg would read the

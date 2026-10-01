@@ -254,6 +254,7 @@ class VpnController extends ChangeNotifier {
     _lastErrorClass = null;
     _attemptsMade = 0;
     _attemptTotal = 0;
+    var connected = false;
     notifyListeners();
     try {
       final granted = await _bridge.prepare();
@@ -270,6 +271,13 @@ class VpnController extends ChangeNotifier {
             break;
           }
         }
+      }
+      // A pin that resolves to nothing executable must fail loudly — silently
+      // sweeping another profile would exit the tunnel through a country the
+      // user did not pick.
+      if (profileId != null && pinned == null) {
+        _lastErrorClass = 'unsupported_profile';
+        return false;
       }
       final candidates = pinned != null
           ? [pinned]
@@ -294,6 +302,7 @@ class VpnController extends ChangeNotifier {
         final ok = await _attempt(p);
         if (ok) {
           _lastErrorClass = null;
+          connected = true;
           return true;
         }
         // Bridge-call timeouts mean the native core is wedged, not that the
@@ -315,6 +324,26 @@ class VpnController extends ChangeNotifier {
       return false;
     } finally {
       _autoConnecting = false;
+      // A failed sweep can leave _native stuck on a transitional snapshot:
+      // the native side emitted 'connecting' for the last attempt but never
+      // confirmed its teardown — then `state` stays `connecting` forever,
+      // the button reads «Подключаем…» and taps are eaten until force-stop.
+      // Confirm teardown ourselves, then drop the stale snapshot.
+      if (!connected &&
+          (_native.state == VpnState.connecting ||
+              _native.state == VpnState.disconnecting)) {
+        try {
+          await _bridge.disconnect();
+        } catch (_) {}
+        if (!connected &&
+            (_native.state == VpnState.connecting ||
+                _native.state == VpnState.disconnecting)) {
+          _native = VpnSnapshot(
+            state: VpnState.disconnected,
+            errorCode: _lastErrorClass,
+          );
+        }
+      }
       notifyListeners();
     }
   }

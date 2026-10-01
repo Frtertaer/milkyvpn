@@ -540,31 +540,60 @@
   test/core/subscription_test.dart::'fronts and altAddrs survive snapshot
   reload (fronting persistence)'
 
-### BUG-2026-10-02-05 — App: парсер отбрасывал `carrier=rtc` как повреждённый
-- Severity: major (rtc-ссылки не импортировались в приложение — ядро и
-  сервер работают, но юзер не может подключиться)
-- Platform: android (+desktop)
+### BUG-2026-10-02-05 — App: `carrier=rtc` отбрасывался на ТРЁХ уровнях
+- Severity: major (rtc-ссылки не импортировались/не подключались в
+  приложении — ядро и сервер работают, юзер не может подключиться)
+- Platform: android (+ios, +desktop)
 - Status: fixed-in-PR
-- Repro: вставить `kal2://…&carrier=rtc` → «1 строка повреждена»
-- Fix: 'rtc' добавлен в allowlist обоих kal2-путей парсера; в outbound-map
-  путь заодно добавлен проход front/fronts/alt (он их тоже ронял)
+- Repro: вставить `kal2://…&carrier=rtc` → «1 строка повреждена»; после
+  фикса парсера — импорт и пин ОК, но коннект молча свипает в другой
+  профиль: нативный gate `SUPPORTED_KAL2_CARRIERS` без rtc/quic2.
+  Урок: carrier-списки дублируются в Dart-парсере, Kotlin isSupported,
+  Windows passThrough, iOS known — добавление носителя требует ВСЕХ.
+- Fix: 'rtc' добавлен в оба пути Dart-парсера, в XrayConfigBuilder
+  (заодно 'quic2' — он тоже был забытым), в Windows passThrough, в iOS
+  known (заодно 'relay'); outbound-map путь получил front/fronts/alt.
 - Found by: Android emu verification session
 - Issue: —  PR: TBD  Regression test:
-  test/core/subscription_test.dart::'kal2 rtc carrier parses and round-trips'
+  test/core/subscription_test.dart::'kal2 rtc carrier parses and
+  round-trips'; XrayConfigBuilderTest carrier loop теперь включает
+  quic2+rtc
 
-### BUG-2026-10-02-06 — App: мёртвое ядро держало коннект-свип ~8 минут
-- Severity: major (UI «wedged»: кнопки неактивны, каждый platform-вызов
-  таймаутит 20с — внешне приложение зависло, лечилось только force-stop)
+### BUG-2026-10-02-06 — App: UI «Подключаем…» намертво — ДВА механизма wedge
+- Severity: major (кнопки неактивны минуты — внешне приложение зависло,
+  лечилось только force-stop; воспроизведено 2×)
 - Platform: android (интермиттентно, после падения fronted-пробы)
 - Status: fixed-in-PR
-- Repro: ядро :kal2 перестаёт отвечать → connect-sweep гонит по N профилям
-  × (20с connect + 40с waiter) + N×20с isProfileSupported — до ~8-10 мин
-- Fix: fail-fast: 3 подряд isProfileSupported-ошибки прерывают скан, 2
-  подряд bridge_timeout в свипе → ошибка 'core_dead' (CORE_UNRESPONSIVE)
+- Repro A (мёртвое ядро): :kal2 перестаёт отвечать → свип гонит N профилей
+  × (20с connect + 40с waiter) + N×20с isProfileSupported ≈ 8-10 мин.
+- Repro B (живое ядро, тихий teardown): последнее native-событие
+  'connecting' → таймаут waiter возвращает СИНТЕТИЧЕСКИЙ error, который
+  минует _onNative → _native навсегда stuck 'connecting' → state=connecting,
+  кнопки едят тапы, _autoConnecting сброшен но снапшот не честный.
+- Fix A: fail-fast — 3 подряд isProfileSupported-ошибки прерывают скан, 2
+  подряд bridge_timeout в свипе → 'core_dead' (CORE_UNRESPONSIVE).
+- Fix B: finally коннекта при провале сам дёргает disconnect и снимает
+  застрявший transitional-снапшот до disconnected(errorCode).
+- Found by: Android emu verification session
+- Issue: —  PR: TBD  Regression tests:
+  test/core/vpn_controller_test.dart::'dead core (bridge timeouts) fails
+  fast, no full sweep' + 'failed sweep with silent teardown does not
+  wedge UI busy'
+
+### BUG-2026-10-02-07 — App: пин на неподдерживаемом профиле молча свипал в другой
+- Severity: major (юзер видит ✓ на rtc-профиле, а туннель поднимается через
+  ДРУГОЙ сервер/страну без какого-либо сигнала — для VPN это потенциально
+  неверная страна выхода)
+- Platform: android (+desktop)
+- Status: fixed-in-PR
+- Repro: запинить профиль, который не проходит isProfileSupported →
+  коннект молча выбирает другой кандидат
+- Fix: pinned и не найден среди supported → _lastErrorClass
+  'unsupported_profile' + ошибка пользователю вместо свипа
 - Found by: Android emu verification session
 - Issue: —  PR: TBD  Regression test:
-  test/core/vpn_controller_test.dart::'dead core (bridge timeouts) fails
-  fast, no full sweep'
+  test/core/vpn_controller_test.dart::'pinned-but-unsupported profile
+  fails loudly, no silent fallback'
 
 ## Carrier/mux (carrier-stress трек, PR #29)
 

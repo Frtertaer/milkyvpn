@@ -27,7 +27,7 @@ object XrayConfigBuilder {
 
     /** Transports that are genuinely executable by this engine. */
     val SUPPORTED_PROTOCOLS = setOf("vless", "hysteria2", "vmess", "trojan", "ss", "shadowsocks", "kal2", "pandora")
-    val SUPPORTED_KAL2_CARRIERS = setOf("veil", "drift", "relay", "cdn", "mosaic", "quasar", "auto")
+    val SUPPORTED_KAL2_CARRIERS = setOf("veil", "drift", "relay", "cdn", "mosaic", "quasar", "quic2", "rtc", "auto")
     val SUPPORTED_VLESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")
     val SUPPORTED_VLESS_SECURITY = setOf("reality", "tls", "none")
     val SUPPORTED_VMESS_NETWORKS = setOf("tcp", "raw", "ws", "xhttp", "grpc")

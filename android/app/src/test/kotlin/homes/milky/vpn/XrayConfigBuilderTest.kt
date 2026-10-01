@@ -302,7 +302,7 @@ class XrayConfigBuilderTest {
 
     @Test
     fun kal2AcceptsEveryNativeCarrierAndPropagatesPin() {
-        for (c in listOf("veil", "drift", "relay", "cdn", "mosaic", "auto")) {
+        for (c in listOf("veil", "drift", "relay", "cdn", "mosaic", "quasar", "quic2", "rtc", "auto")) {
             val p = ProfileSpec("kal2", "k.example", 443, "psk", network = c, publicKey = "ab".repeat(32))
             assertTrue(c, XrayConfigBuilder.isSupported(p))
         }
