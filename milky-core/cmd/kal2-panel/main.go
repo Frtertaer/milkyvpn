@@ -329,18 +329,27 @@ func listenerUp(proto, addr string) bool {
 
 // ------------------------------------------------------------------ config
 
-// unitArgs returns the argv of a unit's effective ExecStart: systemd merges
-// main file + drop-ins and the LAST non-empty ExecStart= line wins.
-func unitArgs(unit string) []string {
-	out := sh("systemctl", "cat", unit)
-	re := regexp.MustCompile(`(?m)^ExecStart=(.*)$`)
+var execStartRe = regexp.MustCompile(`(?m)^ExecStart=(.*)$`)
+
+// parseExecStart returns the argv of the effective ExecStart inside a
+// `systemctl cat` dump: systemd merges main file + drop-ins and the LAST
+// non-empty ExecStart= line wins.
+func parseExecStart(cat string) []string {
 	var argv []string
-	for _, m := range re.FindAllStringSubmatch(out, -1) {
+	for _, m := range execStartRe.FindAllStringSubmatch(cat, -1) {
+		// Empty ExecStart= clears the accumulated list (that's how drop-ins
+		// override); a later non-empty line then wins.
 		if f := strings.Fields(m[1]); len(f) > 0 {
 			argv = f
+		} else {
+			argv = nil
 		}
 	}
 	return argv
+}
+
+func unitArgs(unit string) []string {
+	return parseExecStart(sh("systemctl", "cat", unit))
 }
 
 func (p *panel) config(w http.ResponseWriter, r *http.Request) {
