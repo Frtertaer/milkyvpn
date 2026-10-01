@@ -356,12 +356,12 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 
 	tr := &http2.Transport{
 		DialTLSContext: func(ctx context.Context, network, addr string, tcfg *tls.Config) (net.Conn, error) {
-			raw, err := dial(ctx, network, cfg.Addr)
+			raw, err := dial(ctx, network, cfg.dialAddr())
 			if err != nil {
 				return nil, err
 			}
 			spec, _ := utls.UTLSIdToSpec(pickHelloID(cfg.Fingerprint))
-			uc := utls.UClient(raw, cfg.utlsConfig("h2"), utls.HelloCustom)
+			uc := utls.UClient(raw, cfg.legTLS("h2"), utls.HelloCustom)
 			if err := uc.ApplyPreset(&spec); err != nil {
 				_ = raw.Close()
 				return nil, err
@@ -375,7 +375,7 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 	}
 
 	pr, pw := io.Pipe()
-	url := "https://" + cfg.SNI + strings.TrimSuffix(path, "/") + "/" + driftPathToken(cfg.PSK)
+	url := cfg.requestURL(strings.TrimSuffix(path, "/") + "/" + driftPathToken(cfg.PSK))
 	// The request IS the session carrier: its lifetime must be the session's,
 	// not the dial deadline's — ctx only bounds connect+handshake below (veil
 	// parity: there the ctx is dead weight once Attach runs).
@@ -532,7 +532,7 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 		d := &net.Dialer{Timeout: to, Control: cfg.DialControl}
 		dial = d.DialContext
 	}
-	raw, err := dial(ctx, "tcp", cfg.Addr)
+	raw, err := dial(ctx, "tcp", cfg.dialAddr())
 	if err != nil {
 		return nil, nil, err
 	}
@@ -544,7 +544,7 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 			a.AlpnProtocols = []string{"http/1.1"}
 		}
 	}
-	uc := utls.UClient(raw, cfg.utlsConfig("http/1.1"), utls.HelloCustom)
+	uc := utls.UClient(raw, cfg.legTLS("http/1.1"), utls.HelloCustom)
 	if err := uc.ApplyPreset(&spec); err != nil {
 		_ = raw.Close()
 		return nil, nil, err
@@ -553,7 +553,13 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 		_ = raw.Close()
 		return nil, nil, err
 	}
-	wsc, err := wsDial(uc, cfg.SNI, strings.TrimSuffix(path, "/")+"/"+driftPathToken(cfg.PSK))
+	wsHost := cfg.SNI
+	wsPath := strings.TrimSuffix(path, "/") + "/" + driftPathToken(cfg.PSK)
+	if fe := cfg.front(); fe != nil {
+		wsHost = fe.sni
+		wsPath = fe.base + wsPath
+	}
+	wsc, err := wsDial(uc, wsHost, wsPath)
 	if err != nil {
 		_ = raw.Close()
 		return nil, nil, err

@@ -699,13 +699,13 @@ func dialMosaicTLS(ctx context.Context, cfg ClientConfig, network string, wire *
 		d := &net.Dialer{Timeout: cfg.timeout(), Control: cfg.DialControl}
 		dial = d.DialContext
 	}
-	raw, err := dial(ctx, network, cfg.Addr)
+	raw, err := dial(ctx, network, cfg.dialAddr())
 	if err != nil {
 		return nil, err
 	}
 	raw = countingConn{Conn: raw, n: wire}
 	spec, _ := utls.UTLSIdToSpec(pickHelloID(cfg.Fingerprint))
-	uc := utls.UClient(raw, cfg.utlsConfig("h2"), utls.HelloCustom)
+	uc := utls.UClient(raw, cfg.legTLS("h2"), utls.HelloCustom)
 	if err := uc.ApplyPreset(&spec); err != nil {
 		_ = raw.Close()
 		return nil, err
@@ -743,7 +743,11 @@ func DialMosaic(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessi
 		path = DefaultMosaicPath
 	}
 	eps := cfg.Endpoints
-	if len(eps) == 0 {
+	if fe := cfg.front(); fe != nil {
+		// Fronted: every tile goes to the single relay — endpoint
+		// diversity lives behind the front, not on our leg.
+		eps = []string{fe.addr}
+	} else if len(eps) == 0 {
 		eps = []string{cfg.Addr}
 	}
 	mc := &mosaicClient{
@@ -987,7 +991,7 @@ func (m *mosaicClient) exchangeOnce(ctx context.Context, addr string, t *tile) (
 	body := t.encode(m.psk)
 	reserve := len(body) + mosaicRespHdr + mosaicMACLen + mosaicChunk + 256 + mosaicTileOverhead
 	tr := m.pool.transport(addr, reserve)
-	url := "https://" + m.cfg.SNI + m.path
+	url := m.cfg.requestURL(m.path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err

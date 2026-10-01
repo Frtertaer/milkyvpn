@@ -55,6 +55,7 @@ class VpnProfile {
     this.cipher,
     this.plugin,
     this.altAddrs,
+    this.front,
   });
 
   /// Opaque stable correlation id.
@@ -104,6 +105,13 @@ class VpnProfile {
   /// blocked but the server itself is reachable via another path (e.g. a
   /// domestic relay or a second VPS).
   final String? altAddrs;
+
+  /// pandora/kal2 `front=` param: a front-relay URL
+  /// (`https://host[:port][/base]` — serverless function, CDN worker) that
+  /// HTTP-shaped carriers (drift/cdn/mosaic) dial instead of the entry IP;
+  /// the relay forwards to the server's plain front listener. Used when
+  /// entry IPs are blocked or only whitelisted domains are reachable.
+  final String? front;
 
   ProfileKind get kind {
     final proto = protocol.toLowerCase();
@@ -181,6 +189,7 @@ class VpnProfile {
     'cipher': cipher,
     'plugin': plugin,
     'altAddrs': altAddrs,
+    'front': front,
   };
 
   /// Remark with anything that looks like credential material removed.

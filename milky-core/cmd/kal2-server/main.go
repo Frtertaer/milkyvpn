@@ -56,6 +56,7 @@ func main() {
 	listen := flag.String("listen", ":443", "listen addr (or \"off\" for a UDP-only server)")
 	udpListen := flag.String("udp-listen", "", "quasar UDP/KCP listen addr (e.g. :20443)")
 	quic2Listen := flag.String("quic2-listen", "", "quic2 (QUIC v2) UDP listen addr (e.g. :20444)")
+	frontListen := flag.String("front-listen", "", "plain-HTTP listen addr for front relays (e.g. :8081) — a serverless function/CDN worker forwards here; no TLS on this leg")
 	udpFEC := flag.String("udp-fec", "0,0", "quasar Reed-Solomon FEC shards data,parity (e.g. 10,3)")
 	udpWnd := flag.Int("udp-sndwnd", 0, "quasar KCP send window in segments; bounds the in-flight backlog (0 = 16384)")
 	udpRes := flag.Int("udp-resend", 0, "quasar KCP dup-ack fast-retransmit threshold (0 = RTO only)")
@@ -167,6 +168,7 @@ func main() {
 		Listen:           *listen,
 		UDPListen:        *udpListen,
 		Quic2Listen:      *quic2Listen,
+		FrontListen:      *frontListen,
 		UDPFECData:       fecD,
 		UDPFECParity:     fecP,
 		UDPSndWnd:        *udpWnd,

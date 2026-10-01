@@ -193,7 +193,7 @@ final class VpnPlugin: NSObject {
         }
         let port = (p["port"] as? NSNumber)?.intValue ?? 0
         let network = (p["network"] as? String ?? "").lowercased()
-        let known: Set<String> = ["veil", "drift", "quasar", "quic2"]
+        let known: Set<String> = ["veil", "drift", "cdn", "mosaic", "quasar", "quic2"]
         let carrier = known.contains(network) ? network : "auto"
         // altAddrs: extra entry points of the same server (multi-entry link);
         // the native core fails over across the comma list.
@@ -206,6 +206,8 @@ final class VpnPlugin: NSObject {
             "pub": p["publicKey"] as? String ?? "",
             "psk": secret,
             "socks": Self.localSocks,
+            // front= front-relay URL (blocked entry / whitelisted domain).
+            "front": p["front"] as? String ?? "",
         ]
         guard JSONSerialization.isValidJSONObject(cfg),
               let data = try? JSONSerialization.data(withJSONObject: cfg),

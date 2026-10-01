@@ -202,6 +202,7 @@ class SubscriptionExporter {
     q.put('cover', p.cover);
     q.put('pin', p.pin);
     q.put('alt', p.altAddrs);
+    q.put('front', p.front);
     return _uri('pandora', p.secret, p.address, p.port, q, p.remark);
   }
 

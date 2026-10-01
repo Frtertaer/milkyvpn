@@ -71,6 +71,14 @@ type ServerConfig struct {
 	// a v2 handshake yields no SNI to filter. Shares the veil TLS material
 	// and KAL/2 handshake path.
 	Quic2Listen string
+	// FrontListen enables a plain-HTTP listener (e.g. ":8081") serving the
+	// same drift/mosaic/decoy mux without TLS — the backend leg of a front
+	// relay (serverless function, CDN worker): the front terminates TLS on
+	// its own domain and forwards requests here. Only encrypted KAL/2
+	// blobs cross it, and the HMAC-keyed paths stay unguessable, but you
+	// can still firewall it to the relay's egress ranges. Requests are
+	// indistinguishable from probing the decoy site.
+	FrontListen string
 	// UDPFECData/UDPFECParity enable Reed-Solomon FEC on the quasar
 	// listener (e.g. 10,3). 0,0 = off.
 	UDPFECData   int
@@ -150,6 +158,14 @@ type ClientConfig struct {
 	// egress device so they bypass the tunnel without FIB bypass routes.
 	// Ignored when DialContext is set.
 	DialControl      func(network, address string, c syscall.RawConn) error
+	// Front is an optional front-relay URL ("https://host[:port][/base]", e.g.
+	// a serverless function or CDN worker domain) that the HTTP-shaped
+	// carriers — drift, cdn, mosaic — dial instead of Addr: the relay
+	// forwards to the server's FrontListen port. Use it when the entry IPs
+	// are blocked or when only whitelisted domains are reachable; the TLS
+	// leg to the front is ordinary browser TLS on the front's own domain.
+	// Raw drift needs a streaming relay; mosaic/cdn survive buffering ones.
+	Front string
 	HandshakeTimeout time.Duration
 	Logf             func(string, ...any)
 	// Resume, set internally by the migration path, makes dialers run a
@@ -413,6 +429,16 @@ func Serve(cfg ServerConfig) error {
 		}))
 	}
 	v.SetMux(mux)
+
+	if cfg.FrontListen != "" {
+		fsrv := &http.Server{Addr: cfg.FrontListen, Handler: mux}
+		go func() {
+			if err := fsrv.ListenAndServe(); err != nil {
+				logf("core: front listener %s stopped: %v", cfg.FrontListen, err)
+			}
+		}()
+		logf("core: front relay listener on %s", cfg.FrontListen)
+	}
 
 	if cfg.UDPListen != "" {
 		wireKey := carrier.QuasarWireKey(ed25519.PrivateKey(cfg.Identity).Public().(ed25519.PublicKey))
@@ -751,6 +777,7 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		PinSHA256:          cfg.PinSHA256,
 		ECHConfigList:      cfg.ECHConfigList,
 		Resume:             cfg.Resume,
+		Front:              cfg.Front,
 	}
 	switch cfg.Carrier {
 	case "", "veil":
