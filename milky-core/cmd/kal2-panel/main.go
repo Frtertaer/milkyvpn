@@ -24,6 +24,8 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
+
+	"github.com/skip2/go-qrcode"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -50,16 +52,21 @@ var managedFlags = []string{
 const (
 	usersFilePath = "/etc/kal2/users.json"
 	statsFilePath = "/etc/kal2/stats.jsonl"
+	// canaryPath is where the RU-side probe (deploy/canary-ru.sh, scp'd by
+	// cron) drops its JSONL summary; panel reads it for the "входы из РФ" card.
+	canaryPath = "/etc/kal2/canary-ru.jsonl"
 )
 
 // panelUser is a provisioned client: the panel owns id/psk/subscription and
 // mirrors enabled users into the server's -users-file.
 type panelUser struct {
-	ID       string `json:"id"`
-	PSK      string `json:"psk"` // hex
-	Created  int64  `json:"created"`
-	Disabled bool   `json:"disabled"`
-	SubToken string `json:"sub_token"`
+	ID        string `json:"id"`
+	PSK       string `json:"psk"` // hex
+	Created   int64  `json:"created"`
+	Disabled  bool   `json:"disabled"`
+	SubToken  string `json:"sub_token"`
+	QuotaMB   int64  `json:"quota_mb,omitempty"`   // total traffic allowed per calendar month; 0 = unlimited
+	ExpiresAt int64  `json:"expires_at,omitempty"` // unix; 0 = never
 }
 
 type panelStore struct {
@@ -124,7 +131,12 @@ func main() {
 	mux.HandleFunc("/api/genlink", p.auth(p.genlink))
 	mux.HandleFunc("/api/users", p.auth(p.users))
 	mux.HandleFunc("/api/stats", p.auth(p.stats))
+	mux.HandleFunc("/api/qr", p.auth(p.qr))
+	mux.HandleFunc("/api/password", p.auth(p.password))
+	mux.HandleFunc("/api/backup", p.auth(p.backup))
 	mux.HandleFunc("/sub/", p.sub)
+
+	go p.enforceWatch()
 
 	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
 	if *tlsFile != "" {
@@ -256,12 +268,48 @@ func (p *panel) ui(w http.ResponseWriter, r *http.Request) {
 // ------------------------------------------------------------------ status
 
 type statusReply struct {
-	Unit       string `json:"unit"`
-	UnitActive bool   `json:"unit_active"`
-	Uptime     string `json:"uptime"`
-	Quic2      bool   `json:"quic2"`
-	Listeners  []lnr  `json:"listeners"`
-	Journal    string `json:"journal"`
+	Unit       string   `json:"unit"`
+	UnitActive bool     `json:"unit_active"`
+	Uptime     string   `json:"uptime"`
+	Quic2      bool     `json:"quic2"`
+	Listeners  []lnr    `json:"listeners"`
+	Journal    string   `json:"journal"`
+	Canary     []canRec `json:"canary"` // latest RU-side probe per entry; empty until deployed
+}
+
+// canRec is one liveness probe pushed by the RU canary host
+// (deploy/canary-ru.sh → scp'd to canaryPath).
+type canRec struct {
+	TS      string `json:"ts"`
+	Entry   string `json:"entry"`
+	Carrier string `json:"carrier"`
+	OK      bool   `json:"ok"`
+	Ms      int64  `json:"ms"`
+}
+
+// canaryLatest reads the JSONL the RU probe writes and keeps the newest
+// record per entry+carrier, newest first.
+func canaryLatest(path string) []canRec {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	var out []canRec
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	for i := len(lines) - 1; i >= 0; i-- {
+		var r canRec
+		if json.Unmarshal([]byte(lines[i]), &r) != nil {
+			continue
+		}
+		k := r.Entry + "|" + r.Carrier
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		out = append(out, r)
+	}
+	return out
 }
 
 type lnr struct {
@@ -315,6 +363,7 @@ func (p *panel) status(w http.ResponseWriter, r *http.Request) {
 	}
 	st.Quic2 = len(flagMap["quic2-listen"]) > 0
 	st.Journal = sh("journalctl", "-u", p.unit, "-u", p.quasar, "-n", "30", "--no-pager", "-o", "short-iso")
+	st.Canary = canaryLatest(canaryPath)
 	writeJSON(w, st)
 }
 
@@ -634,19 +683,27 @@ func or(v, d string) string {
 var userIDRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
 
 // writeUsersFile mirrors enabled panel users into the server's users-file;
-// the listener re-reads it on mtime change — no restart needed.
+// the listener re-reads it on mtime change — no restart needed. Enabled means
+// not admin-disabled, not expired, and under quota for the current month.
+// Identical content is left in place (avoids pointless mtime-triggered reloads).
 func (p *panel) writeUsersFile() error {
+	now := time.Now().Unix()
+	month := p.monthUsage()
 	type fu struct {
 		ID  string `json:"id"`
 		PSK string `json:"psk"`
 	}
 	var out []fu
 	for _, u := range p.store.Users {
-		if !u.Disabled {
-			out = append(out, fu{ID: u.ID, PSK: u.PSK})
+		if !u.active(month[u.ID], now) {
+			continue
 		}
+		out = append(out, fu{ID: u.ID, PSK: u.PSK})
 	}
 	b, _ := json.Marshal(out)
+	if old, err := os.ReadFile(usersFilePath); err == nil && string(old) == string(b) {
+		return nil
+	}
 	tmp := usersFilePath + ".tmp"
 	if err := os.MkdirAll(filepath.Dir(usersFilePath), 0755); err != nil {
 		return err
@@ -655,6 +712,36 @@ func (p *panel) writeUsersFile() error {
 		return err
 	}
 	return os.Rename(tmp, usersFilePath)
+}
+
+// active reports whether the user should appear in the server's users-file:
+// not admin-disabled, not expired, under monthly quota.
+func (u panelUser) active(monthBytes uint64, now int64) bool {
+	if u.Disabled {
+		return false
+	}
+	if u.ExpiresAt > 0 && now > u.ExpiresAt {
+		return false
+	}
+	if u.QuotaMB > 0 && monthBytes >= uint64(u.QuotaMB)<<20 {
+		return false
+	}
+	return true
+}
+
+// enforceWatch expires quota/time-limited users on a 60s cadence: a user who
+// crosses their quota mid-month stops authenticating within a minute — no
+// admin action, no restart (the listener just sees a shorter users file).
+func (p *panel) enforceWatch() {
+	for {
+		time.Sleep(60 * time.Second)
+		p.mu.Lock()
+		err := p.writeUsersFile()
+		p.mu.Unlock()
+		if err != nil {
+			log.Printf("users-file enforce: %v", err)
+		}
+	}
 }
 
 // fileMode reports whether the unit already consumes the users-file.
@@ -733,11 +820,14 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 	defer p.mu.Unlock()
 	if r.Method == http.MethodPost {
 		var in struct {
-			Add      string `json:"add"`
-			Del      string `json:"del"`
-			Disable  string `json:"disable"`
-			Disabled bool   `json:"disabled"`
-			Rekey    string `json:"rekey"`
+			Add       string `json:"add"`
+			Del       string `json:"del"`
+			Disable   string `json:"disable"`
+			Disabled  bool   `json:"disabled"`
+			Rekey     string `json:"rekey"`
+			Set       string `json:"set"`
+			QuotaMB   int64  `json:"quota_mb"`
+			ExpiresAt int64  `json:"expires_at"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, "bad json", 400)
@@ -797,6 +887,23 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "no such user", 404)
 				return
 			}
+		case in.Set != "":
+			if in.QuotaMB < 0 || in.ExpiresAt < 0 {
+				http.Error(w, "quota/expiry must be >= 0", 400)
+				return
+			}
+			found := false
+			for i := range p.store.Users {
+				if p.store.Users[i].ID == in.Set {
+					p.store.Users[i].QuotaMB = in.QuotaMB
+					p.store.Users[i].ExpiresAt = in.ExpiresAt
+					found = true
+				}
+			}
+			if !found {
+				http.Error(w, "no such user", 404)
+				return
+			}
 		default:
 			http.Error(w, "empty op", 400)
 			return
@@ -810,10 +917,12 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 		// restart; later add/remove/rekey are picked up via file mtime.
 	}
 	type uout struct {
-		ID       string `json:"id"`
-		Created  int64  `json:"created"`
-		Disabled bool   `json:"disabled"`
-		SubURL   string `json:"sub_url"`
+		ID        string `json:"id"`
+		Created   int64  `json:"created"`
+		Disabled  bool   `json:"disabled"`
+		SubURL    string `json:"sub_url"`
+		QuotaMB   int64  `json:"quota_mb"`
+		ExpiresAt int64  `json:"expires_at"`
 	}
 	users := make([]uout, 0, len(p.store.Users))
 	for _, u := range p.store.Users {
@@ -821,7 +930,7 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 		if base == "" {
 			base = "https://" + r.Host
 		}
-		users = append(users, uout{u.ID, u.Created, u.Disabled, base + "/sub/" + u.SubToken})
+		users = append(users, uout{u.ID, u.Created, u.Disabled, base + "/sub/" + u.SubToken, u.QuotaMB, u.ExpiresAt})
 	}
 	writeJSON(w, map[string]any{"users": users, "file_mode": p.fileMode()})
 }
@@ -831,13 +940,91 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 type statAgg struct {
 	Up       uint64 `json:"up"`
 	Down     uint64 `json:"down"`
+	Month    uint64 `json:"month"` // up+down bytes in the current calendar month — quota accounting
 	Sessions int    `json:"sessions"`
 	LastSeen int64  `json:"last_seen"`
 	Online   int    `json:"online"`
 }
 
-// stats aggregates the server's JSONL accounting log per user.
-func (p *panel) stats(w http.ResponseWriter, r *http.Request) {
+// ------------------------------------------------------------------ QR
+
+// qr serves a PNG of the user's subscription URL for phone import.
+func (p *panel) qr(w http.ResponseWriter, r *http.Request) {
+	tok := r.URL.Query().Get("t")
+	if tok == "" {
+		http.Error(w, "need ?t=", 400)
+		return
+	}
+	base := p.pubOrigin
+	if base == "" {
+		base = "https://" + r.Host
+	}
+	png, err := qrcode.Encode(base+"/sub/"+tok, qrcode.Medium, 280)
+	if err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	w.Header().Set("Content-Type", "image/png")
+	w.Write(png)
+}
+
+// ------------------------------------------------------------------ password
+
+// password changes the admin token: writes a systemd drop-in so the new
+// token survives restarts, then swaps it in-memory — no restart, current
+// cookies just expire (HMAC keys off the token).
+func (p *panel) password(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Cur string `json:"cur"`
+		New string `json:"new"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil || len(in.New) < 16 {
+		http.Error(w, "need cur + new (>=16 chars)", 400)
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if in.Cur != string(p.token) {
+		http.Error(w, "wrong current token", 403)
+		return
+	}
+	dir := "/etc/systemd/system/kal2-panel.service.d"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	drop := filepath.Join(dir, "zz-token.conf")
+	conf := fmt.Sprintf("[Service]\nEnvironment=PANEL_TOKEN=%s\n", in.New)
+	if err := os.WriteFile(drop, []byte(conf), 0600); err != nil {
+		http.Error(w, err.Error(), 500)
+		return
+	}
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		http.Error(w, fmt.Sprintf("token saved but daemon-reload failed: %s", out), 500)
+		return
+	}
+	p.token = []byte(in.New)
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// ------------------------------------------------------------------ backup
+
+// backup returns panel.json + users.json as one downloadable JSON.
+func (p *panel) backup(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	panelB, _ := os.ReadFile(p.path)
+	p.mu.Unlock()
+	usersB, _ := os.ReadFile(usersFilePath)
+	out, _ := json.Marshal(map[string]json.RawMessage{
+		"panel": json.RawMessage(panelB),
+		"users": json.RawMessage(usersB),
+	})
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Content-Disposition", `attachment; filename="kal2-backup.json"`)
+	w.Write(out)
+}
+
+func (p *panel) statsPath() string {
 	path := statsFilePath
 	args := unitArgs(p.unit)
 	for i, a := range args {
@@ -845,54 +1032,82 @@ func (p *panel) stats(w http.ResponseWriter, r *http.Request) {
 			path = args[i+1]
 		}
 	}
+	return path
+}
+
+// parseStats folds the JSONL accounting log: per-uid totals, sessions, online
+// (reset at the last boot marker), and this-month bytes for quota checks.
+func parseStats(path string) (map[string]*statAgg, int64) {
 	per := map[string]*statAgg{}
 	online := map[string]int{}
 	boot := int64(0)
-	if f, err := os.Open(path); err == nil {
-		defer f.Close()
-		var rec struct {
-			T    int64  `json:"t"`
-			Ev   string `json:"ev"`
-			UID  string `json:"uid"`
-			Up   uint64 `json:"up"`
-			Down uint64 `json:"down"`
+	monthStart := time.Date(time.Now().Year(), time.Now().Month(), 1, 0, 0, 0, 0, time.Local).Unix()
+	f, err := os.Open(path)
+	if err != nil {
+		return per, boot
+	}
+	defer f.Close()
+	var rec struct {
+		T    int64  `json:"t"`
+		Ev   string `json:"ev"`
+		UID  string `json:"uid"`
+		Up   uint64 `json:"up"`
+		Down uint64 `json:"down"`
+	}
+	dec := json.NewDecoder(f)
+	for {
+		if err := dec.Decode(&rec); err != nil {
+			break // EOF or a torn tail line — stop at it
 		}
-		dec := json.NewDecoder(f)
-		for {
-			if err := dec.Decode(&rec); err != nil {
-				break // EOF or a torn tail line — stop at it
-			}
-			if rec.Ev == "boot" {
-				boot = rec.T
-				online = map[string]int{} // earlier opens died with the process
-				continue
-			}
-			a := per[rec.UID]
-			if a == nil {
-				a = &statAgg{}
-				per[rec.UID] = a
-			}
-			if rec.T > a.LastSeen {
-				a.LastSeen = rec.T
-			}
-			switch rec.Ev {
-			case "open":
-				a.Sessions++
-				online[rec.UID]++
-			case "close":
-				a.Up += rec.Up
-				a.Down += rec.Down
-				if online[rec.UID] > 0 {
-					online[rec.UID]--
-				}
-			}
+		if rec.Ev == "boot" {
+			boot = rec.T
+			online = map[string]int{} // earlier opens died with the process
+			continue
 		}
-		for uid, n := range online {
-			if n > 0 {
-				per[uid].Online = n
+		a := per[rec.UID]
+		if a == nil {
+			a = &statAgg{}
+			per[rec.UID] = a
+		}
+		if rec.T > a.LastSeen {
+			a.LastSeen = rec.T
+		}
+		switch rec.Ev {
+		case "open":
+			a.Sessions++
+			online[rec.UID]++
+		case "close":
+			a.Up += rec.Up
+			a.Down += rec.Down
+			if rec.T >= monthStart {
+				a.Month += rec.Up + rec.Down
+			}
+			if online[rec.UID] > 0 {
+				online[rec.UID]--
 			}
 		}
 	}
+	for uid, n := range online {
+		if n > 0 {
+			per[uid].Online = n
+		}
+	}
+	return per, boot
+}
+
+// monthUsage maps uid → bytes used this calendar month (quota enforcement).
+func (p *panel) monthUsage() map[string]uint64 {
+	per, _ := parseStats(p.statsPath())
+	out := map[string]uint64{}
+	for uid, a := range per {
+		out[uid] = a.Month
+	}
+	return out
+}
+
+// stats aggregates the server's JSONL accounting log per user.
+func (p *panel) stats(w http.ResponseWriter, r *http.Request) {
+	per, boot := parseStats(p.statsPath())
 	p.mu.Lock()
 	users := p.store.Users
 	p.mu.Unlock()
