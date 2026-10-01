@@ -505,6 +505,15 @@ proxies:
       expect(parser.parseLine(exported)!.fronts, [f1, f2]);
     });
 
+    test('kal2 rtc carrier parses and round-trips', () {
+      final p = parser.parseLine(
+        'kal2://psk@k.example:20445?sni=k.example&pub=PUBK&carrier=rtc#M',
+      )!;
+      expect(p.network, 'rtc');
+      final exported = const SubscriptionExporter().toShareLink(p)!;
+      expect(parser.parseLine(exported)!.network, 'rtc');
+    });
+
     test('kal2 mosaic carrier and SPKI pin survive parse and export', () {
       const pin =
           'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';
@@ -630,6 +639,28 @@ proxies:
       expect(p.pin, 'PIN64');
       expect(p.ech, 'ECH64');
       expect(p.cover, 'cover.example');
+    });
+    test('fronts and altAddrs survive snapshot reload (fronting persistence)', () async {
+      // Regression: the snapshot codec used to drop front/fronts/altAddrs,
+      // silently degrading fronted links to direct-only after any restart.
+      const f1 = 'https://d5x123.functions.yandexcloud.net/relay';
+      const f2 = 'https://milky-front.acct.workers.dev';
+      final store = MemorySecureStore();
+      final repo = SubscriptionRepository(
+        store: store,
+        fetcher: FakeFetcher(
+          'kal2://psk@k.example:443?sni=k.example&pub=PUBK&carrier=mosaic'
+          '&alt=2.3.4.5:443,3.4.5.6:443'
+          '&front=${Uri.encodeComponent(f1)}&front=${Uri.encodeComponent(f2)}#M\n',
+        ),
+      );
+      await repo.importFromUrl('https://sub.milky.homes/s/AbCdEf123456');
+      final repo2 = SubscriptionRepository(store: store, fetcher: FakeFetcher(''));
+      await repo2.load();
+      final p = repo2.snapshot!.profiles.single;
+      expect(p.front, f1);
+      expect(p.fronts, [f1, f2]);
+      expect(p.altAddrs, '2.3.4.5:443,3.4.5.6:443');
     });
     test('rejects disallowed url without fetching', () async {
       final f = FakeFetcher('x');

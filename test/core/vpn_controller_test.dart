@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:milkyvpn/core/errors/milky_error.dart';
 import 'package:milkyvpn/core/subscription/vpn_profile.dart';
 import 'package:milkyvpn/core/vpn/vpn_bridge.dart';
 import 'package:milkyvpn/core/vpn/vpn_controller.dart';
@@ -11,6 +12,7 @@ class FakeBridge implements VpnBridge {
   Set<String> failIds = {};
   Set<String> unsupportedIds = {};
   bool hang = false;
+  bool bridgeTimeout = false;
   List<String> connectCalls = [];
   int disconnectCalls = 0;
   VpnSnapshot _state = VpnSnapshot.initial;
@@ -34,6 +36,7 @@ class FakeBridge implements VpnBridge {
   @override
   Future<void> connect(VpnProfile p) async {
     connectCalls.add(p.id);
+    if (bridgeTimeout) throw VpnBridgeException('bridge_timeout:connect');
     emit(
       VpnSnapshot(
         state: VpnState.connecting,
@@ -155,6 +158,26 @@ void main() {
     expect(await c.connect([p('a'), p('b')], LocationChoice.auto), isFalse);
     expect(b.connectCalls, ['a', 'b']);
     expect(c.lastErrorClass, 'timeout');
+  });
+
+  test('dead core (bridge timeouts) fails fast, no full sweep', () async {
+    // Regression: a wedged native core answered every platform call with a
+    // timeout and the sweep ground through all candidates, holding the UI
+    // busy ~8min. Now two consecutive bridge timeouts bail out as core_dead.
+    final b = FakeBridge()..bridgeTimeout = true;
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(milliseconds: 50),
+      maxAttempts: 4,
+    );
+    expect(
+      await c.connect([p('a'), p('b'), p('c'), p('d')], LocationChoice.auto),
+      isFalse,
+    );
+    expect(b.connectCalls, ['a', 'b']);
+    expect(c.lastErrorClass, 'core_dead');
+    expect(MilkyError.fromCode(c.lastErrorClass).diagnosticsCode,
+        'CORE_UNRESPONSIVE');
   });
 
   test('VPN permission denied stops before connecting', () async {

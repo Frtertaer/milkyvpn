@@ -325,6 +325,11 @@ class MilkyError {
     ),
 
     // --- network ----------------------------------------------------------
+    'core_dead': (
+      MilkyErrorKind.tunnelFailed,
+      'CORE_UNRESPONSIVE',
+      MilkyFailureCategory.coreFailure,
+    ),
     'timeout': (
       MilkyErrorKind.serverUnreachable,
       'SERVER_UNREACHABLE',
