@@ -61,6 +61,15 @@ class AppSettings extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Periodic subscription refetch — fresh entry links arrive without
+  /// re-importing. Default on; the user can switch it off in settings.
+  bool get autoUpdateSub => _prefs.getBool('auto_update_sub') ?? true;
+
+  Future<void> setAutoUpdateSub(bool v) async {
+    await _prefs.setBool('auto_update_sub', v);
+    notifyListeners();
+  }
+
   Future<void> setFullTunnel(bool v) async {
     await _prefs.setBool('tun_mode', v);
     notifyListeners();

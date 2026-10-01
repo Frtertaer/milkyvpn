@@ -111,6 +111,7 @@ class RootScreen extends StatefulWidget {
 
 class _RootScreenState extends State<RootScreen> {
   StreamSubscription<String>? _links;
+  Timer? _subTimer;
 
   @override
   void initState() {
@@ -128,6 +129,8 @@ class _RootScreenState extends State<RootScreen> {
       } catch (_) {
         // Deep links are a bonus path; the app must still start without a platform channel.
       }
+      _refreshSub();
+      _subTimer = Timer.periodic(const Duration(hours: 6), (_) => _refreshSub());
       final snapshot = repo.snapshot;
       if (settings.autoConnect && repo.hasSubscription && snapshot != null) {
         if (!vpn.isConnected && !vpn.isBusy) {
@@ -135,6 +138,17 @@ class _RootScreenState extends State<RootScreen> {
         }
       }
     });
+  }
+
+  /// Auto-refresh of the subscription: new entry links arrive without the
+  /// user re-importing. Off entirely when the user disabled it; a no-op for
+  /// text-imported profiles (there is no URL to refetch).
+  void _refreshSub() {
+    final settings = context.read<AppSettings>();
+    final repo = context.read<SubscriptionRepository>();
+    if (settings.autoUpdateSub && repo.hasSubscription) {
+      repo.refresh().catchError((_) => null);
+    }
   }
 
   void _handleLink(String link) {
@@ -179,6 +193,7 @@ class _RootScreenState extends State<RootScreen> {
   @override
   void dispose() {
     _links?.cancel();
+    _subTimer?.cancel();
     super.dispose();
   }
 
