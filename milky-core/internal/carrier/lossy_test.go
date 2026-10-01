@@ -205,13 +205,15 @@ func TestQuasarTotalLossDetectable(t *testing.T) {
 // flow dies in the handshake, so probe must fail the dial cleanly, not hang.
 func TestMosaicCutBelowHandshake(t *testing.T) {
 	ts := newTestServer(t)
-	cut := startCutProxy(t, ts.ln.Addr().String(), 4<<10)
+	// 2KiB is safely below any real TLS 1.3 handshake — a 4KiB cut sits at
+	// the boundary and under -race timing a handshake can squeak through.
+	cut := startCutProxy(t, ts.ln.Addr().String(), 2<<10)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	_, _, err := DialMosaic(ctx, mosaicCfg(ts, cut.addr), "")
 	if err == nil {
-		t.Fatal("mosaic dialed through a 4KiB cut — no tile can complete")
+		t.Fatal("mosaic dialed through a 2KiB cut — no tile can complete")
 	}
 }
 

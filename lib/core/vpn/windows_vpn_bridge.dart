@@ -66,13 +66,76 @@ class WindowsProcessVpnBridge implements VpnBridge {
   Stream<String> get links => _links.stream;
 
   @override
-  Future<VpnSnapshot> currentState() async => _snap;
+  Future<VpnSnapshot> currentState() async {
+    unawaited(_healLeakedProxy());
+    return _snap;
+  }
 
   @override
   Future<bool> isPrepared() async => true;
 
   @override
-  Future<bool> prepare() async => true;
+  Future<bool> prepare() async {
+    await _healLeakedProxy();
+    return true;
+  }
+
+  bool _healAttempted = false;
+
+  /// Self-heal for a leaked system proxy: a crash/kill/uninstall while
+  /// connected leaves ProxyServer=socks=127.0.0.1:11808 enabled with no
+  /// client behind it — every browser then dies with
+  /// ERR_PROXY_CONNECTION_FAILED. Only ever touches our own value; a live
+  /// listener on the socks port means the leak is not ours to fix.
+  Future<void> _healLeakedProxy() async {
+    if (_healAttempted) return;
+    _healAttempted = true;
+    if (_proc != null || _proxySet || _ctl != null) return;
+    final server = await _queryRegValue('ProxyServer');
+    final enabled = await _queryRegDword('ProxyEnable');
+    final ops = leakedProxyPlan(
+      currentServer: server,
+      enabled: enabled,
+      ourServer: 'socks=$_socksAddr',
+    );
+    if (ops == null) return;
+    try {
+      final s = await Socket.connect(
+        '127.0.0.1',
+        int.parse(_socksAddr.split(':').last),
+        timeout: const Duration(milliseconds: 400),
+      );
+      s.destroy();
+      return; // a live kal2-client owns the proxy — not a leak
+    } catch (_) {}
+    // Re-check after the awaits: a connect racing the heal may have claimed
+    // the proxy — tearing it down now would break a live session.
+    if (_proc != null || _proxySet || _ctl != null) return;
+    try {
+      for (final args in ops) {
+        await Process.run('reg', args);
+      }
+      await _refreshProxy();
+    } catch (_) {
+      // self-heal is best-effort; a failed reg call must not break startup
+    }
+  }
+
+  /// reg ops that undo a leaked proxy of ours, or null when the current
+  /// registry state is not our leak (foreign proxy, proxy off, or no
+  /// ProxyServer at all).
+  static List<List<String>>? leakedProxyPlan({
+    String? currentServer,
+    int? enabled,
+    required String ourServer,
+    String key = _proxyKey,
+  }) {
+    if (currentServer != ourServer || enabled != 1) return null;
+    return [
+      ['delete', key, '/v', 'ProxyServer', '/f'],
+      ['add', key, '/v', 'ProxyEnable', '/t', 'REG_DWORD', '/d', '0', '/f'],
+    ];
+  }
 
   @override
   Future<bool> isProfileSupported(VpnProfile profile) async =>
@@ -82,9 +145,11 @@ class WindowsProcessVpnBridge implements VpnBridge {
 
   List<String> _argsFor(VpnProfile p) {
     final network = p.network.toLowerCase();
-    // 'relay' is its own carrier; everything else goes through the hedged
-    // veil+drift dial so a blocked carrier still connects.
-    final carrier = network == 'relay' ? 'relay' : 'auto';
+    // Carriers 'auto' cannot hedge — UDP (quasar/quic2) and relay — pass
+    // through verbatim. TCP carriers keep the hedged veil+drift+cdn+mosaic
+    // dial so a blocked carrier still connects (BUG-2026-10-02-01).
+    const passThrough = {'quasar', 'quic2', 'relay'};
+    final carrier = passThrough.contains(network) ? network : 'auto';
     // A flag with a '' value is fatal on the -tun path: `Start-Process
     // -ArgumentList` rejects empty elements, and Go's flag pkg would read the
     // NEXT token as the value. Every client flag defaults to "" anyway —
@@ -92,7 +157,13 @@ class WindowsProcessVpnBridge implements VpnBridge {
     List<String> kv(String flag, String value) =>
         value.isEmpty ? const [] : [flag, value];
     return <String>[
-      ...kv('-addr', '${p.address}:${p.port}'),
+      // altAddrs: extra entry points of the same server; kal2-client -addr
+      // takes a comma list and fails over across them (multi-entry link).
+      ...kv(
+        '-addr',
+        '${p.address}:${p.port}'
+        '${p.altAddrs == null || p.altAddrs!.isEmpty ? '' : ',${p.altAddrs}'}',
+      ),
       ...kv('-sni', p.sni ?? ''),
       ...kv('-pub', p.publicKey ?? ''),
       ...kv('-psk', p.secret),

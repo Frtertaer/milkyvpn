@@ -781,7 +781,7 @@ func DialMosaic(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessi
 	sess, err := runClientHandshake(conn, cfg)
 	if err != nil {
 		_ = conn.Close()
-		return nil, nil, err
+		return nil, nil, handshakeStageError{err}
 	}
 	return sess, conn, nil
 }

@@ -381,6 +381,8 @@ class S {
         return t('Нет соединения', 'No connection');
       case MilkyErrorKind.serverUnreachable:
         return t('Не удалось подключиться', 'Could not connect');
+      case MilkyErrorKind.entryBlocked:
+        return t('Вход заблокирован', 'Entry blocked');
       case MilkyErrorKind.tunnelFailed:
         return t('Не удалось подключиться', 'Could not connect');
       case MilkyErrorKind.noServers:
@@ -416,6 +418,11 @@ class S {
         return t(
           'Сервер не отвечает. Попробуем другой сервер.',
           'The server did not respond. Let us try another one.',
+        );
+      case MilkyErrorKind.entryBlocked:
+        return t(
+          'Провайдер, скорее всего, заблокировал адрес сервера — все точки входа недоступны. Обновите подписку или попросите новую ссылку, либо выберите другой сервер.',
+          'Your provider likely blocked the server address — every entry point is unreachable. Refresh the subscription or ask for a new link, or pick another server.',
         );
       case MilkyErrorKind.tunnelFailed:
         return t(

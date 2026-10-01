@@ -438,7 +438,9 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 	if resp.StatusCode != http.StatusOK {
 		_ = pw.Close()
 		_ = resp.Body.Close()
-		return nil, nil, fmt.Errorf("drift: server status %d", resp.StatusCode)
+		// The server answered HTTP — the entry is reachable (rejection, not
+		// a transport block).
+		return nil, nil, handshakeStageError{fmt.Errorf("drift: server status %d", resp.StatusCode)}
 	}
 	conn.resp = resp
 	conn.read = resp.Body
@@ -451,7 +453,7 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 	}
 	if err != nil {
 		_ = conn.Close()
-		return nil, nil, err
+		return nil, nil, handshakeStageError{err}
 	}
 	return sess, conn, nil
 }
@@ -594,7 +596,7 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 	case r := <-done:
 		if r.err != nil {
 			_ = wsc.Close()
-			return nil, nil, r.err
+			return nil, nil, handshakeStageError{r.err}
 		}
 		return r.s, wsc, nil
 	case <-ctx.Done():
@@ -602,7 +604,9 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 		return nil, nil, ctx.Err()
 	case <-time.After(to):
 		_ = wsc.Close()
-		return nil, nil, fmt.Errorf("drift-ws handshake timeout")
+		// The WS upgrade completed — transport is alive even if the kal2
+		// bytes never landed.
+		return nil, nil, handshakeStageError{fmt.Errorf("drift-ws handshake timeout")}
 	}
 }
 

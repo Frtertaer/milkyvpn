@@ -21,10 +21,13 @@ object Kal2Config {
             "cdn" -> "cdn"
             "mosaic" -> "mosaic"
             "quasar" -> "quasar"
+            "quic2" -> "quic2"
             else -> "auto"
         }
         return JSONObject()
-            .put("addr", "${p.address}:${p.port}")
+            // altAddrs: extra entry points of the same server — the native
+            // core fails over across the comma list (multi-entry link).
+            .put("addr", "${p.address}:${p.port}" + p.altAddrs.orEmpty().let { if (it.isBlank()) "" else ",$it" })
             .put("sni", p.sni ?: "")
             .put("carrier", carrier)
             .put("path", p.path ?: "")

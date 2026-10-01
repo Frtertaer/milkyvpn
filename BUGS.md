@@ -439,6 +439,74 @@
   `test/core/windows_vpn_bridge_test.dart` — path-less → нет ''/-drift;
   drift path → сохраняется
 
+### BUG-2026-10-01-01 — Windows: прокси-утечка переживает краш/kill/удаление приложения
+- Severity: critical (интернет «умирает» у всей системы с выключенным/удалённым
+  приложением — ERR_PROXY_CONNECTION_FAILED во всех браузерах)
+- Platform: windows
+- Status: fixed-in-PR
+- Repro: приложение убито/упало/удалено ПОКА `_applyProxy` уже выставил
+  `ProxyEnable=1` + `ProxyServer=socks=127.0.0.1:11808` → следующий запуск
+  видит `_proxySet=false` и `_restoreProxy` никогда не вызывается → системный
+  прокси указывает на мёртвый listener навсегда; `uninstall.ps1` прокси не
+  восстанавливал вовсе и `kal2-client.exe` не убивал
+- Fix: (1) self-heal при старте — `currentState()`/`prepare()` вызывают
+  `_healLeakedProxy`: если реестр держит наш `socks=` при включённом
+  ProxyEnable и на :11808 никто не слушает → delete ProxyServer +
+  ProxyEnable=0 + InternetSetOption refresh; чужой прокси/выключенный прокси/
+  живой listener не трогаются; (2) `uninstall.ps1` — Stop-Process
+  kal2-client + тот же conditional restore + wininet refresh
+- Found by: user report (скрины: SERVER_UNREACHABLE + ERR_PROXY_CONNECTION_FAILED
+  при disconnected)
+- Issue: —  PR: —  Regression test:
+  `test/core/windows_vpn_bridge_test.dart::leaked proxy self-heal plan`
+
+### BUG-2026-10-01-02 — Android/core: `bad ech param` на padded base64url ech=
+- Severity: critical (любая ссылка с `ech=` в padded base64url не стартует —
+  KAL2_SESSION_STARTING → core_failure до диала; вся emu-матрица красная)
+- Platform: android (kal2mobile), linux/desktop (kal2-client -ech)
+- Status: fixed-in-PR
+- Repro: `Start()`/`kal2-client -ech` с ech в padded base64url (`...=`)
+  → `illegal base64 data at input byte N`: StdEncoding отвергает `-`/`_`,
+  RawURLEncoding отвергает `=` — строка проваливается сквозь обе попытки
+- Fix: `kal2core.DecodeBase64` — tolerant decode std|url × padded|raw;
+  используется в `pkg/kal2mobile/mobile.go` и `cmd/kal2-client -ech`
+- Found by: android-emu-matrix CI (connect scenario FAILED, logcat:
+  `NativeBridge$StartException: bad ech param: illegal base64 data at input byte 76`)
+- Issue: —  PR: —  Regression test:
+  `pkg/kal2core/api_test.go::TestDecodeBase64AllVariants`
+
+### BUG-2026-10-02-01 — Windows: explicit carrier схлопывался в 'auto'
+- Severity: major (ссылка `carrier=quasar|quic2` на Windows не использовала
+  UDP вообще — мост всегда передавал `-carrier auto`, то есть бежал
+  veil+drift hedge, и UDP-ссылка отчитывалась общей ошибкой)
+- Platform: windows (lib/core/vpn/windows_vpn_bridge.dart)
+- Status: fixed-in-PR
+- Repro: профиль `network: quasar` → `argsFor` → `-carrier auto`
+- Fix: pass-through для носителей, которые `auto` не покрывает —
+  {quasar, quic2, relay}; TCP-носители сохраняют hedge
+- Found by: quic2 carrier wiring review
+- Issue: —  PR: —  Regression test:
+  `test/core/windows_vpn_bridge_test.dart::UDP carriers pass through to -carrier`
+
+### BUG-2026-10-02-02 — Windows: Chromium шлёт SOCKS4 → страницы не грузятся при «Подключено»
+- Severity: critical (симптом «туннель поднят, но браузер мёртв»:
+  Chrome/Edge/Brave на Windows ходят на `socks=` прокси по SOCKS4
+  (CONNECT `04 01 …`), а kal2-client принимал только VER=0x05 и закрывал
+  коннекцию → ERR_CONNECTION_RESET на каждой странице; curl/Firefox
+  затронуты не были — поэтому туннель выглядел живым)
+- Platform: windows (milky-core/internal/core/socks5.go — локальный
+  SOCKS-листенер; в сети показывается только на Windows, т.к. только там
+  системный прокси-тип `socks=` и браузер говорит SOCKS4)
+- Status: fixed-in-PR
+- Repro: Windows → системный прокси `socks=127.0.0.1:11808` → Chrome
+  открывает любой сайт → ERR_CONNECTION_RESET; wireprobe: `04 01 port ip 00`
+- Fix: версия первого байта маршрутизирует: 0x04 → handleSocks4
+  (CONNECT + SOCKS4a domain, reply 00 5a/5b), иначе SOCKS5 как раньше
+- Found by: Windows-верификация proxy-heal (дочерняя сессия на Win-боксе)
+- Issue: —  PR: —  Regression test:
+  `milky-core/internal/core/socks4_test.go::TestSocks4ConnectGranted`,
+  `TestSocks4IPv4`, `TestSocks5StillWorks`
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 

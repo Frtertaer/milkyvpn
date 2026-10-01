@@ -344,6 +344,7 @@ class SubscriptionParser {
       _nz(profile.ech) ?? '',
       _nz(profile.cover) ?? '',
       _nz(profile.pin) ?? '',
+      _nz(profile.altAddrs) ?? '',
     ];
 
     return jsonEncode([
@@ -403,6 +404,7 @@ class SubscriptionParser {
     alterId: profile.alterId,
     cipher: profile.cipher,
     plugin: profile.plugin,
+    altAddrs: profile.altAddrs,
   );
 
   VpnProfile? _parseVless(String line) {
@@ -680,7 +682,7 @@ class SubscriptionParser {
     );
   }
 
-  /// `pandora://psk@host:port?sni=domain&pub=hex&carrier=veil|drift|cdn|mosaic|quasar&path=/p&pin=b64#remark`
+  /// `pandora://psk@host:port?sni=domain&pub=hex&carrier=veil|drift|cdn|mosaic|quasar|quic2&path=/p&pin=b64#remark`
   /// (`kal2://` is the legacy alias — same parser, same profile)
   VpnProfile? _parseKal2(String line) {
     final parts = _split(line);
@@ -692,6 +694,7 @@ class SubscriptionParser {
     final carrier = (query['carrier'] ?? 'veil').trim().toLowerCase();
     if (carrier != 'veil' && carrier != 'drift' &&
         carrier != 'cdn' && carrier != 'mosaic' && carrier != 'quasar' &&
+        carrier != 'quic2' &&
         carrier != 'auto' && carrier != 'relay') {
       return null;
     }
@@ -715,8 +718,23 @@ class SubscriptionParser {
         ech: _nz(query['ech']),
         cover: _nz(query['cover']),
         pin: _nz(query['pin']),
+        altAddrs: _altAddrs(query['alt']),
       ),
     );
+  }
+
+  /// `alt=` param: comma-separated `host:port` alternates for the kal2 entry.
+  /// Whitespace-tolerant; entries without a `:` (no port) are dropped rather
+  /// than failing the whole link — a partially-broken alt list still gives a
+  /// usable primary. Returns null when nothing valid remains.
+  static String? _altAddrs(String? raw) {
+    if (raw == null) return null;
+    final ok = raw
+        .split(',')
+        .map((e) => e.trim())
+        .where((e) => e.contains(':'))
+        .toList();
+    return ok.isEmpty ? null : ok.join(',');
   }
 
   /// Tolerant Base64 decode: standard or URL-safe, padded or not. Returns null
@@ -1483,6 +1501,7 @@ class SubscriptionParser {
         final carrier = (s('carrier') ?? 'veil').trim().toLowerCase();
         if (carrier != 'veil' && carrier != 'drift' &&
         carrier != 'cdn' && carrier != 'mosaic' && carrier != 'quasar' &&
+        carrier != 'quic2' &&
         carrier != 'auto' && carrier != 'relay') {
           return null;
         }

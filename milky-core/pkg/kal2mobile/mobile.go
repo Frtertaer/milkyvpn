@@ -23,7 +23,6 @@ package kal2mobile
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -123,10 +122,7 @@ func Start(configJSON string) (int, error) {
 
 	var echList []byte
 	if mc.ECH != "" {
-		echList, err = base64.StdEncoding.DecodeString(mc.ECH)
-		if err != nil {
-			echList, err = base64.RawURLEncoding.DecodeString(mc.ECH)
-		}
+		echList, err = kal2core.DecodeBase64(mc.ECH)
 		if err != nil {
 			return 0, fmt.Errorf("bad ech param: %w", err)
 		}

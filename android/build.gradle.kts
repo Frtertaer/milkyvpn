@@ -1,10 +1,12 @@
 allprojects {
     repositories {
-        maven("https://maven.aliyun.com/repository/central")
-        maven("https://maven.aliyun.com/repository/public")
-        maven("https://maven.aliyun.com/repository/google")
         google()
         mavenCentral()
+        // fallback mirrors for rate-limited hosts — keep last: a mirror
+        // outage must not abort resolution of artifacts on official repos
+        maven("https://maven.aliyun.com/repository/google")
+        maven("https://maven.aliyun.com/repository/public")
+        maven("https://maven.aliyun.com/repository/central")
     }
 }
 

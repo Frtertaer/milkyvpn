@@ -19,6 +19,23 @@ import (
 	"github.com/Frtertaer/milkyvpn/milky-core/pkg/kal2core"
 )
 
+// certMapFlags collects -domain-cert name=cert.pem:key.pem pairs.
+type certMapFlags map[string][2]string
+
+func (c certMapFlags) String() string { return fmt.Sprint(map[string][2]string(c)) }
+func (c certMapFlags) Set(v string) error {
+	name, pair, ok := strings.Cut(v, "=")
+	if !ok {
+		return fmt.Errorf("domain-cert must be name=cert.pem:key.pem")
+	}
+	cf, kf, ok := strings.Cut(pair, ":")
+	if !ok || name == "" || cf == "" || kf == "" {
+		return fmt.Errorf("domain-cert must be name=cert.pem:key.pem")
+	}
+	c[strings.ToLower(strings.TrimSpace(name))] = [2]string{cf, kf}
+	return nil
+}
+
 type userFlags []kal2core.User
 
 func (u *userFlags) String() string { return fmt.Sprint(*u) }
@@ -38,13 +55,17 @@ func (u *userFlags) Set(v string) error {
 func main() {
 	listen := flag.String("listen", ":443", "listen addr (or \"off\" for a UDP-only server)")
 	udpListen := flag.String("udp-listen", "", "quasar UDP/KCP listen addr (e.g. :20443)")
+	quic2Listen := flag.String("quic2-listen", "", "quic2 (QUIC v2) UDP listen addr (e.g. :20444)")
 	udpFEC := flag.String("udp-fec", "0,0", "quasar Reed-Solomon FEC shards data,parity (e.g. 10,3)")
 	udpWnd := flag.Int("udp-sndwnd", 0, "quasar KCP send window in segments; bounds the in-flight backlog (0 = 16384)")
 	udpRes := flag.Int("udp-resend", 0, "quasar KCP dup-ack fast-retransmit threshold (0 = RTO only)")
 	udpRate := flag.Int("udp-rate", 0, "quasar packet output rate cap in Mbit/s (0 = unlimited)")
-	domain := flag.String("domain", "", "our TLS domain")
+	domain := flag.String("domain", "", "our TLS domain (comma list = decoy pool; first is primary)")
 	cert := flag.String("cert", "", "fullchain PEM")
 	key := flag.String("key", "", "private key PEM")
+	var domainCerts certMapFlags
+	flag.Var(&domainCerts, "domain-cert", "extra domain file cert: name=cert.pem:key.pem (repeatable, decoy pool)")
+	stealMap := flag.String("steal-map", "", "per-SNI splice targets: sni=host:port,... (tried before -steal)")
 	autocertDir := flag.String("autocert", "", "ACME cache dir (Let's Encrypt HTTP-01 on :80)")
 	autocertHTTP := flag.String("autocert-addr", ":80", "ACME HTTP-01 listen addr")
 	identity := flag.String("identity", "", "server ed25519 private key (hex)")
@@ -124,15 +145,37 @@ func main() {
 			}
 		}
 	}
+	domains := splitCommaStr(*domain)
+	primary := ""
+	var extras []string
+	if len(domains) > 0 {
+		primary = domains[0]
+		extras = domains[1:]
+	}
+	var sm map[string]string
+	if *stealMap != "" {
+		sm = map[string]string{}
+		for _, kv := range splitCommaStr(*stealMap) {
+			k, t, ok := strings.Cut(kv, "=")
+			if !ok || k == "" || t == "" {
+				log.Fatalf("bad -steal-map entry %q (want sni=host:port)", kv)
+			}
+			sm[strings.ToLower(strings.TrimSuffix(k, "."))] = t
+		}
+	}
 	err = kal2core.Serve(kal2core.ServerConfig{
 		Listen:           *listen,
 		UDPListen:        *udpListen,
+		Quic2Listen:      *quic2Listen,
 		UDPFECData:       fecD,
 		UDPFECParity:     fecP,
 		UDPSndWnd:        *udpWnd,
 		UDPResend:        *udpRes,
 		UDPRate:          *udpRate * 125000,
-		Domain:           *domain,
+		Domain:           primary,
+		ExtraDomains:     extras,
+		ExtraCertFiles:   domainCerts,
+		StealMap:         sm,
 		CertFile:         *cert,
 		KeyFile:          *key,
 		Identity:         idKey,

@@ -95,6 +95,7 @@ object XrayConfigBuilder {
         val alterId: Int = 0,
         val cipher: String? = null,
         val plugin: String? = null,
+        val altAddrs: String? = null,
     ) {
         companion object {
             fun fromMap(m: Map<*, *>): ProfileSpec {
@@ -124,6 +125,7 @@ object XrayConfigBuilder {
                     alterId = (m["alterId"] as? Number)?.toInt() ?: 0,
                     cipher = s("cipher"),
                     plugin = s("plugin"),
+                    altAddrs = s("altAddrs"),
                 )
             }
         }
