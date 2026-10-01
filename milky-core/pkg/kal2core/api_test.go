@@ -222,6 +222,10 @@ func TestLivenessRedialsBlackhole(t *testing.T) {
 // accept std|url × padded|raw, all decoding to the same bytes.
 func TestDecodeBase64AllVariants(t *testing.T) {
 	raw := []byte("ech-config-list-bytes-1234")
+	// stdHi produces + and / so the std variants can't be mistaken for
+	// url-alphabet strings (the old literal was alphabet-agnostic and let
+	// the missing RawStdEncoding case hide).
+	stdHi := []byte{0xfb, 0xff, 0xbf, 0xef}
 	variants := []string{
 		"ZWNoLWNvbmZpZy1saXN0LWJ5dGVzLTEyMzQ=",   // std padded
 		"ZWNoLWNvbmZpZy1saXN0LWJ5dGVzLTEyMzQ",     // std raw
@@ -235,6 +239,18 @@ func TestDecodeBase64AllVariants(t *testing.T) {
 		}
 		if !reflect.DeepEqual(got, raw) {
 			t.Fatalf("DecodeBase64(%q) = %q", v, got)
+		}
+	}
+	for _, v := range []string{
+		base64.StdEncoding.EncodeToString(stdHi),
+		base64.RawStdEncoding.EncodeToString(stdHi),
+	} {
+		got, err := DecodeBase64(v)
+		if err != nil {
+			t.Fatalf("DecodeBase64(%q): %v", v, err)
+		}
+		if !reflect.DeepEqual(got, stdHi) {
+			t.Fatalf("DecodeBase64(%q) = %v", v, got)
 		}
 	}
 	if _, err := DecodeBase64("!!!not-base64!!!"); err == nil {
