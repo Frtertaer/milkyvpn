@@ -523,6 +523,49 @@
 - Issue: —  PR: #35  Regression test: regression — пересборка .so внутри
   пайплайна (строгое решение: не коммитить бинари вообще, собирать в CI)
 
+### BUG-2026-10-02-04 — App: snapshot-кодек профилей ронял front/fronts/altAddrs
+- Severity: critical (после ЛЮБОГО рестарта/force-stop фронтированная ссылка
+  молча деградировала в прямую — в регионе с блоком backend это «мертвый
+  профиль»: `entries_blocked: all 1 endpoints unreachable`; весь fronting
+  умирал для сохранённых профилей)
+- Platform: android (+desktop — тот же codec)
+- Status: fixed-in-PR
+- Repro: импортировать ссылку с `front=` → force-stop/перезапуск → профиль
+  теряет fronts → коннект идёт впрямую и падает под блоком (воспроизведено
+  3× включая reboot)
+- Fix: `_profileToJson`/`_profileFromJson` сериализуют altAddrs/front/fronts
+  (VpnProfile.toJson их уже имел — расходился репозиторный codec)
+- Found by: Android emu verification session (hostile-region sim)
+- Issue: —  PR: TBD  Regression test:
+  test/core/subscription_test.dart::'fronts and altAddrs survive snapshot
+  reload (fronting persistence)'
+
+### BUG-2026-10-02-05 — App: парсер отбрасывал `carrier=rtc` как повреждённый
+- Severity: major (rtc-ссылки не импортировались в приложение — ядро и
+  сервер работают, но юзер не может подключиться)
+- Platform: android (+desktop)
+- Status: fixed-in-PR
+- Repro: вставить `kal2://…&carrier=rtc` → «1 строка повреждена»
+- Fix: 'rtc' добавлен в allowlist обоих kal2-путей парсера; в outbound-map
+  путь заодно добавлен проход front/fronts/alt (он их тоже ронял)
+- Found by: Android emu verification session
+- Issue: —  PR: TBD  Regression test:
+  test/core/subscription_test.dart::'kal2 rtc carrier parses and round-trips'
+
+### BUG-2026-10-02-06 — App: мёртвое ядро держало коннект-свип ~8 минут
+- Severity: major (UI «wedged»: кнопки неактивны, каждый platform-вызов
+  таймаутит 20с — внешне приложение зависло, лечилось только force-stop)
+- Platform: android (интермиттентно, после падения fronted-пробы)
+- Status: fixed-in-PR
+- Repro: ядро :kal2 перестаёт отвечать → connect-sweep гонит по N профилям
+  × (20с connect + 40с waiter) + N×20с isProfileSupported — до ~8-10 мин
+- Fix: fail-fast: 3 подряд isProfileSupported-ошибки прерывают скан, 2
+  подряд bridge_timeout в свипе → ошибка 'core_dead' (CORE_UNRESPONSIVE)
+- Found by: Android emu verification session
+- Issue: —  PR: TBD  Regression test:
+  test/core/vpn_controller_test.dart::'dead core (bridge timeouts) fails
+  fast, no full sweep'
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 
