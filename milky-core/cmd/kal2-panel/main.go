@@ -54,6 +54,10 @@ type panelStore struct {
 	Entries  []entry  `json:"entries"` // dialable endpoints for the link generator
 	Fronts   []entry  `json:"fronts"`  // deployed front relays
 	Links    []string `json:"links"`   // subscription payload served at /sub/<token>
+	// SubDisabled switches the /sub/<token> endpoint off centrally: clients
+	// keep their last fetched links and the refresh silently no-ops (the app
+	// treats 404 as subscription_not_found and retains the snapshot).
+	SubDisabled bool `json:"sub_disabled"`
 }
 
 type entry struct {
@@ -411,11 +415,15 @@ func (p *panel) links(w http.ResponseWriter, r *http.Request) {
 	defer p.mu.Unlock()
 	if r.Method == http.MethodPost {
 		var in struct {
-			Add string `json:"add"`
+			Add         string `json:"add"`
+			SubDisabled *bool  `json:"sub_disabled"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, "bad json", 400)
 			return
+		}
+		if in.SubDisabled != nil {
+			p.store.SubDisabled = *in.SubDisabled
 		}
 		if in.Add != "" && strings.HasPrefix(in.Add, "kal2://") {
 			dup := false
@@ -431,10 +439,11 @@ func (p *panel) links(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, map[string]any{
-		"entries": p.store.Entries,
-		"fronts":  p.store.Fronts,
-		"links":   p.store.Links,
-		"sub_url": p.subURL(r),
+		"entries":     p.store.Entries,
+		"fronts":      p.store.Fronts,
+		"links":       p.store.Links,
+		"sub_url":     p.subURL(r),
+		"auto_update": !p.store.SubDisabled,
 	})
 }
 
@@ -450,7 +459,7 @@ func (p *panel) subURL(r *http.Request) string {
 func (p *panel) sub(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.URL.Path, "/sub/")
 	p.mu.Lock()
-	ok := subtle.ConstantTimeCompare([]byte(tok), []byte(p.store.SubToken)) == 1
+	ok := subtle.ConstantTimeCompare([]byte(tok), []byte(p.store.SubToken)) == 1 && !p.store.SubDisabled
 	links := append([]string(nil), p.store.Links...)
 	p.mu.Unlock()
 	if !ok {

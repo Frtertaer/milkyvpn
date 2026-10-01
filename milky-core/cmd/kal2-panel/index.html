@@ -107,6 +107,11 @@
     </div>
     <div class="link" id="genOut" style="display:none"></div>
     <h2 style="margin-top:16px">Сохранённые ссылки (эндпоинт авто-обновления)</h2>
+    <div class="tog" style="margin:10px 0 2px">
+      <input type="checkbox" id="autoUpd" onchange="toggleAutoUpd()">
+      <span>Авто-обновление ссылок — выкл отключает раздачу подписки всем клиентам</span>
+      <span class="pill" id="autoUpdState"></span>
+    </div>
     <div class="kv"><b>URL подписки</b><span class="link" id="subUrl">…</span></div>
     <div id="linkList"></div>
   </div>
@@ -188,6 +193,9 @@ async function applyCfg(){
 }
 function renderLinks(){
   $('subUrl').textContent = LINKS.sub_url;
+  $('autoUpd').checked = !!LINKS.auto_update;
+  $('autoUpdState').textContent = LINKS.auto_update?'эндпоинт раздаёт':'эндпоинт выключен (404)';
+  $('autoUpdState').className = 'pill '+(LINKS.auto_update?'on':'off');
   $('genEntries').innerHTML = LINKS.entries.map((e,i)=>
     `<div class="tog"><input type="checkbox" class="ge" value="${e.addr}" ${i===0?'checked':''}> ${e.label} <span class="pill">${e.addr}</span></div>`).join('');
   $('genFronts').innerHTML = LINKS.fronts.map(f=>
@@ -202,6 +210,13 @@ async function genLink(){
     await navigator.clipboard?.writeText(r.link).catch(()=>{});
     toast('Ссылка сгенерирована и скопирована');
   }catch(e){ toast('Ошибка: '+e.message,false); }
+}
+async function toggleAutoUpd(){
+  const on=$('autoUpd').checked;
+  try{ await api('/api/links',{sub_disabled:!on});
+    LINKS=await api('/api/links'); renderLinks();
+    toast(on?'Авто-обновление включено':'Авто-обновление выключено — клиенты остаются на текущих ссылках');
+  }catch(e){ $('autoUpd').checked=!on; toast('Ошибка: '+e.message,false); }
 }
 async function saveLinks(){
   if(!$('genOut').textContent) { toast('Сначала сгенерируйте ссылку',false); return; }
