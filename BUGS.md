@@ -628,7 +628,7 @@
   авто-коннекта; логика шторки вынесена в _showServerSheet +
   _applyServerPick, error-поток по-прежнему ретраит коннект
 - Found by: Windows verification session (windows-test-49)
-- Issue: —  PR: TBD  Regression tests:
+- Issue: —  PR: #41  Regression tests:
   test/features/home_states_test.dart::'home picker button opens the
   country/profile sheet' + 'picking a profile from home pins it without
   connecting'
