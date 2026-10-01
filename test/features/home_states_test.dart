@@ -5,6 +5,8 @@ import 'package:milkyvpn/core/vpn/vpn_bridge.dart';
 import 'package:milkyvpn/core/vpn/vpn_controller.dart';
 import 'package:milkyvpn/design/milky_colors.dart';
 import 'package:milkyvpn/design/milky_connect_orb.dart';
+import 'package:milkyvpn/design/milky_sheet.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../core/vpn_controller_test.dart' show FakeBridge;
 import '../support/harness.dart';
@@ -392,6 +394,57 @@ void main() {
       ]) {
         expect(finder, findsWidgets);
       }
+      expect(tester.takeException(), isNull);
+      vpn.dispose();
+    });
+  });
+
+  group('server picker', () {
+    // windows-test-49: the «Профили» pick list was only reachable through the
+    // error sheet — nothing on the home screen opened it. The home selector
+    // must expose the same country/profile sheet directly.
+    testWidgets('home picker button opens the country/profile sheet', (
+      tester,
+    ) async {
+      final repo = await repoWith(fixture('subscription_16_fake.txt'));
+      final bridge = FakeBridge();
+      final vpn = VpnController(bridge: bridge);
+      await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
+
+      await tester.tap(find.byTooltip('Выберите страну'));
+      await tester.pumpAndSettle();
+      expect(find.text('Профили'), findsOneWidget);
+      final rows = find.descendant(
+        of: find.byType(MilkySheetFrame),
+        matching: find.byType(InkWell),
+      );
+      expect(rows, findsWidgets);
+      vpn.dispose();
+    });
+
+    testWidgets('picking a profile from home pins it without connecting', (
+      tester,
+    ) async {
+      final repo = await repoWith(fixture('subscription_16_fake.txt'));
+      final bridge = FakeBridge();
+      final vpn = VpnController(bridge: bridge);
+      await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
+
+      await tester.tap(find.byTooltip('Выберите страну'));
+      await tester.pumpAndSettle();
+      await tester.tap(
+        find
+            .descendant(
+              of: find.byType(MilkySheetFrame),
+              matching: find.byType(InkWell),
+            )
+            .first,
+      );
+      await tester.pumpAndSettle();
+
+      final prefs = await SharedPreferences.getInstance();
+      expect(prefs.getString('selected_profile'), isNotNull);
+      expect(bridge.connectCalls, isEmpty);
       expect(tester.takeException(), isNull);
       vpn.dispose();
     });
