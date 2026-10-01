@@ -48,10 +48,10 @@ type ServerConfig struct {
 	// StealMap splices specific foreign SNIs to per-SNI upstreams before
 	// StealAddr: a scanner probing different cover names reaches the real
 	// matching site for each.
-	StealMap map[string]string
-	DriftPath        string // secret drift path, default carrier.DefaultDriftPath
-	DecoyDir         string // directory served for plain HTTP probes
-	Users            []User
+	StealMap  map[string]string
+	DriftPath string // secret drift path, default carrier.DefaultDriftPath
+	DecoyDir  string // directory served for plain HTTP probes
+	Users     []User
 	// Egress controls upstream dialing: IPv4 preference and an optional
 	// chained SOCKS5 upstream (e.g. for reputation-flagged ranges).
 	Egress *core.EgressConfig
@@ -71,6 +71,10 @@ type ServerConfig struct {
 	// a v2 handshake yields no SNI to filter. Shares the veil TLS material
 	// and KAL/2 handshake path.
 	Quic2Listen string
+	// RTCListen enables the rtc (WebRTC-shaped) UDP listener, e.g. ":20445" —
+	// quasar on the inside, valid RTP packets on the wire, so DPI sees a
+	// media flow instead of an unknown UDP tunnel.
+	RTCListen string
 	// FrontListen enables a plain-HTTP listener (e.g. ":8081") serving the
 	// same drift/mosaic/decoy mux without TLS — the backend leg of a front
 	// relay (serverless function, CDN worker): the front terminates TLS on
@@ -157,7 +161,7 @@ type ClientConfig struct {
 	// net.Dialer.Control): TUN mode pins carrier sockets to the physical
 	// egress device so they bypass the tunnel without FIB bypass routes.
 	// Ignored when DialContext is set.
-	DialControl      func(network, address string, c syscall.RawConn) error
+	DialControl func(network, address string, c syscall.RawConn) error
 	// Front is an optional front-relay URL ("https://host[:port][/base]", e.g.
 	// a serverless function or CDN worker domain) that the HTTP-shaped
 	// carriers — drift, cdn, mosaic — dial instead of Addr: the relay
@@ -171,7 +175,7 @@ type ClientConfig struct {
 	// front in order — so one link covers open networks, IP-block waves and
 	// whitelist mode. Inside a front the hedge narrows to the HTTP-shaped
 	// carriers; veil/quasar/quic2 keep dialing only on the direct context.
-	Fronts []string
+	Fronts           []string
 	HandshakeTimeout time.Duration
 	Logf             func(string, ...any)
 	// Resume, set internally by the migration path, makes dialers run a
@@ -184,11 +188,11 @@ type ClientConfig struct {
 type Client struct {
 	Sess *kal2.Session
 
-	cfg      ClientConfig
-	logf     func(string, ...any)
-	mu       sync.Mutex
-	lanes    []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
-	laneRR   atomic.Uint32
+	cfg    ClientConfig
+	logf   func(string, ...any)
+	mu     sync.Mutex
+	lanes  []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
+	laneRR atomic.Uint32
 	// laneRTT records the last watchdog pong RTT per lane (ns; 0 = not yet
 	// measured). A lane whose pongs crawl is throttled rather than dead —
 	// the kill path would never fire on it, so it must be quarantined out of
@@ -201,7 +205,7 @@ type Client struct {
 	// Ping method): the session routes each PONG to a single registered
 	// channel, so concurrent Pings would steal each other's replies.
 	pingMu sync.Mutex
-	scores   *core.Scorecard
+	scores *core.Scorecard
 }
 
 // laneQuarantineRTT is the watchdog pong RTT above which a lane is
@@ -469,6 +473,27 @@ func Serve(cfg ServerConfig) error {
 			}
 		}()
 		logf("core: quasar udp on %s (fec %d,%d)", ql.Addr(), cfg.UDPFECData, cfg.UDPFECParity)
+	}
+
+	if cfg.RTCListen != "" {
+		wireKey := carrier.QuasarWireKey(ed25519.PrivateKey(cfg.Identity).Public().(ed25519.PublicKey))
+		rl, err := carrier.NewRTCListener(v, &carrier.QuasarConfig{
+			WireKey:      wireKey,
+			DataShards:   cfg.UDPFECData,
+			ParityShards: cfg.UDPFECParity,
+			SndWnd:       cfg.UDPSndWnd,
+			Resend:       cfg.UDPResend,
+			RateLimit:    cfg.UDPRate,
+		}, cfg.RTCListen)
+		if err != nil {
+			return fmt.Errorf("rtc listen: %w", err)
+		}
+		go func() {
+			if err := rl.Serve(); err != nil {
+				logf("core: rtc listener %s stopped: %v", cfg.RTCListen, err)
+			}
+		}()
+		logf("core: rtc udp on %s", rl.Addr())
 	}
 
 	if cfg.Quic2Listen != "" {
@@ -873,6 +898,14 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		return s, err
 	case "quic2":
 		s, _, err := carrier.DialQuic2(ctx, cc)
+		return s, err
+	case "rtc":
+		s, _, err := carrier.DialRTC(ctx, cc, &carrier.QuasarConfig{
+			DataShards:   cfg.QuasarFEC[0],
+			ParityShards: cfg.QuasarFEC[1],
+			RcvWnd:       cfg.QuasarRcvWnd,
+			Resend:       cfg.QuasarResend,
+		})
 		return s, err
 	case "mosaic":
 		cc.Endpoints = endpoints(cfg)

@@ -43,7 +43,7 @@ const (
 // server flags the panel is allowed to touch on the kal2 unit; anything
 // else in ExecStart is preserved verbatim.
 var managedFlags = []string{
-	"front-listen", "quic2-listen", "decoy", "steal",
+	"front-listen", "quic2-listen", "rtc-listen", "decoy", "steal",
 	"echkeys", "egress-family", "upstream",
 }
 

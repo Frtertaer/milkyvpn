@@ -95,7 +95,7 @@
           <option value="auto">auto (умный sweep)</option>
           <option value="veil">veil</option><option value="drift">drift</option>
           <option value="cdn">cdn</option><option value="mosaic">mosaic</option>
-          <option value="quasar">quasar</option><option value="quic2">quic2</option>
+          <option value="quasar">quasar</option><option value="quic2">quic2</option><option value="rtc">rtc (WebRTC-облик)</option>
         </select>
         <label>SNI</label>
         <input type="text" id="genSni" value="kal.mergescribe.dev">
@@ -157,8 +157,9 @@ async function loadAll(){
   }catch(e){ if(e.message!=='auth') toast('Ошибка: '+e.message,false); }
 }
 const FLAG_LABELS={ 'front-listen':'Фронтинг (plain-HTTP для релеев)', 'quic2-listen':'QUICv2 listener',
-  'udp-listen':'quasar UDP/KCP', 'decoy':'Decoy-сайт', 'steal':'Steal fallback', 'echkeys':'ECH ключи',
-  'egress-family':'Семейство исходящих', 'upstream':'Upstream SOCKS5' };
+  'rtc-listen':'rtc (WebRTC-облик) UDP', 'udp-listen':'quasar UDP/KCP', 'decoy':'Decoy-сайт',
+  'steal':'Steal fallback', 'echkeys':'ECH ключи', 'egress-family':'Семейство исходящих',
+  'upstream':'Upstream SOCKS5' };
 function renderCfg(){
   const c=$('cfg'); c.innerHTML='';
   for(const [f,lab] of Object.entries(FLAG_LABELS)){
