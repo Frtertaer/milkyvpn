@@ -55,3 +55,15 @@ probe() {
 mv "$OUT.new" "$OUT"
 
 scp -q -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new "$OUT" "$PUSH" 2>/dev/null
+
+# History: append the same batch on the US side (capped so the file can't
+# grow unbounded — ~20k lines ≈ weeks at a 10-min cron). The panel renders
+# per-entry latency/uptime trends from it. PUSH_HOST is "host:/path".
+if [ "${CANARY_HISTORY:-1}" = "1" ]; then
+  HIST=${CANARY_HISTORY_PATH:-${PUSH##*:}} # same dir, -history suffix below
+  HIST="${HIST%.jsonl}-history.jsonl"
+  cat "$OUT" | ssh -o ConnectTimeout=10 -o StrictHostKeyChecking=accept-new \
+    "${PUSH%%:*}" \
+    "cat >> '$HIST'; tail -n 20000 '$HIST' > '$HIST.tmp' && mv '$HIST.tmp' '$HIST'" \
+    2>/dev/null || true
+fi
