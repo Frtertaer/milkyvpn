@@ -448,5 +448,39 @@ void main() {
       expect(tester.takeException(), isNull);
       vpn.dispose();
     });
+
+    // windows-test-49: three profiles on 23.133.88.167:443 rendered identical
+    // rows — the list needs a carrier/front distinguisher tag.
+    testWidgets('profile rows show carrier and front tags', (tester) async {
+      const links = 'kal2://psk@23.133.88.167:443?sni=kal.mergescribe.dev'
+          '&pub=PUB&carrier=veil\n'
+          'kal2://psk@23.133.88.167:443?sni=kal.mergescribe.dev&pub=PUB'
+          '&carrier=mosaic&front='
+          'https%3A%2F%2Ffunctions.yandexcloud.net%2Fd4erhmmikarvfr4tsc7e\n'
+          'kal2://psk@23.133.88.167:443?sni=kal.mergescribe.dev&pub=PUB'
+          '&carrier=mosaic&front='
+          'https%3A%2F%2Fmilky-front.milky-front.workers.dev\n'
+          'kal2://psk@23.133.88.167:20445?sni=kal.mergescribe.dev&pub=PUB'
+          '&carrier=rtc';
+      final repo = await repoWith(links);
+      final bridge = FakeBridge();
+      final vpn = VpnController(bridge: bridge);
+      await pumpMilky(tester, repo: repo, vpn: vpn, bridge: bridge);
+
+      await tester.tap(find.byTooltip('Выберите страну'));
+      await tester.pumpAndSettle();
+      expect(find.text('Профили'), findsOneWidget);
+      expect(find.text('veil'), findsOneWidget);
+      expect(
+        find.text('mosaic · functions.yandexcloud.net'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('mosaic · milky-front.mi…workers.dev'),
+        findsOneWidget,
+      );
+      expect(find.text('rtc'), findsOneWidget);
+      vpn.dispose();
+    });
   });
 }

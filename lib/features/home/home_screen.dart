@@ -538,6 +538,35 @@ class _ProfilePickList extends StatelessWidget {
   final String? selectedId;
   final ValueChanged<String> onPick;
 
+  /// Distinguisher chip text: `carrier` plus the front host when the profile
+  /// dials a front relay — several profiles on the same host:port are
+  /// otherwise indistinguishable in this list.
+  static String _tagFor(VpnProfile p) {
+    final carrier = p.network.trim();
+    final front = p.front ??
+        (p.fronts != null && p.fronts!.isNotEmpty ? p.fronts!.first : null);
+    final host = _frontHost(front);
+    return [if (carrier.isNotEmpty) carrier, if (host != null) host]
+        .join(' · ');
+  }
+
+  /// Registered host of a front= URL, middle-truncated when long so the chip
+  /// stays narrow (`milky-front.mi…workers.dev` keeps the domain tail).
+  static String? _frontHost(String? front) {
+    if (front == null) return null;
+    final f = front.trim();
+    if (f.isEmpty) return null;
+    final uri = Uri.tryParse(f.contains('://') ? f : 'https://$f');
+    final host = (uri?.host ?? '').trim();
+    if (host.isEmpty) return f;
+    if (host.length <= 26) return host;
+    final labels = host.split('.');
+    if (labels.length < 3) return '${host.substring(0, 25)}…';
+    final tail = '${labels[labels.length - 2]}.${labels.last}';
+    if (tail.length > 22) return '${host.substring(0, 25)}…';
+    return '${host.substring(0, 25 - tail.length)}…$tail';
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.milky;
@@ -563,6 +592,7 @@ class _ProfilePickList extends StatelessWidget {
               final label = p.redactedRemark.trim().isEmpty
                   ? '${p.address}:${p.port}'
                   : p.redactedRemark.trim();
+              final tag = _tagFor(p);
               return Material(
                 color: sel
                     ? c.accent.withValues(alpha: 0.14)
@@ -588,8 +618,35 @@ class _ProfilePickList extends StatelessWidget {
                             style: MilkyType.body,
                           ),
                         ),
-                        if (sel)
+                        if (tag.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 8,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: c.accent.withValues(alpha: 0.10),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: c.accent.withValues(alpha: 0.35),
+                              ),
+                            ),
+                            child: Text(
+                              tag,
+                              maxLines: 1,
+                              style: MilkyType.label.copyWith(
+                                color: c.accent,
+                                fontSize: 10.5,
+                                letterSpacing: 0.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (sel) ...[
+                          const SizedBox(width: 6),
                           Icon(Icons.check_rounded, size: 18, color: c.accent),
+                        ],
                       ],
                     ),
                   ),
