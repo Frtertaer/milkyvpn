@@ -430,14 +430,18 @@ func Serve(cfg ServerConfig) error {
 	}
 	v.SetMux(mux)
 
-	if cfg.FrontListen != "" {
-		fsrv := &http.Server{Addr: cfg.FrontListen, Handler: mux}
+	for _, addr := range strings.Split(cfg.FrontListen, ",") {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			continue
+		}
+		fsrv := &http.Server{Addr: addr, Handler: mux}
 		go func() {
 			if err := fsrv.ListenAndServe(); err != nil {
-				logf("core: front listener %s stopped: %v", cfg.FrontListen, err)
+				logf("core: front listener %s stopped: %v", addr, err)
 			}
 		}()
-		logf("core: front relay listener on %s", cfg.FrontListen)
+		logf("core: front relay listener on %s", addr)
 	}
 
 	if cfg.UDPListen != "" {

@@ -15,7 +15,8 @@
 ## 1. Сервер: plain-HTTP порт для фронта
 
 ```bash
-kal2-server ... -front-listen 127.0.0.1:8081   # или 0.0.0.0:8081
+kal2-server ... -front-listen 0.0.0.0:8081            # один порт
+kal2-server ... -front-listen 0.0.0.0:8081,0.0.0.0:8880  # несколько через запятую
 ```
 
 На нём поднимается тот же mux (drift/mosaic endpoints + decoy 404), без TLS —
@@ -48,9 +49,14 @@ Carrier: только `mosaic` (функция буферизует запрос
 ```bash
 npm i -g wrangler && wrangler login
 wrangler deploy --name milky-front cloudflare_worker.js \
-  --var UPSTREAM:http://<server-ip>:8081
+  --var UPSTREAM:http://<server-hostname>:8880
 # → https://milky-front.<acct>.workers.dev
 ```
+
+Ограничения воркера: `UPSTREAM` обязан быть именем хоста — fetch на голый IP
+Cloudflare рубит (error 1003); и порт из разрешённого списка для http://:
+80, 8080, 8880, 2052, 2082, 2086, 2095 (для https://: 443, 8443, 2053, 2083,
+2087, 2096). Под это выделен `-front-listen 0.0.0.0:8880`.
 
 Workers прозрачно проксируют WebSocket → carriers: `cdn` (WS-drift, стрим) и
 `mosaic`. workers.dev НЕ в белых списках — покрывает волны блокировки IP,
@@ -75,3 +81,7 @@ pandora://<psk>@<server>:443?sni=<domain>&pub=<hex>&carrier=mosaic&front=https%3
   прямого drift; это аварийный режим, не основной.
 - Фронт видит только: что клиент ходит на его домен (размеры/тайминги HTTPS
   запросов). IP сервера фронту известен (UPSTREAM), но РКН его не видит.
+- Гейтвеи функций (проверено на Яндексе) отвергают пути в URL вызова — логический
+  путь носителя едет в заголовке `X-Milky-Path`, релей разворачивает его в path
+  upstream'а. По той же причине фронт-нога говорит HTTP/1.1 (h2 ALPN в Chrome-
+  фингерпринте переписывается, иначе edge отвечает h2-префейсом).
