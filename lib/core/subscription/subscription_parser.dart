@@ -345,6 +345,7 @@ class SubscriptionParser {
       _nz(profile.cover) ?? '',
       _nz(profile.pin) ?? '',
       _nz(profile.altAddrs) ?? '',
+      _nz(profile.front) ?? '',
     ];
 
     return jsonEncode([
@@ -405,6 +406,7 @@ class SubscriptionParser {
     cipher: profile.cipher,
     plugin: profile.plugin,
     altAddrs: profile.altAddrs,
+    front: profile.front,
   );
 
   VpnProfile? _parseVless(String line) {
@@ -719,8 +721,21 @@ class SubscriptionParser {
         cover: _nz(query['cover']),
         pin: _nz(query['pin']),
         altAddrs: _altAddrs(query['alt']),
+        front: _frontUrl(query['front']),
       ),
     );
+  }
+
+  /// `front=` param: a front-relay URL the HTTP-shaped carriers dial in
+  /// place of the entry. Only http(s)/ws(s) with a real host is accepted —
+  /// anything else is dropped rather than failing the link.
+  static String? _frontUrl(String? raw) {
+    if (raw == null) return null;
+    final u = Uri.tryParse(raw.trim());
+    if (u == null || u.host.isEmpty) return null;
+    const ok = {'https', 'http', 'wss', 'ws'};
+    if (!ok.contains(u.scheme.toLowerCase())) return null;
+    return raw.trim();
   }
 
   /// `alt=` param: comma-separated `host:port` alternates for the kal2 entry.

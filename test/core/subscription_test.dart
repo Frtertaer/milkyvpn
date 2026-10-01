@@ -448,6 +448,37 @@ proxies:
       expect(plain.altAddrs, isNull);
     });
 
+    test('kal2 front= relay URL parses, validates and round-trips', () {
+      final front = 'https://d5x123.functions.yandexcloud.net/relay';
+      final p = parser.parseLine(
+        'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK&carrier=mosaic'
+        '&front=${Uri.encodeComponent(front)}#M',
+      )!;
+      expect(p.front, front);
+      // A link differing only in front is a different profile.
+      final plain = parser.parseLine(
+        'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK&carrier=mosaic#M',
+      )!;
+      expect(p.id, isNot(plain.id));
+      // Export round-trip preserves the relay.
+      final exported = const SubscriptionExporter().toShareLink(p)!;
+      expect(exported, contains(Uri.encodeComponent(front)));
+      expect(parser.parseLine(exported)!.front, p.front);
+      // Bogus fronts are dropped, not fatal.
+      expect(
+        parser.parseLine(
+          'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK&front=not-a-url#M',
+        )!.front,
+        isNull,
+      );
+      expect(
+        parser.parseLine(
+          'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK&front=ftp://x#M',
+        )!.front,
+        isNull,
+      );
+    });
+
     test('kal2 mosaic carrier and SPKI pin survive parse and export', () {
       const pin =
           'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';

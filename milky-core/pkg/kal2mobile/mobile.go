@@ -10,7 +10,7 @@
 //	 "pub":"<hex>", "psk":"<hex>", "socks":"127.0.0.1:10808",
 //	 "ech":"<base64 ECHConfigList>", "cover":true,
 //	 "pin":"<b64 or hex sha256(SPKI)>[,...]", "insecure":false,
-//	 "tun":false, "tun_fd":0}
+//	 "front":"https://relay.example[/base]", "tun":false, "tun_fd":0}
 //
 // The outer TLS certificate is verified against the system roots unless
 // "pin" is given (SPKI pin replaces CA verification) or "insecure" is true
@@ -47,6 +47,10 @@ type mobileConfig struct {
 	ECH       string `json:"ech"`    // base64 ECHConfigList (link param ech=)
 	Cover     *bool  `json:"cover"`  // default on: jittered chaff against timing DPI
 	Pin       string `json:"pin"`
+	// Front: HTTP-shaped carriers (drift/cdn/mosaic) dial this relay URL
+	// instead of addr — a serverless function / CDN worker that forwards
+	// to the server's front listener. For blocked entries / whitelists.
+	Front     string `json:"front"`
 	Insecure  bool   `json:"insecure"`
 	Tun       bool   `json:"tun"`    // platform TUN adapter (root/admin)
 	TunFd     int    `json:"tun_fd"` // Android: adopt a VpnService fd
@@ -150,6 +154,7 @@ func Start(configJSON string) (int, error) {
 		PinSHA256:          pins,
 		ECHConfigList:      echList,
 		Cover:              cover,
+		Front:              mc.Front,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()

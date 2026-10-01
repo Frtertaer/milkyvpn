@@ -599,9 +599,20 @@ type mosaicPool struct {
 }
 
 type pooledTransport struct {
-	tr       *http2.Transport
+	tr       http.RoundTripper
 	wire     *atomic.Int64 // raw TCP bytes both ways, handshake included
 	reserved int           // worst-case bytes of tiles still in flight
+}
+
+// closeIdleConnections releases the pool connections of a transport whose
+// concrete type supports it (both h2 and std http transports do).
+func closeIdleConnections(rt http.RoundTripper) {
+	switch t := rt.(type) {
+	case *http2.Transport:
+		t.CloseIdleConnections()
+	case *http.Transport:
+		t.CloseIdleConnections()
+	}
 }
 
 func newMosaicPool(cfg ClientConfig) *mosaicPool {
@@ -611,22 +622,36 @@ func newMosaicPool(cfg ClientConfig) *mosaicPool {
 // transport returns a transport for addr with reserve bytes of its budget
 // claimed for one exchange, so concurrent tiles cannot jointly overrun the
 // budget. A fresh transport always admits its first tile.
-func (p *mosaicPool) transport(addr string, reserve int) *http2.Transport {
+func (p *mosaicPool) transport(addr string, reserve int) http.RoundTripper {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	if pt, ok := p.tr[addr]; ok && max(int(pt.wire.Load()), mosaicHandshakeEst)+pt.reserved+reserve <= mosaicConnBudget {
 		pt.reserved += reserve
 		return pt.tr
 	} else if ok {
-		go pt.tr.CloseIdleConnections()
+		go closeIdleConnections(pt.tr)
 	}
 	cfg := p.cfg
 	cfg.Addr = addr
 	wire := new(atomic.Int64)
-	tr := &http2.Transport{
-		DialTLSContext: func(ctx context.Context, network, _ string, _ *tls.Config) (net.Conn, error) {
-			return dialMosaicTLS(ctx, cfg, network, wire)
-		},
+	var tr http.RoundTripper
+	if cfg.front() != nil {
+		// Fronts (serverless functions, edge workers) terminate TLS at a
+		// gateway that only speaks HTTP/1.1 upstream-facing — h2 framing
+		// never reaches them. Request/response tiles don't need h2
+		// multiplexing, so keep-alive HTTP/1.1 carries them fine.
+		tr = &http.Transport{
+			DialTLSContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+				return dialMosaicTLS(ctx, cfg, network, wire, "http/1.1")
+			},
+			MaxIdleConnsPerHost: 8,
+		}
+	} else {
+		tr = &http2.Transport{
+			DialTLSContext: func(ctx context.Context, network, _ string, _ *tls.Config) (net.Conn, error) {
+				return dialMosaicTLS(ctx, cfg, network, wire, "h2")
+			},
+		}
 	}
 	p.tr[addr] = &pooledTransport{tr: tr, wire: wire, reserved: reserve}
 	return tr
@@ -634,7 +659,7 @@ func (p *mosaicPool) transport(addr string, reserve int) *http2.Transport {
 
 // settle drops a finished exchange's reservation; its real bytes are
 // already in the transport's wire count.
-func (p *mosaicPool) settle(addr string, tr *http2.Transport, reserved int) {
+func (p *mosaicPool) settle(addr string, tr http.RoundTripper, reserved int) {
 	p.mu.Lock()
 	if pt, ok := p.tr[addr]; ok && pt.tr == tr {
 		pt.reserved -= reserved
@@ -663,49 +688,49 @@ func (c countingConn) Write(b []byte) (int, error) {
 // release closes a transport's now-idle connections once it has been
 // superseded or has spent its budget; otherwise a connection busy with a
 // parked long-poll when the transport was replaced would stay open forever.
-func (p *mosaicPool) release(addr string, tr *http2.Transport) {
+func (p *mosaicPool) release(addr string, tr http.RoundTripper) {
 	p.mu.Lock()
 	pt, ok := p.tr[addr]
 	stale := !ok || pt.tr != tr
 	p.mu.Unlock()
 	if stale {
-		tr.CloseIdleConnections()
+		closeIdleConnections(tr)
 	}
 }
 
 // retire drops a transport whose connection failed so the next tile to
 // that endpoint dials fresh.
-func (p *mosaicPool) retire(addr string, tr *http2.Transport) {
+func (p *mosaicPool) retire(addr string, tr http.RoundTripper) {
 	p.mu.Lock()
 	if pt, ok := p.tr[addr]; ok && pt.tr == tr {
 		delete(p.tr, addr)
 	}
 	p.mu.Unlock()
-	go tr.CloseIdleConnections()
+	go closeIdleConnections(tr)
 }
 
 func (p *mosaicPool) close() {
 	p.mu.Lock()
 	for _, pt := range p.tr {
-		pt.tr.CloseIdleConnections()
+		closeIdleConnections(pt.tr)
 	}
 	p.tr = map[string]*pooledTransport{}
 	p.mu.Unlock()
 }
 
-func dialMosaicTLS(ctx context.Context, cfg ClientConfig, network string, wire *atomic.Int64) (net.Conn, error) {
+func dialMosaicTLS(ctx context.Context, cfg ClientConfig, network string, wire *atomic.Int64, alpn string) (net.Conn, error) {
 	dial := cfg.DialContext
 	if dial == nil {
 		d := &net.Dialer{Timeout: cfg.timeout(), Control: cfg.DialControl}
 		dial = d.DialContext
 	}
-	raw, err := dial(ctx, network, cfg.Addr)
+	raw, err := dial(ctx, network, cfg.dialAddr())
 	if err != nil {
 		return nil, err
 	}
 	raw = countingConn{Conn: raw, n: wire}
 	spec, _ := utls.UTLSIdToSpec(pickHelloID(cfg.Fingerprint))
-	uc := utls.UClient(raw, cfg.utlsConfig("h2"), utls.HelloCustom)
+	uc := utls.UClient(raw, cfg.legTLS(alpn), utls.HelloCustom)
 	if err := uc.ApplyPreset(&spec); err != nil {
 		_ = raw.Close()
 		return nil, err
@@ -743,7 +768,11 @@ func DialMosaic(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessi
 		path = DefaultMosaicPath
 	}
 	eps := cfg.Endpoints
-	if len(eps) == 0 {
+	if fe := cfg.front(); fe != nil {
+		// Fronted: every tile goes to the single relay — endpoint
+		// diversity lives behind the front, not on our leg.
+		eps = []string{fe.addr}
+	} else if len(eps) == 0 {
 		eps = []string{cfg.Addr}
 	}
 	mc := &mosaicClient{
@@ -987,7 +1016,7 @@ func (m *mosaicClient) exchangeOnce(ctx context.Context, addr string, t *tile) (
 	body := t.encode(m.psk)
 	reserve := len(body) + mosaicRespHdr + mosaicMACLen + mosaicChunk + 256 + mosaicTileOverhead
 	tr := m.pool.transport(addr, reserve)
-	url := "https://" + m.cfg.SNI + m.path
+	url := m.cfg.requestURL(m.path)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
 		return nil, err
@@ -995,6 +1024,7 @@ func (m *mosaicClient) exchangeOnce(ctx context.Context, addr string, t *tile) (
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("User-Agent", driftUA())
 	req.Header.Set("Cache-Control", "no-store")
+	m.cfg.setFrontPath(req.Header, m.path)
 	req.ContentLength = int64(len(body))
 	resp, err := tr.RoundTrip(req)
 	if err != nil {

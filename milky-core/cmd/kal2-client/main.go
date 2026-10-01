@@ -62,6 +62,7 @@ func main() {
 	ech := flag.String("ech", "", "base64 ECHConfigList — Encrypted Client Hello on veil (outer SNI shows only the cover name)")
 	pin := flag.String("pin", "", "comma list of sha256(SPKI) pins (hex|b64) replacing CA verification")
 	cover := flag.Bool("cover", true, "jittered chaff traffic against timing/size DPI heuristics")
+	front := flag.String("front", "", "front relay URL (https://host[:port][/base]) — HTTP-shaped carriers (drift/cdn/mosaic) dial it instead of -addr; the relay forwards to the server's front listener")
 	qfec := flag.String("qfec", "0,0", "quasar carrier Reed-Solomon FEC shards data,parity (e.g. 10,3)")
 	qres := flag.Int("qresend", 0, "quasar client KCP dup-ack fast-retransmit threshold (0 = RTO only)")
 	lanes := flag.Int("lanes", 0, "number of parallel carrier sessions (multi-lane stream spreading)")
@@ -141,6 +142,7 @@ func main() {
 		Lanes:              *lanes,
 		QuasarLanes:        *qlanes,
 		DialControl:        bindGuard.Control,
+		Front:              *front,
 	}
 	for _, p := range strings.Split(*pin, ",") {
 		if p = strings.TrimSpace(p); p == "" {

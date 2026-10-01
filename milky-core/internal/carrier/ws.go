@@ -222,12 +222,16 @@ func (v *VeilListener) wsAccept(w http.ResponseWriter, r *http.Request) *wsConn 
 }
 
 // wsDial performs the client upgrade on an established TLS conn.
-func wsDial(conn net.Conn, host, path string) (*wsConn, error) {
+func wsDial(conn net.Conn, host, path string, extra map[string]string) (*wsConn, error) {
 	var key [16]byte
 	_, _ = rand.Read(key[:])
 	keyB64 := base64.StdEncoding.EncodeToString(key[:])
-	req := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nUser-Agent: %s\r\n\r\n",
-		path, host, keyB64, driftUA())
+	var hdr strings.Builder
+	for k, v := range extra {
+		fmt.Fprintf(&hdr, "%s: %s\r\n", k, v)
+	}
+	req := fmt.Sprintf("GET %s HTTP/1.1\r\nHost: %s\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\nUser-Agent: %s\r\n%s\r\n",
+		path, host, keyB64, driftUA(), hdr.String())
 	if _, err := io.WriteString(conn, req); err != nil {
 		return nil, err
 	}

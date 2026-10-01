@@ -13,6 +13,8 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"net/http"
+	"net/url"
 	"strings"
 	"syscall"
 	"time"
@@ -74,8 +76,97 @@ type ClientConfig struct {
 	// exporter. Off by default: a stripping middlebox could otherwise force
 	// the session unbound — enable only for compatibility with known peers.
 	AllowUnboundFallback bool
+	// Front is an optional relay URL ("https://host[:port][/base]") the
+	// HTTP-shaped carriers dial INSTEAD of Addr: a dumb proxy (serverless
+	// function, CDN worker) that forwards requests to the server's plain
+	// front listener. The TLS leg then belongs to the front — its own
+	// domain, its own certificate — so SNI is the front host and
+	// PinSHA256/ECH are bypassed (they authenticate OUR server leaf, which
+	// the front leg never presents); the inner KAL/2 handshake still
+	// authenticates the server end-to-end. Carriers that keep a request
+	// open in both directions (raw drift POST) only work through fronts
+	// that stream bodies; mosaic (short POSTs) and the WS drift shape
+	// survive buffering fronts like cloud functions.
+	Front string
 	// Logf receives carrier diagnostics.
 	Logf func(string, ...any)
+}
+
+// frontEndpoint is the parsed Front relay: where to dial and what the TLS
+// leg and request URLs should look like on the fronted hop.
+type frontEndpoint struct {
+	addr string // host:port to dial
+	sni  string // front domain — TLS server name and URL host
+	base string // optional path prefix the relay expects ("/x"), "" = root
+}
+
+// front parses cfg.Front; nil when unset. Schemes http/https/wss/ws are
+// accepted (ws* are aliases — the transport still negotiates the leg).
+func (c *ClientConfig) front() *frontEndpoint {
+	if c.Front == "" {
+		return nil
+	}
+	u, err := url.Parse(c.Front)
+	if err != nil || u.Host == "" {
+		return nil
+	}
+	host := u.Host
+	if u.Port() == "" {
+		host = net.JoinHostPort(u.Hostname(), "443")
+	}
+	return &frontEndpoint{
+		addr: host,
+		sni:  u.Hostname(),
+		base: strings.TrimSuffix(u.EscapedPath(), "/"),
+	}
+}
+
+// dialAddr returns where the carrier's TCP leg connects — the front relay
+// when Front is set, else the server entry Addr.
+func (c *ClientConfig) dialAddr() string {
+	if fe := c.front(); fe != nil {
+		return fe.addr
+	}
+	return c.Addr
+}
+
+// frontPathHeader carries the logical request path on a fronted leg.
+// Invoke gateways (Yandex Functions, some edge setups) reject any path
+// after the function id, so the path cannot ride in the URL — relays read
+// it from this header instead.
+const frontPathHeader = "X-Milky-Path"
+
+// requestURL builds the request URL for an HTTP-shaped carrier. Fronted
+// legs stay at the relay root+base — gateways that cannot forward
+// arbitrary URL paths would reject anything deeper; the real path rides
+// in frontPathHeader (setFrontPath).
+func (c *ClientConfig) requestURL(path string) string {
+	if fe := c.front(); fe != nil {
+		return "https://" + fe.sni + fe.base + "/"
+	}
+	return "https://" + c.SNI + path
+}
+
+// setFrontPath attaches the logical carrier path to a fronted request.
+func (c *ClientConfig) setFrontPath(h http.Header, path string) {
+	if c.front() != nil {
+		h.Set(frontPathHeader, path)
+	}
+}
+
+// legTLS returns the utls config for the carrier's TLS leg. Fronted legs
+// skip PinSHA256/ECH: those authenticate OUR server leaf and would make a
+// relay-served certificate fail verification.
+func (c *ClientConfig) legTLS(alpn ...string) *utls.Config {
+	if fe := c.front(); fe != nil {
+		return &utls.Config{
+			ServerName:         fe.sni,
+			MinVersion:         utls.VersionTLS13,
+			InsecureSkipVerify: c.InsecureSkipVerify,
+			NextProtos:         alpn,
+		}
+	}
+	return c.utlsConfig(alpn...)
 }
 
 func (c *ClientConfig) logger() func(string, ...any) {
