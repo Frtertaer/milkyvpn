@@ -41,7 +41,17 @@ def handler(event, context):
     if not UPSTREAM:
         return {"statusCode": 500, "body": "UPSTREAM not configured"}
 
-    path = event.get("path") or "/"
+    # The invoke URL cannot carry arbitrary paths — the gateway rejects them
+    # before the function runs. The client sends the real upstream path in
+    # X-Milky-Path; fall back to the request path for path-capable callers.
+    headers_in = event.get("headers") or {}
+    path = None
+    for k, v in headers_in.items():
+        if k.lower() == "x-milky-path":
+            path = v
+            break
+    if not path:
+        path = event.get("path") or "/"
     query = event.get("queryStringParameters") or {}
     if query:
         path += "?" + urllib.parse.urlencode(query)

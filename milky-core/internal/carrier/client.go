@@ -13,6 +13,7 @@ import (
 	"io"
 	"math/rand/v2"
 	"net"
+	"net/http"
 	"net/url"
 	"strings"
 	"syscall"
@@ -129,13 +130,28 @@ func (c *ClientConfig) dialAddr() string {
 	return c.Addr
 }
 
-// requestURL builds the request URL for an HTTP-shaped carrier: fronted
-// legs go to the relay host (base path included); direct legs use our SNI.
+// frontPathHeader carries the logical request path on a fronted leg.
+// Invoke gateways (Yandex Functions, some edge setups) reject any path
+// after the function id, so the path cannot ride in the URL — relays read
+// it from this header instead.
+const frontPathHeader = "X-Milky-Path"
+
+// requestURL builds the request URL for an HTTP-shaped carrier. Fronted
+// legs stay at the relay root+base — gateways that cannot forward
+// arbitrary URL paths would reject anything deeper; the real path rides
+// in frontPathHeader (setFrontPath).
 func (c *ClientConfig) requestURL(path string) string {
 	if fe := c.front(); fe != nil {
-		return "https://" + fe.sni + fe.base + path
+		return "https://" + fe.sni + fe.base + "/"
 	}
 	return "https://" + c.SNI + path
+}
+
+// setFrontPath attaches the logical carrier path to a fronted request.
+func (c *ClientConfig) setFrontPath(h http.Header, path string) {
+	if c.front() != nil {
+		h.Set(frontPathHeader, path)
+	}
 }
 
 // legTLS returns the utls config for the carrier's TLS leg. Fronted legs

@@ -385,6 +385,7 @@ func DialDrift(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sessio
 	}
 	req.Header.Set("Content-Type", "application/octet-stream")
 	req.Header.Set("User-Agent", driftUA())
+	cfg.setFrontPath(req.Header, strings.TrimSuffix(path, "/")+"/"+driftPathToken(cfg.PSK))
 	req.ContentLength = -1 // chunked upload
 
 	respCh := make(chan *http.Response, 1)
@@ -553,13 +554,16 @@ func DialDriftWS(ctx context.Context, cfg ClientConfig, path string) (*kal2.Sess
 		_ = raw.Close()
 		return nil, nil, err
 	}
+	tok := strings.TrimSuffix(path, "/") + "/" + driftPathToken(cfg.PSK)
 	wsHost := cfg.SNI
-	wsPath := strings.TrimSuffix(path, "/") + "/" + driftPathToken(cfg.PSK)
+	wsPath := tok
+	var extra map[string]string
 	if fe := cfg.front(); fe != nil {
 		wsHost = fe.sni
-		wsPath = fe.base + wsPath
+		wsPath = fe.base + "/"
+		extra = map[string]string{frontPathHeader: tok}
 	}
-	wsc, err := wsDial(uc, wsHost, wsPath)
+	wsc, err := wsDial(uc, wsHost, wsPath, extra)
 	if err != nil {
 		_ = raw.Close()
 		return nil, nil, err

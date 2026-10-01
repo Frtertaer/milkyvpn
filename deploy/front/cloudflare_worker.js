@@ -19,7 +19,10 @@ export default {
     if (!upstream) return new Response("UPSTREAM not configured", { status: 500 });
 
     const url = new URL(request.url);
-    const target = upstream + url.pathname + url.search;
+    // The logical carrier path rides in X-Milky-Path (invoke gateways may
+    // reject arbitrary URL paths); fall back to the request path.
+    const path = request.headers.get("X-Milky-Path") || url.pathname;
+    const target = upstream + path + url.search;
 
     if (request.headers.get("Upgrade") === "websocket") {
       // Pass the upgrade through — Workers fetch returns a pair whose

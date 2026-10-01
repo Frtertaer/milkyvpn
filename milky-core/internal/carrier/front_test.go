@@ -13,8 +13,8 @@ import (
 
 // frontRelay stands up the serverless/CDN relay: a TLS endpoint that blindly
 // forwards every request to the server's plain front listener (backend).
-// base prefixes the backend path, emulating relays that mount the function
-// under a subpath (e.g. a cloud function URL or a gateway stage).
+// Like the real gateways it only accepts HTTP/1.1 and reads the logical
+// path from frontPathHeader — invoke URLs cannot carry arbitrary paths.
 func frontRelay(t *testing.T, backend http.Handler, base string) *httptest.Server {
 	bl, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -25,8 +25,13 @@ func frontRelay(t *testing.T, backend http.Handler, base string) *httptest.Serve
 
 	target := &url.URL{Scheme: "http", Host: bl.Addr().String(), Path: base}
 	rp := httputil.NewSingleHostReverseProxy(target)
-	srv := httptest.NewUnstartedServer(rp)
-	srv.EnableHTTP2 = true
+	srv := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := r.Header.Get(frontPathHeader); p != "" {
+			r.URL.Path = p
+			r.Header.Del(frontPathHeader)
+		}
+		rp.ServeHTTP(w, r)
+	}))
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 	return srv
@@ -82,8 +87,13 @@ func TestMosaicFrontedBasePath(t *testing.T) {
 	go func() { _ = http.Serve(bl, frontMux(ts.v)) }()
 	target := &url.URL{Scheme: "http", Host: bl.Addr().String()}
 	rp := httputil.NewSingleHostReverseProxy(target)
-	srv := httptest.NewUnstartedServer(http.StripPrefix("/fn", rp))
-	srv.EnableHTTP2 = true
+	srv := httptest.NewUnstartedServer(http.StripPrefix("/fn", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if p := r.Header.Get(frontPathHeader); p != "" {
+			r.URL.Path = p
+			r.Header.Del(frontPathHeader)
+		}
+		rp.ServeHTTP(w, r)
+	})))
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 
@@ -147,8 +157,13 @@ func TestFrontParse(t *testing.T) {
 	if a := c.dialAddr(); a != "w.workers.dev:443" {
 		t.Fatalf("dialAddr %q", a)
 	}
-	if u := c.requestURL("/api/v3/tiles/tok"); u != "https://w.workers.dev/x/api/v3/tiles/tok" {
+	if u := c.requestURL("/api/v3/tiles/tok"); u != "https://w.workers.dev/x/" {
 		t.Fatalf("requestURL %q", u)
+	}
+	h := make(http.Header)
+	c.setFrontPath(h, "/api/v3/tiles/tok")
+	if h.Get(frontPathHeader) != "/api/v3/tiles/tok" {
+		t.Fatal("fronted request must carry the path in the header")
 	}
 	if c.legTLS("h2").ServerName != "w.workers.dev" {
 		t.Fatal("fronted leg must use the front's own SNI")
