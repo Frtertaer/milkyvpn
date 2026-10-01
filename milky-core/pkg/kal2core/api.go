@@ -97,7 +97,20 @@ type ServerConfig struct {
 	UDPResend int
 	// UDPRate caps the quasar packet output rate in bytes/s (0 = unlimited).
 	UDPRate int
-	Logf    func(string, ...any)
+	// UsersFile optionally points to a JSON file of authorized users
+	// ([{"id":"name","psk":"<hex|b64>"}, ...]) re-read whenever it changes
+	// on disk — the panel edits it and the server picks changes up without a
+	// restart. Union with Users: entries from both authenticate.
+	UsersFile string
+	// StatsFile optionally points to a JSONL accounting log: one line per
+	// session open and close, with uid, carrier, remote, byte counters and
+	// duration — the panel's stats source. Rotated by the deployer (e.g.
+	// logrotate copytruncate); the file is appended, never truncated here.
+	StatsFile string
+	// OnSession runs after each established KAL/2 session (before stats
+	// accounting); ServeEgressCfg still handles the streams.
+	OnSession func(*kal2.Session, carrier.SessionInfo)
+	Logf      func(string, ...any)
 }
 
 // User is a provisioned client credential pair.
@@ -370,18 +383,43 @@ func Serve(cfg ServerConfig) error {
 		}
 	}
 
+	stats := newStatsWriter(cfg.StatsFile, logf)
+	if stats != nil {
+		defer stats.Close()
+	}
+	usersFn := fileUsersFn(cfg.UsersFile, logf)
+	if len(cfg.Users) > 0 {
+		base := toCarrierUsers(cfg.Users)
+		if usersFn != nil {
+			prev := usersFn
+			usersFn = func() []carrier.User { return append(append([]carrier.User{}, base...), prev()...) }
+		} else {
+			usersFn = func() []carrier.User { return base }
+		}
+	}
 	vc := carrier.VeilConfig{
 		Domain:     cfg.Domain,
 		AltDomains: cfg.ExtraDomains,
 		Identity:   ed25519.PrivateKey(cfg.Identity),
 		Users:      toCarrierUsers(cfg.Users),
+		UsersFn:    usersFn,
 		StealAddr:  cfg.StealAddr,
 		StealMap:   cfg.StealMap,
 		Logf:       logf,
 		ECHKeys:    echKeys,
-		OnSession: func(s *kal2.Session) {
+		OnSession: func(s *kal2.Session, info carrier.SessionInfo) {
+			started := time.Now()
+			if stats != nil {
+				stats.open(s, info)
+			}
+			if cfg.OnSession != nil {
+				cfg.OnSession(s, info)
+			}
 			go func() {
 				_ = core.ServeEgressCfg(s, nil, cfg.Egress, logf)
+				if stats != nil {
+					stats.close(s, info, started)
+				}
 			}()
 		},
 	}

@@ -89,6 +89,7 @@ type Session struct {
 	nextID    uint32
 	writeErr  error
 	sentBytes atomic.Uint64 // wire bytes emitted; lane picker reads it
+	recvBytes atomic.Uint64 // wire bytes received; stats accounting
 	closed    chan struct{}
 	closeOnce sync.Once
 	readDone  chan struct{}
@@ -525,6 +526,9 @@ func (s *Session) sentWinOldest() uint64 {
 // SentBytes reports total wire bytes this session has emitted.
 func (s *Session) SentBytes() uint64 { return s.sentBytes.Load() }
 
+// ReceivedBytes reports total wire bytes this session has consumed.
+func (s *Session) ReceivedBytes() uint64 { return s.recvBytes.Load() }
+
 // SetPadMode selects the padding strategy for records this session emits.
 // Set it before Attach so the writer goroutine sees the final choice.
 func (s *Session) SetPadMode(m PadMode) { s.padMode = m }
@@ -577,6 +581,7 @@ func (s *Session) readRecord(rw io.Reader) (*Record, error) {
 	if _, err := io.ReadFull(rw, ct); err != nil {
 		return nil, err
 	}
+	s.recvBytes.Add(uint64(RecordHeaderSize + ctLen))
 	// Ordered profile: sequence must equal expected counter.
 	if seq != s.recvSeq {
 		return nil, ErrReplay

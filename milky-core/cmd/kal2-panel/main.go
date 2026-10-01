@@ -44,16 +44,32 @@ const (
 // else in ExecStart is preserved verbatim.
 var managedFlags = []string{
 	"front-listen", "quic2-listen", "rtc-listen", "decoy", "steal",
-	"echkeys", "egress-family", "upstream",
+	"echkeys", "egress-family", "upstream", "users-file", "stats-file",
+}
+
+const (
+	usersFilePath = "/etc/kal2/users.json"
+	statsFilePath = "/etc/kal2/stats.jsonl"
+)
+
+// panelUser is a provisioned client: the panel owns id/psk/subscription and
+// mirrors enabled users into the server's -users-file.
+type panelUser struct {
+	ID       string `json:"id"`
+	PSK      string `json:"psk"` // hex
+	Created  int64  `json:"created"`
+	Disabled bool   `json:"disabled"`
+	SubToken string `json:"sub_token"`
 }
 
 type panelStore struct {
-	SubToken string   `json:"sub_token"`
-	Pub      string   `json:"pub"`     // server ed25519 public key (hex)
-	ECH      string   `json:"ech"`     // optional ech= link param
-	Entries  []entry  `json:"entries"` // dialable endpoints for the link generator
-	Fronts   []entry  `json:"fronts"`  // deployed front relays
-	Links    []string `json:"links"`   // subscription payload served at /sub/<token>
+	SubToken string      `json:"sub_token"`
+	Pub      string      `json:"pub"`     // server ed25519 public key (hex)
+	ECH      string      `json:"ech"`     // optional ech= link param
+	Entries  []entry     `json:"entries"` // dialable endpoints for the link generator
+	Fronts   []entry     `json:"fronts"`  // deployed front relays
+	Links    []string    `json:"links"`   // subscription payload served at /sub/<token>
+	Users    []panelUser `json:"users"`   // provisioned clients; enabled ones land in users.json
 	// SubDisabled switches the /sub/<token> endpoint off centrally: clients
 	// keep their last fetched links and the refresh silently no-ops (the app
 	// treats 404 as subscription_not_found and retains the snapshot).
@@ -106,6 +122,8 @@ func main() {
 	mux.HandleFunc("/api/config", p.auth(p.config))
 	mux.HandleFunc("/api/links", p.auth(p.links))
 	mux.HandleFunc("/api/genlink", p.auth(p.genlink))
+	mux.HandleFunc("/api/users", p.auth(p.users))
+	mux.HandleFunc("/api/stats", p.auth(p.stats))
 	mux.HandleFunc("/sub/", p.sub)
 
 	srv := &http.Server{Addr: *listen, Handler: mux, ReadHeaderTimeout: 10 * time.Second}
@@ -129,6 +147,26 @@ func (p *panel) load() {
 	}
 	if p.store.Pub == "" {
 		p.store.Pub = derivePubFromUnit(p.unit)
+	}
+	// Import -user flags once: existing deployments provisioned clients on
+	// the unit command line; the panel adopts them into its own user store.
+	if len(p.store.Users) == 0 {
+		args := unitArgs(p.unit)
+		for i, a := range args {
+			if a == "-user" && i+1 < len(args) {
+				id, psk, ok := strings.Cut(args[i+1], "=")
+				if ok && id != "" && psk != "" {
+					p.store.Users = append(p.store.Users, panelUser{
+						ID: id, PSK: psk, Created: time.Now().Unix(), SubToken: randHex(16),
+					})
+				}
+			}
+		}
+	}
+	for i := range p.store.Users {
+		if p.store.Users[i].SubToken == "" {
+			p.store.Users[i].SubToken = randHex(16)
+		}
 	}
 	p.save()
 }
@@ -455,19 +493,47 @@ func (p *panel) subURL(r *http.Request) string {
 	return base + "/sub/" + p.store.SubToken
 }
 
-// GET /sub/<token> — the auto-update endpoint a client polls.
+// GET /sub/<token> — the auto-update endpoint a client polls. The global
+// token serves the saved link list as-is; a per-user token serves the same
+// links with that user's PSK stamped in (kal2://<psk>@ — credentials are
+// always the first authority field).
 func (p *panel) sub(w http.ResponseWriter, r *http.Request) {
 	tok := strings.TrimPrefix(r.URL.Path, "/sub/")
 	p.mu.Lock()
-	ok := subtle.ConstantTimeCompare([]byte(tok), []byte(p.store.SubToken)) == 1 && !p.store.SubDisabled
-	links := append([]string(nil), p.store.Links...)
+	disabled := p.store.SubDisabled
+	var links []string
+	ok := subtle.ConstantTimeCompare([]byte(tok), []byte(p.store.SubToken)) == 1
+	if ok {
+		links = append(links, p.store.Links...)
+	} else {
+		for _, u := range p.store.Users {
+			if u.Disabled || subtle.ConstantTimeCompare([]byte(tok), []byte(u.SubToken)) != 1 {
+				continue
+			}
+			for _, l := range p.store.Links {
+				links = append(links, rekeyLink(l, u.PSK))
+			}
+			ok = true
+			break
+		}
+	}
 	p.mu.Unlock()
-	if !ok {
+	if !ok || disabled {
 		http.Error(w, "not found", 404)
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(strings.Join(links, "\n")))
+}
+
+var linkCredsRe = regexp.MustCompile(`^(kal2://)[^@/?]*@`)
+
+// rekeyLink replaces the credentials segment of a kal2:// link.
+func rekeyLink(link, psk string) string {
+	if !linkCredsRe.MatchString(link) {
+		return link
+	}
+	return linkCredsRe.ReplaceAllString(link, "${1}"+psk+"@")
 }
 
 func (p *panel) genlink(w http.ResponseWriter, r *http.Request) {
@@ -476,6 +542,7 @@ func (p *panel) genlink(w http.ResponseWriter, r *http.Request) {
 		Fronts  []string `json:"fronts"`
 		Carrier string   `json:"carrier"`
 		SNI     string   `json:"sni"`
+		User    string   `json:"user"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		http.Error(w, "bad json", 400)
@@ -488,7 +555,24 @@ func (p *panel) genlink(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "pick at least one entry", 400)
 		return
 	}
-	psk := unitUserPSK(p.unit)
+	psk := ""
+	if in.User != "" {
+		for _, u := range st.Users {
+			if u.ID == in.User {
+				psk = u.PSK
+				break
+			}
+		}
+		if psk == "" {
+			http.Error(w, "unknown user", 400)
+			return
+		}
+	} else {
+		psk = unitUserPSK(p.unit)
+		if psk == "" && len(st.Users) > 0 {
+			psk = st.Users[0].PSK
+		}
+	}
 	if psk == "" || st.Pub == "" {
 		http.Error(w, "server credentials unknown — check the unit", 500)
 		return
@@ -531,6 +615,285 @@ func or(v, d string) string {
 		return d
 	}
 	return v
+}
+
+// ------------------------------------------------------------------ users
+
+var userIDRe = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,32}$`)
+
+// writeUsersFile mirrors enabled panel users into the server's users-file;
+// the listener re-reads it on mtime change — no restart needed.
+func (p *panel) writeUsersFile() error {
+	type fu struct {
+		ID  string `json:"id"`
+		PSK string `json:"psk"`
+	}
+	var out []fu
+	for _, u := range p.store.Users {
+		if !u.Disabled {
+			out = append(out, fu{ID: u.ID, PSK: u.PSK})
+		}
+	}
+	b, _ := json.Marshal(out)
+	tmp := usersFilePath + ".tmp"
+	if err := os.MkdirAll(filepath.Dir(usersFilePath), 0755); err != nil {
+		return err
+	}
+	if err := os.WriteFile(tmp, b, 0600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, usersFilePath)
+}
+
+// fileMode reports whether the unit already consumes the users-file.
+func (p *panel) fileMode() bool {
+	args := unitArgs(p.unit)
+	for i, a := range args {
+		if a == "-users-file" && i+1 < len(args) {
+			return true
+		}
+	}
+	return false
+}
+
+// ensureUserMode migrates the unit to -users-file/-stats-file once: strips
+// -user flags and rewrites ExecStart via the panel drop-in, then restarts.
+// Runs only on the first user mutation; no-op when already migrated.
+func (p *panel) ensureUserMode() error {
+	if err := p.writeUsersFile(); err != nil {
+		return err
+	}
+	args := unitArgs(p.unit)
+	hasUserFlag, hasUsersFile := false, false
+	for _, a := range args {
+		if a == "-user" {
+			hasUserFlag = true
+		}
+		if a == "-users-file" {
+			hasUsersFile = true
+		}
+	}
+	if !hasUserFlag && hasUsersFile {
+		return nil
+	}
+	bin := args[0]
+	var kept []string
+	for i := 1; i < len(args); {
+		a := args[i]
+		if a == "-user" {
+			i++
+			if i < len(args) && !strings.HasPrefix(args[i], "-") {
+				i++ // drop -user + value
+			}
+			continue
+		}
+		kept = append(kept, a)
+		i++
+	}
+	if !hasUsersFile {
+		kept = append(kept, "-users-file", usersFilePath)
+	}
+	if !strings.Contains(strings.Join(kept, " "), "-stats-file") {
+		kept = append(kept, "-stats-file", statsFilePath)
+	}
+	dir := "/etc/systemd/system/" + p.unit + ".d"
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return err
+	}
+	drop := filepath.Join(dir, "90-panel.conf")
+	prev, _ := os.ReadFile(drop)
+	_ = os.WriteFile(drop+".bak", prev, 0600)
+	conf := fmt.Sprintf("[Service]\nExecStart=\nExecStart=%s %s\n", bin, strings.Join(kept, " "))
+	if err := os.WriteFile(drop, []byte(conf), 0644); err != nil {
+		return err
+	}
+	if out, err := exec.Command("systemctl", "daemon-reload").CombinedOutput(); err != nil {
+		return fmt.Errorf("daemon-reload: %s", out)
+	}
+	if out, err := exec.Command("systemctl", "restart", p.unit).CombinedOutput(); err != nil {
+		return fmt.Errorf("restart: %s", out)
+	}
+	return nil
+}
+
+func (p *panel) users(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if r.Method == http.MethodPost {
+		var in struct {
+			Add      string `json:"add"`
+			Del      string `json:"del"`
+			Disable  string `json:"disable"`
+			Disabled bool   `json:"disabled"`
+			Rekey    string `json:"rekey"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			http.Error(w, "bad json", 400)
+			return
+		}
+		switch {
+		case in.Add != "":
+			id := strings.TrimSpace(in.Add)
+			if !userIDRe.MatchString(id) {
+				http.Error(w, "id: 1-32 [a-z0-9_-]", 400)
+				return
+			}
+			for _, u := range p.store.Users {
+				if u.ID == id {
+					http.Error(w, "user exists", 409)
+					return
+				}
+			}
+			p.store.Users = append(p.store.Users, panelUser{
+				ID: id, PSK: randHex(32), Created: time.Now().Unix(), SubToken: randHex(16),
+			})
+		case in.Del != "":
+			n := len(p.store.Users)
+			out := p.store.Users[:0]
+			for _, u := range p.store.Users {
+				if u.ID != in.Del {
+					out = append(out, u)
+				}
+			}
+			p.store.Users = out
+			if len(out) == n {
+				http.Error(w, "no such user", 404)
+				return
+			}
+		case in.Disable != "":
+			found := false
+			for i := range p.store.Users {
+				if p.store.Users[i].ID == in.Disable {
+					p.store.Users[i].Disabled = in.Disabled
+					found = true
+				}
+			}
+			if !found {
+				http.Error(w, "no such user", 404)
+				return
+			}
+		case in.Rekey != "":
+			found := false
+			for i := range p.store.Users {
+				if p.store.Users[i].ID == in.Rekey {
+					p.store.Users[i].PSK = randHex(32)
+					p.store.Users[i].SubToken = randHex(16)
+					found = true
+				}
+			}
+			if !found {
+				http.Error(w, "no such user", 404)
+				return
+			}
+		default:
+			http.Error(w, "empty op", 400)
+			return
+		}
+		p.save()
+		if err := p.ensureUserMode(); err != nil {
+			http.Error(w, "applied but unit update failed: "+err.Error(), 500)
+			return
+		}
+		// Mutations migrate the unit to users-file mode once — a one-time
+		// restart; later add/remove/rekey are picked up via file mtime.
+	}
+	type uout struct {
+		ID       string `json:"id"`
+		Created  int64  `json:"created"`
+		Disabled bool   `json:"disabled"`
+		SubURL   string `json:"sub_url"`
+	}
+	users := make([]uout, 0, len(p.store.Users))
+	for _, u := range p.store.Users {
+		base := p.pubOrigin
+		if base == "" {
+			base = "https://" + r.Host
+		}
+		users = append(users, uout{u.ID, u.Created, u.Disabled, base + "/sub/" + u.SubToken})
+	}
+	writeJSON(w, map[string]any{"users": users, "file_mode": p.fileMode()})
+}
+
+// ------------------------------------------------------------------ stats
+
+type statAgg struct {
+	Up       uint64 `json:"up"`
+	Down     uint64 `json:"down"`
+	Sessions int    `json:"sessions"`
+	LastSeen int64  `json:"last_seen"`
+	Online   int    `json:"online"`
+}
+
+// stats aggregates the server's JSONL accounting log per user.
+func (p *panel) stats(w http.ResponseWriter, r *http.Request) {
+	path := statsFilePath
+	args := unitArgs(p.unit)
+	for i, a := range args {
+		if a == "-stats-file" && i+1 < len(args) {
+			path = args[i+1]
+		}
+	}
+	per := map[string]*statAgg{}
+	online := map[string]int{}
+	boot := int64(0)
+	if f, err := os.Open(path); err == nil {
+		defer f.Close()
+		var rec struct {
+			T    int64  `json:"t"`
+			Ev   string `json:"ev"`
+			UID  string `json:"uid"`
+			Up   uint64 `json:"up"`
+			Down uint64 `json:"down"`
+		}
+		dec := json.NewDecoder(f)
+		for {
+			if err := dec.Decode(&rec); err != nil {
+				break // EOF or a torn tail line — stop at it
+			}
+			if rec.Ev == "boot" {
+				boot = rec.T
+				online = map[string]int{} // earlier opens died with the process
+				continue
+			}
+			a := per[rec.UID]
+			if a == nil {
+				a = &statAgg{}
+				per[rec.UID] = a
+			}
+			if rec.T > a.LastSeen {
+				a.LastSeen = rec.T
+			}
+			switch rec.Ev {
+			case "open":
+				a.Sessions++
+				online[rec.UID]++
+			case "close":
+				a.Up += rec.Up
+				a.Down += rec.Down
+				if online[rec.UID] > 0 {
+					online[rec.UID]--
+				}
+			}
+		}
+		for uid, n := range online {
+			if n > 0 {
+				per[uid].Online = n
+			}
+		}
+	}
+	p.mu.Lock()
+	users := p.store.Users
+	p.mu.Unlock()
+	out := map[string]any{"users": map[string]*statAgg{}, "boot": boot}
+	m := out["users"].(map[string]*statAgg)
+	for _, u := range users {
+		if a := per[u.ID]; a != nil {
+			m[u.ID] = a
+		} else {
+			m[u.ID] = &statAgg{}
+		}
+	}
+	writeJSON(w, out)
 }
 
 // ------------------------------------------------------------------ util

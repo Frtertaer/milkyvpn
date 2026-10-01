@@ -43,6 +43,9 @@ type VeilConfig struct {
 	Identity ed25519.PrivateKey
 	// Users lists authorized PSKs (looked up per flight).
 	Users []User
+	// UsersFn, when set, supplies the authorized user list per auth attempt
+	// (e.g. a hot-reloaded users file) and takes precedence over Users.
+	UsersFn func() []User
 	// Mux handles every non-KAL request inside TLS: decoy site + drift path.
 	Mux http.Handler
 	// StealAddr optionally splices connections whose ClientHello carries a
@@ -57,8 +60,10 @@ type VeilConfig struct {
 	// encrypted — an observer or blocklist sees only the cover name. Load via
 	// LoadECHKeys.
 	ECHKeys []tls.EncryptedClientHelloKey
-	// OnSession is invoked for each established KAL/2 session.
-	OnSession func(*kal2.Session)
+	// OnSession is invoked for each established KAL/2 session. SessionInfo
+	// identifies which user authenticated, over which carrier, and from
+	// where — the accounting hook behind per-user stats.
+	OnSession func(*kal2.Session, SessionInfo)
 	// Logf receives operational messages.
 	Logf func(format string, args ...any)
 	// FirstFlightDeadline caps time to read+validate the inner flight.
@@ -81,6 +86,21 @@ func (c *VeilConfig) logf(f string, a ...any) {
 	if c.Logf != nil {
 		c.Logf(f, a...)
 	}
+}
+
+// users returns the live authorized user list.
+func (c *VeilConfig) users() []User {
+	if c.UsersFn != nil {
+		return c.UsersFn()
+	}
+	return c.Users
+}
+
+// SessionInfo describes an established session to the OnSession hook.
+type SessionInfo struct {
+	UID     string // user ID whose PSK authenticated (empty if unknown)
+	Carrier string // "veil" | "drift" | "cdn" | "mosaic" | "quasar" | "quic2" | "rtc"
+	Remote  string // client IP:port
 }
 
 // VeilListener accepts TCP, inspects the ClientHello, terminates real TLS for
@@ -308,7 +328,7 @@ func (v *VeilListener) handle(c net.Conn) bool {
 		return false
 	}
 	flightPrefix := append(magic, rest...)
-	eph, totalLen, psk, binding, err := v.authFlight(flightPrefix, bc.binding)
+	eph, totalLen, user, binding, err := v.authFlight(flightPrefix, bc.binding)
 	if err != nil {
 		// Cover: rewind and hand to the decoy mux.
 		_ = bc.SetReadDeadline(time.Time{})
@@ -323,7 +343,7 @@ func (v *VeilListener) handle(c net.Conn) bool {
 		}
 	}
 	_ = bc.SetReadDeadline(time.Time{})
-	if err := v.establishKAL(bc, eph, psk, binding); err != nil {
+	if err := v.establishKAL(bc, eph, user, binding, "veil"); err != nil {
 		v.cfg.logf("veil: handshake fail %s: %v", c.RemoteAddr(), err)
 		return false
 	}
@@ -336,30 +356,31 @@ func (v *VeilListener) handle(c net.Conn) bool {
 // accepted unless RequireBinding is set, so clients predating exporter
 // binding keep working; a bound client's flight can never verify against a
 // different TLS leg, so the fallback gives an interceptor nothing.
-func (v *VeilListener) authFlight(prefix []byte, binding kal2.ChannelBinding) (eph []byte, totalLen int, psk []byte, used kal2.ChannelBinding, err error) {
+func (v *VeilListener) authFlight(prefix []byte, binding kal2.ChannelBinding) (eph []byte, totalLen int, user User, used kal2.ChannelBinding, err error) {
 	candidates := []kal2.ChannelBinding{binding}
 	if len(binding) > 0 && !v.cfg.RequireBinding {
 		candidates = append(candidates, nil)
 	}
 	for _, b := range candidates {
-		for _, u := range v.cfg.Users {
+		for _, u := range v.cfg.users() {
 			e, tl, err2 := kal2.ParseClientFirstFlight(prefix, u.PSK, b)
 			if err2 != nil {
 				continue
 			}
 			h := sha256.Sum256(prefix)
 			if v.replay.seen(h[:]) {
-				return nil, 0, nil, nil, kal2.ErrReplay
+				return nil, 0, User{}, nil, kal2.ErrReplay
 			}
-			return e, tl, u.PSK, b, nil
+			return e, tl, u, b, nil
 		}
 	}
-	return nil, 0, nil, nil, kal2.ErrPreauth
+	return nil, 0, User{}, nil, kal2.ErrPreauth
 }
 
 // establishKAL completes the inner handshake and hands the session to the
 // registered OnSession callback. Shared by veil and drift paths.
-func (v *VeilListener) establishKAL(bc BoundConn, eph, psk []byte, binding kal2.ChannelBinding) error {
+func (v *VeilListener) establishKAL(bc BoundConn, eph []byte, user User, binding kal2.ChannelBinding, carrierName string) error {
+	psk := user.PSK
 	hs, err := kal2.NewServerHandshake(v.cfg.Identity)
 	if err != nil {
 		return err
@@ -399,7 +420,7 @@ func (v *VeilListener) establishKAL(bc BoundConn, eph, psk []byte, binding kal2.
 		}
 	}
 	if v.cfg.OnSession != nil {
-		v.cfg.OnSession(sess)
+		v.cfg.OnSession(sess, SessionInfo{UID: user.ID, Carrier: carrierName, Remote: remoteIPConn(bc)})
 	}
 	return nil
 }

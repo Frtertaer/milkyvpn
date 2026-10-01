@@ -208,7 +208,7 @@ func (q *Quic2Listener) handle(bc BoundConn) bool {
 		return false
 	}
 	flightPrefix := append(magic, rest...)
-	eph, totalLen, psk, _, err := q.v.authFlight(flightPrefix, bc.Binding())
+	eph, totalLen, user, _, err := q.v.authFlight(flightPrefix, bc.Binding())
 	if err != nil {
 		return false
 	}
@@ -218,7 +218,7 @@ func (q *Quic2Listener) handle(bc BoundConn) bool {
 		}
 	}
 	_ = bc.SetReadDeadline(time.Time{})
-	if err := q.v.establishKAL(bc, eph, psk, bc.Binding()); err != nil {
+	if err := q.v.establishKAL(bc, eph, user, bc.Binding(), "quic2"); err != nil {
 		q.v.cfg.logf("quic2: handshake fail %s: %v", bc.RemoteAddr(), err)
 		return false
 	}

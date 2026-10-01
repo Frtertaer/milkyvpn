@@ -256,5 +256,5 @@ func NewRTCListener(v *VeilListener, qc *QuasarConfig, laddr string) (*QuasarLis
 		_ = pc.Close()
 		return nil, err
 	}
-	return &QuasarListener{v: v, qc: qc, ln: ln, conns: map[*kcp.UDPSession]struct{}{}}, nil
+	return &QuasarListener{v: v, qc: qc, ln: ln, conns: map[*kcp.UDPSession]struct{}{}, name: "rtc"}, nil
 }

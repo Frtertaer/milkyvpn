@@ -44,7 +44,7 @@ func driftPathToken(psk []byte) string {
 func (v *VeilListener) DriftHandler(base string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ok := false
-		for _, u := range v.cfg.Users {
+		for _, u := range v.cfg.users() {
 			want := base + "/" + driftPathToken(u.PSK)
 			if subtle.ConstantTimeCompare([]byte(r.URL.Path), []byte(want)) == 1 {
 				ok = true
@@ -105,7 +105,7 @@ func (v *VeilListener) DriftHandler(base string) http.Handler {
 			return
 		}
 		prefix := append(magic, rest...)
-		eph, totalLen, psk, _, err := v.authFlight(prefix, nil)
+		eph, totalLen, user, _, err := v.authFlight(prefix, nil)
 		if err != nil {
 			fail(http.StatusForbidden)
 			return
@@ -126,7 +126,11 @@ func (v *VeilListener) DriftHandler(base string) http.Handler {
 			bc.(*driftServerConn).started = true
 			bc.(*driftServerConn).startPump()
 		}
-		if err := v.establishKAL(bc, eph, psk, nil); err != nil {
+		carrierName := "drift"
+		if isWS {
+			carrierName = "cdn"
+		}
+		if err := v.establishKAL(bc, eph, user, nil, carrierName); err != nil {
 			return
 		}
 		// Keep the handler alive while the session lives: the session's read

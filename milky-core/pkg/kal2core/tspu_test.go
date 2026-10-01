@@ -63,7 +63,7 @@ func startTSPUServer(t *testing.T) (addr string, pub ed25519.PublicKey, psk []by
 		Identity: priv,
 		Users:    []carrier.User{{ID: "u1", PSK: psk}},
 		Logf:     func(f string, a ...any) { t.Logf(f, a...) },
-		OnSession: func(s *kal2.Session) {
+		OnSession: func(s *kal2.Session, _ carrier.SessionInfo) {
 			go func() {
 				for {
 					st, err := s.Accept()
