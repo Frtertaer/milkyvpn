@@ -342,6 +342,23 @@ class S {
   String get checkSubscriptionUpdate =>
       t('Обновить подписку', 'Refresh subscription');
   String get autoUpdateSub => t('Авто-обновление ссылок', 'Auto-update links');
+  String get appUpdate => t('Обновление приложения', 'App update');
+  String updateAvailableBody(String next, String cur) => t(
+    'Вышла версия $next (у вас $cur). Скачать и установить?',
+    'Version $next is available (you have $cur). Download and install?',
+  );
+  String get updateAvailableTitle => t('Доступно обновление', 'Update available');
+  String get updateNow => t('Обновить', 'Update');
+  String get updateLater => t('Позже', 'Later');
+  String get updateDownloading => t('Скачиваем обновление…', 'Downloading update…');
+  String get updateLatest => t('У вас последняя версия', 'You are up to date');
+  String get updateFailed => t('Не удалось установить обновление', 'Update failed');
+  String get updateCheckFailed =>
+      t('Не удалось проверить обновление', 'Update check failed');
+  String get updateNeedPerm => t(
+    'Разрешите установку из этого источника в настройках и повторите',
+    'Allow installs from this source in settings, then retry',
+  );
   String get autoUpdateSubHint => t(
     'Проверять свежие входы при запуске и каждые 6 часов',
     'Refreshes entry links on launch and every 6 hours',

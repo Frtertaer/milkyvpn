@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
@@ -23,6 +24,7 @@ import '../../design/milky_tokens.dart';
 import '../../l10n/milky_strings.dart';
 import '../import/import_screen.dart';
 import '../settings/diagnostics_screen.dart';
+import '../update/update_flow.dart';
 import '../subscription/milky_subscription_card.dart';
 import 'milky_server_selector.dart';
 
@@ -39,6 +41,18 @@ class HomeScreen extends StatefulWidget {
 
 class _HomeScreenState extends State<HomeScreen> {
   bool _working = false;
+
+  @override
+  void initState() {
+    super.initState();
+    // Self-update check: GitHub Releases only ships Android APKs and the
+    // Windows installer today, so other platforms skip the API call.
+    if (Platform.isAndroid || Platform.isWindows) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) UpdateFlow.checkOnLaunch(context);
+      });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

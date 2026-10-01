@@ -19,6 +19,7 @@ import '../../design/milky_setting_row.dart';
 import '../../design/milky_theme.dart';
 import '../../design/milky_tokens.dart';
 import '../../l10n/milky_strings.dart';
+import '../update/update_flow.dart';
 import 'diagnostics_screen.dart';
 
 /// Settings as grouped glass cards with custom rows — not a Material preference list.
@@ -177,6 +178,14 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     subtitle: t.autoUpdateSubHint,
                     value: s.autoUpdateSub,
                     onChanged: s.setAutoUpdateSub,
+                  ),
+                  const MilkyHairline(indent: MilkySpace.lg),
+                  MilkySettingRow(
+                    icon: Icons.system_update_alt_rounded,
+                    title: t.appUpdate,
+                    subtitle: kAppVersion,
+                    showChevron: true,
+                    onTap: () => UpdateFlow.check(context, manual: true),
                   ),
                 ],
               ),

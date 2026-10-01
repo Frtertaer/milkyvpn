@@ -85,6 +85,8 @@ class FakeBridge implements VpnBridge {
   @override
   Future<String?> getInitialLink() async => null;
   @override
+  Future<bool> installUpdate(String localPath) async => false;
+  @override
   Stream<String> get links => const Stream.empty();
 }
 

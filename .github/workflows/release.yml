@@ -71,6 +71,14 @@ jobs:
           fi
         id: sign
 
+      - name: Stamp version from tag (self-update compares kAppVersion)
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" != v* ]]; then TAG="${{ inputs.tag }}"; fi
+          VER="${TAG#v}"
+          sed -i "s/^version: .*/version: $VER+${{ github.run_number }}/" pubspec.yaml
+          sed -i "s/const String kAppVersion = '.*';/const String kAppVersion = '$VER+${{ github.run_number }}';/" lib/app/app_info.dart
+
       - name: Flutter APKs (release, split per ABI)
         run: |
           flutter pub get
@@ -104,6 +112,15 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: milky-core/go.mod
+
+      - name: Stamp version from tag
+        shell: bash
+        run: |
+          TAG="${{ github.ref_name }}"
+          if [[ "$TAG" != v* ]]; then TAG="${{ inputs.tag }}"; fi
+          VER="${TAG#v}"
+          sed -i "s/^version: .*/version: $VER+${{ github.run_number }}/" pubspec.yaml
+          sed -i "s/const String kAppVersion = '.*';/const String kAppVersion = '$VER+${{ github.run_number }}';/" lib/app/app_info.dart
 
       - name: Flutter app (release)
         run: |
