@@ -492,7 +492,7 @@
   переписывает пункт «Paste» тулбара — переводы строк сохраняются.
 - Found by: Windows live-verify windows-test-47 (поле = одна строка 1024
   символа после Ctrl+V 4 ссылок)
-- Issue: —  PR: TBD  Regression test:
+- Issue: —  PR: #38  Regression test:
   `test/features/import_and_sheets_v2_test.dart::'Ctrl+V keeps line breaks
   of a multi-link clipboard block'`
 
@@ -557,7 +557,7 @@
 - Fix: `_profileToJson`/`_profileFromJson` сериализуют altAddrs/front/fronts
   (VpnProfile.toJson их уже имел — расходился репозиторный codec)
 - Found by: Android emu verification session (hostile-region sim)
-- Issue: —  PR: TBD  Regression test:
+- Issue: —  PR: #36  Regression test:
   test/core/subscription_test.dart::'fronts and altAddrs survive snapshot
   reload (fronting persistence)'
 
@@ -575,7 +575,7 @@
   (заодно 'quic2' — он тоже был забытым), в Windows passThrough, в iOS
   known (заодно 'relay'); outbound-map путь получил front/fronts/alt.
 - Found by: Android emu verification session
-- Issue: —  PR: TBD  Regression test:
+- Issue: —  PR: #36  Regression test:
   test/core/subscription_test.dart::'kal2 rtc carrier parses and
   round-trips'; XrayConfigBuilderTest carrier loop теперь включает
   quic2+rtc
@@ -596,7 +596,7 @@
 - Fix B: finally коннекта при провале сам дёргает disconnect и снимает
   застрявший transitional-снапшот до disconnected(errorCode).
 - Found by: Android emu verification session
-- Issue: —  PR: TBD  Regression tests:
+- Issue: —  PR: #36  Regression tests:
   test/core/vpn_controller_test.dart::'dead core (bridge timeouts) fails
   fast, no full sweep' + 'failed sweep with silent teardown does not
   wedge UI busy'
@@ -612,7 +612,7 @@
 - Fix: pinned и не найден среди supported → _lastErrorClass
   'unsupported_profile' + ошибка пользователю вместо свипа
 - Found by: Android emu verification session
-- Issue: —  PR: TBD  Regression test:
+- Issue: —  PR: #36  Regression test:
   test/core/vpn_controller_test.dart::'pinned-but-unsupported profile
   fails loudly, no silent fallback'
 
