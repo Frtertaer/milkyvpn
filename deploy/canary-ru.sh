@@ -36,8 +36,9 @@ probe() {
     sleep 0.5
   done
   kill $pid 2>/dev/null; wait $pid 2>/dev/null
+  local okb=false; [ $ok -eq 1 ] && okb=true
   printf '{"ts":"%s","entry":"%s","carrier":"%s","ok":%s,"ms":%d}\n' \
-    "$(date -u +%FT%TZ)" "$entry" "$carrier" "$ok" "$(( $(date +%s%3N) - t0 ))"
+    "$(date -u +%FT%TZ)" "$entry" "$carrier" "$okb" "$(( $(date +%s%3N) - t0 ))"
 }
 
 {
