@@ -239,7 +239,7 @@ final class VpnPlugin: NSObject {
         }
         let port = (p["port"] as? NSNumber)?.intValue ?? 0
         let network = (p["network"] as? String ?? "").lowercased()
-        let known: Set<String> = ["veil", "drift", "cdn", "mosaic", "quasar", "quic2"]
+        let known: Set<String> = ["veil", "drift", "cdn", "mosaic", "quasar", "quic2", "rtc", "relay"]
         let carrier = known.contains(network) ? network : "auto"
         // altAddrs: extra entry points of the same server (multi-entry link);
         // the native core fails over across the comma list.
