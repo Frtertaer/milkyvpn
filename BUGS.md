@@ -616,6 +616,26 @@
   test/core/vpn_controller_test.dart::'pinned-but-unsupported profile
   fails loudly, no silent fallback'
 
+### BUG-2026-10-01-04 — App: список «Профили» недостижим с главного экрана
+- Severity: major-ux (пин профиля — реальная фича, но единственный вход в
+  шторку «Выберите страну» со списком профилей лежит через ошибку коннекта
+  → «Выбрать страну»: без сломанного коннекта запинить профиль нельзя)
+- Platform: all (android/windows/ios — общий home_screen)
+- Status: fixed-in-PR
+- Repro: главный экран → капсула «Авто/Финляндия/США» только переключает
+  страну; _ProfilePickList живёт только в _pickAnotherLocation (error sheet)
+- Fix: кнопка-глобус рядом с капсулой открывает ту же шторку без
+  авто-коннекта; логика шторки вынесена в _showServerSheet +
+  _applyServerPick, error-поток по-прежнему ретраит коннект
+- Found by: Windows verification session (windows-test-49)
+- Issue: —  PR: #41  Regression tests:
+  test/features/home_states_test.dart::'home picker button opens the
+  country/profile sheet' + 'picking a profile from home pins it without
+  connecting'
+- Note: golden-мастера главного экрана сгенерены не на Windows
+  (набор строк настроек платформозависим) — обновлять на платформе
+  авторства голденов
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 

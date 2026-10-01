@@ -62,16 +62,28 @@ class _HomeScreenState extends State<HomeScreen> {
       semanticValue: _statusText(t, vpn, repo),
       onTap: _toggle,
     );
-    final selector = MilkyServerSelector(
-      value: settings.location,
-      counts: counts,
-      enabled: !vpn.isBusy,
-      onChanged: (choice) {
-        if (choice == settings.location) return;
-        final s = context.read<AppSettings>();
-        s.setSelectedProfile(null);
-        s.setLocation(choice);
-      },
+    final selector = Row(
+      children: [
+        Expanded(
+          child: MilkyServerSelector(
+            value: settings.location,
+            counts: counts,
+            enabled: !vpn.isBusy,
+            onChanged: (choice) {
+              if (choice == settings.location) return;
+              final s = context.read<AppSettings>();
+              s.setSelectedProfile(null);
+              s.setLocation(choice);
+            },
+          ),
+        ),
+        const SizedBox(width: 8),
+        MilkyIconButton(
+          icon: Icons.public_rounded,
+          tooltip: t.chooseCountry,
+          onPressed: vpn.isBusy ? null : _pickServerFromHome,
+        ),
+      ],
     );
     final subscription = MilkySubscriptionStatus(
       snapshot: repo.snapshot,
@@ -215,8 +227,9 @@ class _HomeScreenState extends State<HomeScreen> {
     );
   }
 
-  /// "Другой сервер": move off Auto (or off the current country) and retry immediately.
-  Future<void> _pickAnotherLocation() async {
+  /// The country/profile sheet shared by the error-recovery flow and the
+  /// home-screen picker button.
+  Future<(LocationChoice?, String?)?> _showServerSheet() {
     final settings = context.read<AppSettings>();
     final counts = locationCounts(
       context.read<SubscriptionRepository>().snapshot?.profiles ?? [],
@@ -224,7 +237,7 @@ class _HomeScreenState extends State<HomeScreen> {
     final profiles =
         context.read<SubscriptionRepository>().snapshot?.profiles ??
             const <VpnProfile>[];
-    final next = await showModalBottomSheet<(LocationChoice?, String?)>(
+    return showModalBottomSheet<(LocationChoice?, String?)>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -254,7 +267,10 @@ class _HomeScreenState extends State<HomeScreen> {
         ),
       ),
     );
-    if (next == null) return;
+  }
+
+  Future<void> _applyServerPick((LocationChoice?, String?) next) async {
+    final settings = context.read<AppSettings>();
     final (choice, profileId) = next;
     if (profileId != null) {
       await settings.setSelectedProfile(profileId);
@@ -262,6 +278,21 @@ class _HomeScreenState extends State<HomeScreen> {
       await settings.setSelectedProfile(null);
       if (choice != null) await settings.setLocation(choice);
     }
+  }
+
+  /// Home-screen picker: same sheet as the error flow, but only applies the
+  /// choice — the user starts the connect with the orb when ready.
+  Future<void> _pickServerFromHome() async {
+    final next = await _showServerSheet();
+    if (next == null) return;
+    await _applyServerPick(next);
+  }
+
+  /// "Другой сервер": move off Auto (or off the current country) and retry immediately.
+  Future<void> _pickAnotherLocation() async {
+    final next = await _showServerSheet();
+    if (next == null) return;
+    await _applyServerPick(next);
     if (mounted) _toggle();
   }
 
