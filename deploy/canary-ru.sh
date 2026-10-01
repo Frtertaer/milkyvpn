@@ -49,6 +49,8 @@ probe() {
     -front "https://functions.yandexcloud.net/d4erhmmikarvfr4tsc7e"
   probe "cf-worker"  "23.133.88.167:443"   mosaic \
     -front "https://milky-front.milky-front.workers.dev"
+  probe "cf-worker"  "23.133.88.167:443"   cdn \
+    -front "https://milky-front.milky-front.workers.dev"
 } > "$OUT.new" 2>/dev/null
 mv "$OUT.new" "$OUT"
 
