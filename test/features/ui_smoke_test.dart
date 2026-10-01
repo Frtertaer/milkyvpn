@@ -29,7 +29,8 @@ void main() {
 
       // Page 2 — truthful disclosure, no marketing wall of text.
       expect(find.text('Защищённое VPN-соединение'), findsOneWidget);
-      expect(find.textContaining('С вашего разрешения Android'), findsOneWidget);
+      // The disclosure names the host OS (Android on Android, "система" elsewhere).
+      expect(find.textContaining('С вашего разрешения'), findsOneWidget);
       expect(find.textContaining('вне туннеля'), findsOneWidget);
       expect(find.text('Телефон'), findsOneWidget);
       expect(find.text('Интернет'), findsOneWidget);

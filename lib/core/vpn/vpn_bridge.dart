@@ -101,11 +101,7 @@ class MethodChannelVpnBridge implements VpnBridge {
       .map((e) => e as String)
       .asBroadcastStream();
 
-  Future<T> _call<T>(
-    String method, [
-    Object? args,
-    Duration? timeout,
-  ]) async {
+  Future<T> _call<T>(String method, [Object? args, Duration? timeout]) async {
     try {
       final r = await _m
           .invokeMethod<T>(method, args)
@@ -157,8 +153,13 @@ class MethodChannelVpnBridge implements VpnBridge {
       _call<bool>('isProfileSupported', profile.toBridgeMap());
 
   @override
-  Future<void> connect(VpnProfile profile) =>
-      _call<bool>('connect', profile.toBridgeMap());
+  Future<void> connect(VpnProfile profile) => _call<void>(
+    'connect',
+    profile.toBridgeMap(),
+    // The core's own dial budget is ~25s (hedged carrier attempts); a shorter
+    // bridge timeout would tear down a session that was about to come up.
+    const Duration(seconds: 40),
+  );
 
   @override
   Future<void> disconnect() => _call<bool>('disconnect');

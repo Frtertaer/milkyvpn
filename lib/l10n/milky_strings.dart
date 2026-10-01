@@ -56,10 +56,15 @@ class S {
   String get understood => t('Понятно, продолжить', 'Got it, continue');
   String get disclosureTitle =>
       t('Защищённое VPN-соединение', 'An encrypted VPN connection');
-  String get disclosureBody => t(
-    'С вашего разрешения Android направит трафик через VPN-сервер. Приложение не сохраняет историю сайтов и DNS-запросов. VPN не делает вас полностью анонимным. Подписка обновляется вне туннеля.',
-    'With your permission, Android routes traffic through a VPN server. The app keeps no browsing or DNS history. A VPN does not make you fully anonymous. Subscription updates travel outside the tunnel.',
-  );
+  String get disclosureBody => Platform.isAndroid
+      ? t(
+          'С вашего разрешения Android направит трафик через VPN-сервер. Приложение не сохраняет историю сайтов и DNS-запросов. VPN не делает вас полностью анонимным. Подписка обновляется вне туннеля.',
+          'With your permission, Android routes traffic through a VPN server. The app keeps no browsing or DNS history. A VPN does not make you fully anonymous. Subscription updates travel outside the tunnel.',
+        )
+      : t(
+          'С вашего разрешения система направит трафик через VPN-сервер. Приложение не сохраняет историю сайтов и DNS-запросов. VPN не делает вас полностью анонимным. Подписка обновляется вне туннеля.',
+          'With your permission, the system routes traffic through a VPN server. The app keeps no browsing or DNS history. A VPN does not make you fully anonymous. Subscription updates travel outside the tunnel.',
+        );
   String get importTitle => t('Добавьте подписку', 'Add your subscription');
   String get importBody => t(
     'Вставьте ссылку MilkyVPN — приложение само найдёт серверы.',
@@ -331,8 +336,7 @@ class S {
   String get themeDark => t('Тёмная', 'Dark');
   String get checkSubscriptionUpdate =>
       t('Обновить подписку', 'Refresh subscription');
-  String get autoUpdateSub =>
-      t('Авто-обновление ссылок', 'Auto-update links');
+  String get autoUpdateSub => t('Авто-обновление ссылок', 'Auto-update links');
   String get autoUpdateSubHint => t(
     'Проверять свежие входы при запуске и каждые 6 часов',
     'Refreshes entry links on launch and every 6 hours',
@@ -395,6 +399,11 @@ class S {
         return t('Нет подходящих серверов', 'No suitable servers');
       case MilkyErrorKind.subscriptionProblem:
         return t('Проблема с подпиской', 'Subscription problem');
+      case MilkyErrorKind.storageFailure:
+        return t(
+          'Не удалось сохранить подписку',
+          'Could not save the subscription',
+        );
       case MilkyErrorKind.cancelled:
         return t('Подключение отменено', 'Connection cancelled');
       case MilkyErrorKind.unknown:
@@ -409,6 +418,12 @@ class S {
           return t(
             'Windows запросил права администратора (UAC), но запуск был отклонён. Разрешите запуск или выключите «Полный туннель» в настройках — тогда хватит обычных прав.',
             'Windows asked for admin rights (UAC) and the launch was declined. Allow it, or turn off "Full tunnel" in settings — the normal mode needs no admin.',
+          );
+        }
+        if (Platform.isIOS || Platform.isMacOS) {
+          return t(
+            'Не получилось создать VPN-туннель. Разрешите добавление конфигурации VPN и попробуйте снова.',
+            'Could not create the VPN tunnel. Allow adding the VPN configuration and try again.',
           );
         }
         return t(
@@ -444,6 +459,11 @@ class S {
         return t(
           'Не удалось загрузить подписку. Проверьте ссылку и попробуйте снова.',
           'The subscription could not be loaded. Check the link and try again.',
+        );
+      case MilkyErrorKind.storageFailure:
+        return t(
+          'Защищённое хранилище устройства недоступно. Перезагрузите устройство или переустановите приложение и попробуйте снова.',
+          'The device secure storage is unavailable. Restart the device or reinstall the app and try again.',
         );
       case MilkyErrorKind.cancelled:
         return t('Вы отменили подключение.', 'You cancelled the connection.');

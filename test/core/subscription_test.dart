@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:milkyvpn/core/errors/milky_error.dart';
 import 'package:milkyvpn/core/security/redactor.dart';
 import 'package:milkyvpn/core/security/subscription_url_policy.dart';
 import 'package:milkyvpn/core/storage/secure_store.dart';
@@ -30,29 +31,64 @@ void main() {
   const policy = SubscriptionUrlPolicy();
 
   group('parser', () {
-    test('decodes base64 (padded, unpadded, url-safe, whitespace) to 16 profiles', () {
-      final b64 = fixture('subscription_16_fake.b64');
-      expect(parser.parse(b64).profiles.length, 16);
-      expect(parser.parse(b64.replaceAll('=', '')).profiles.length, 16);
-      expect(parser.parse(b64.replaceAll('+', '-').replaceAll('/', '_')).profiles.length, 16);
-      final spaced = b64.replaceAllMapped(RegExp('.{60}'), (m) => '${m[0]}\n  ');
-      expect(parser.parse(spaced).profiles.length, 16);
-      expect(parser.parse(fixture('subscription_16_fake.txt')).profiles.length, 16);
-    });
+    test(
+      'decodes base64 (padded, unpadded, url-safe, whitespace) to 16 profiles',
+      () {
+        final b64 = fixture('subscription_16_fake.b64');
+        expect(parser.parse(b64).profiles.length, 16);
+        expect(parser.parse(b64.replaceAll('=', '')).profiles.length, 16);
+        expect(
+          parser
+              .parse(b64.replaceAll('+', '-').replaceAll('/', '_'))
+              .profiles
+              .length,
+          16,
+        );
+        final spaced = b64.replaceAllMapped(
+          RegExp('.{60}'),
+          (m) => '${m[0]}\n  ',
+        );
+        expect(parser.parse(spaced).profiles.length, 16);
+        expect(
+          parser.parse(fixture('subscription_16_fake.txt')).profiles.length,
+          16,
+        );
+      },
+    );
 
     test('16 profiles: 9 Finland, 7 USA; families detected', () {
       final r = parser.parse(fixture('subscription_16_fake.txt'));
       expect(r.malformedLines, 0);
-      expect(r.profiles.where((p) => p.location == ServerLocation.finland).length, 9);
-      expect(r.profiles.where((p) => p.location == ServerLocation.usa).length, 7);
-      expect(r.profiles.where((p) => p.kind == ProfileKind.vlessRealityTcp).length, 5);
-      expect(r.profiles.where((p) => p.kind == ProfileKind.vlessWsTls).length, 4);
-      expect(r.profiles.where((p) => p.kind == ProfileKind.vlessXhttp).length, 3);
-      expect(r.profiles.where((p) => p.kind == ProfileKind.hysteria2).length, 4);
+      expect(
+        r.profiles.where((p) => p.location == ServerLocation.finland).length,
+        9,
+      );
+      expect(
+        r.profiles.where((p) => p.location == ServerLocation.usa).length,
+        7,
+      );
+      expect(
+        r.profiles.where((p) => p.kind == ProfileKind.vlessRealityTcp).length,
+        5,
+      );
+      expect(
+        r.profiles.where((p) => p.kind == ProfileKind.vlessWsTls).length,
+        4,
+      );
+      expect(
+        r.profiles.where((p) => p.kind == ProfileKind.vlessXhttp).length,
+        3,
+      );
+      expect(
+        r.profiles.where((p) => p.kind == ProfileKind.hysteria2).length,
+        4,
+      );
     });
 
     test('vless reality fields', () {
-      final p = parser.parseLine(fixture('subscription_16_fake.txt').split('\n').first)!;
+      final p = parser.parseLine(
+        fixture('subscription_16_fake.txt').split('\n').first,
+      )!;
       expect(p.protocol, 'vless');
       expect(p.security, 'reality');
       expect(p.network, 'tcp');
@@ -66,21 +102,27 @@ void main() {
     });
 
     test('ws parser handles url-encoded path and host', () {
-      final p = parser.parseLine(fixture('subscription_16_fake.txt').split('\n')[3])!;
+      final p = parser.parseLine(
+        fixture('subscription_16_fake.txt').split('\n')[3],
+      )!;
       expect(p.kind, ProfileKind.vlessWsTls);
       expect(p.path, '/ws?ed=2048');
       expect(p.host, 'cdn-fi.example.invalid');
     });
 
     test('xhttp parser', () {
-      final p = parser.parseLine(fixture('subscription_16_fake.txt').split('\n')[5])!;
+      final p = parser.parseLine(
+        fixture('subscription_16_fake.txt').split('\n')[5],
+      )!;
       expect(p.kind, ProfileKind.vlessXhttp);
       expect(p.xhttpMode, 'packet-up');
       expect(p.path, '/xh');
     });
 
     test('hysteria2 parser incl. hy2 alias, IPv4, obfs', () {
-      final p = parser.parseLine(fixture('subscription_16_fake.txt').split('\n')[8])!;
+      final p = parser.parseLine(
+        fixture('subscription_16_fake.txt').split('\n')[8],
+      )!;
       expect(p.kind, ProfileKind.hysteria2);
       expect(p.address, '203.0.113.12');
       expect(p.port, 8443);
@@ -90,8 +132,19 @@ void main() {
     });
 
     test('malformed lines are isolated, valid ones survive', () {
-      final good = fixture('subscription_16_fake.txt').split('\n').where((l) => l.isNotEmpty).toList();
-      final body = [good[0], 'vless://not-a-uuid@host:443', 'garbage', 'vless://00000001-0000-4000-8000-000000000001@host:99999', '', '# comment', 'hysteria2://@h:443', good[1]].join('\n');
+      final good = fixture(
+        'subscription_16_fake.txt',
+      ).split('\n').where((l) => l.isNotEmpty).toList();
+      final body = [
+        good[0],
+        'vless://not-a-uuid@host:443',
+        'garbage',
+        'vless://00000001-0000-4000-8000-000000000001@host:99999',
+        '',
+        '# comment',
+        'hysteria2://@h:443',
+        good[1],
+      ].join('\n');
       final r = parser.parse(body);
       expect(r.profiles.length, 2);
       expect(r.malformedLines, 4);
@@ -202,7 +255,10 @@ void main() {
                   'address': 'v.example',
                   'port': 443,
                   'users': [
-                    {'id': '00000001-0000-4000-8000-000000000001', 'alterId': 0},
+                    {
+                      'id': '00000001-0000-4000-8000-000000000001',
+                      'alterId': 0,
+                    },
                   ],
                 },
               ],
@@ -309,21 +365,25 @@ proxies:
     });
 
     test('vmess b64-json share link parses fields', () {
-      final payload = base64.encode(utf8.encode(jsonEncode({
-        'v': '2',
-        'ps': 'US Vmess',
-        'add': 'vm1.example.invalid',
-        'port': '443',
-        'id': '00000001-0000-4000-8000-000000000001',
-        'aid': '0',
-        'scy': 'auto',
-        'net': 'ws',
-        'type': 'none',
-        'host': 'cdn.example.invalid',
-        'path': '/vm',
-        'tls': 'tls',
-        'sni': 'cdn.example.invalid',
-      })));
+      final payload = base64.encode(
+        utf8.encode(
+          jsonEncode({
+            'v': '2',
+            'ps': 'US Vmess',
+            'add': 'vm1.example.invalid',
+            'port': '443',
+            'id': '00000001-0000-4000-8000-000000000001',
+            'aid': '0',
+            'scy': 'auto',
+            'net': 'ws',
+            'type': 'none',
+            'host': 'cdn.example.invalid',
+            'path': '/vm',
+            'tls': 'tls',
+            'sni': 'cdn.example.invalid',
+          }),
+        ),
+      );
       final p = parser.parseLine('vmess://$payload')!;
       expect(p.protocol, 'vmess');
       expect(p.kind, ProfileKind.vmess);
@@ -355,7 +415,9 @@ proxies:
     test('shadowsocks SIP002 + legacy forms parse', () {
       // SIP002: base64 userinfo
       final b64user = base64.encode(utf8.encode('aes-256-gcm:pw-abc'));
-      final p1 = parser.parseLine('ss://$b64user@us2.example.invalid:8388#US%20SS')!;
+      final p1 = parser.parseLine(
+        'ss://$b64user@us2.example.invalid:8388#US%20SS',
+      )!;
       expect(p1.protocol, 'ss');
       expect(p1.kind, ProfileKind.shadowsocks);
       expect(p1.cipher, 'aes-256-gcm');
@@ -466,15 +528,19 @@ proxies:
       expect(parser.parseLine(exported)!.front, p.front);
       // Bogus fronts are dropped, not fatal.
       expect(
-        parser.parseLine(
-          'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK&front=not-a-url#M',
-        )!.front,
+        parser
+            .parseLine(
+              'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK&front=not-a-url#M',
+            )!
+            .front,
         isNull,
       );
       expect(
-        parser.parseLine(
-          'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK&front=ftp://x#M',
-        )!.front,
+        parser
+            .parseLine(
+              'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK&front=ftp://x#M',
+            )!
+            .front,
         isNull,
       );
     });
@@ -497,11 +563,7 @@ proxies:
       expect(mixed.fronts, [f1]);
       // Export round-trip preserves every front as its own param.
       final exported = const SubscriptionExporter().toShareLink(p)!;
-      expect(
-        'front='.allMatches(exported).length,
-        2,
-        reason: exported,
-      );
+      expect('front='.allMatches(exported).length, 2, reason: exported);
       expect(parser.parseLine(exported)!.fronts, [f1, f2]);
     });
 
@@ -529,12 +591,23 @@ proxies:
     });
 
     test('expiry from subscription-userinfo header', () {
-      final r = parser.parse(fixture('subscription_16_fake.b64'), headers: {'Subscription-Userinfo': 'upload=1; download=2; total=3; expire=1900000000'});
-      expect(r.expiresAt, DateTime.fromMillisecondsSinceEpoch(1900000000 * 1000, isUtc: true));
+      final r = parser.parse(
+        fixture('subscription_16_fake.b64'),
+        headers: {
+          'Subscription-Userinfo':
+              'upload=1; download=2; total=3; expire=1900000000',
+        },
+      );
+      expect(
+        r.expiresAt,
+        DateTime.fromMillisecondsSinceEpoch(1900000000 * 1000, isUtc: true),
+      );
     });
 
     test('redactedRemark never contains credentials', () {
-      final p = parser.parseLine('vless://00000001-0000-4000-8000-000000000001@h.example:443?security=none#00000001-0000-4000-8000-000000000001 Srv')!;
+      final p = parser.parseLine(
+        'vless://00000001-0000-4000-8000-000000000001@h.example:443?security=none#00000001-0000-4000-8000-000000000001 Srv',
+      )!;
       expect(p.redactedRemark, 'Srv');
       expect(p.toDiagnosticString(), isNot(contains('0000-4000')));
     });
@@ -560,44 +633,76 @@ proxies:
         'https://sub.milky.homes/s/AbCdEf123456',
       );
     });
-    test('rejects localhost, private ip, non-http schemes, userinfo, tricks', () {
-      for (final bad in [
-        'https://localhost/s/AbCdEf123456',
-        'https://127.0.0.1/s/AbCdEf123456',
-        'https://192.168.1.1/s/AbCdEf123456',
-        'https://10.0.0.1/s/AbCdEf123456',
-        'https://172.16.0.1/s/x',
-        'https://169.254.1.1/s/x',
-        'https://100.64.0.1/s/x',
-        'https://0.0.0.0/s/x',
-        'https://224.0.0.1/s/x',
-        'https://[::1]/s/x',
-        'https://[fe80::1]/s/x',
-        'https://[fd00::1]/s/x',
-        'file:///etc/passwd',
-        'javascript:alert(1)',
-        'ftp://host.example/feed',
-        'https://user@sub.milky.homes/s/AbCdEf123456',
-        'https://sub.milky.homes/s/AbCdEf123456#f',
-        'https://sub.milky.homes/s/a b c',
-        '',
-      ]) {
-        expect(policy.isAllowed(bad), isFalse, reason: bad);
-      }
-    });
+    test(
+      'rejects localhost, private ip, non-http schemes, userinfo, tricks',
+      () {
+        for (final bad in [
+          'https://localhost/s/AbCdEf123456',
+          'https://127.0.0.1/s/AbCdEf123456',
+          'https://192.168.1.1/s/AbCdEf123456',
+          'https://10.0.0.1/s/AbCdEf123456',
+          'https://172.16.0.1/s/x',
+          'https://169.254.1.1/s/x',
+          'https://100.64.0.1/s/x',
+          'https://0.0.0.0/s/x',
+          'https://224.0.0.1/s/x',
+          'https://[::1]/s/x',
+          'https://[fe80::1]/s/x',
+          'https://[fd00::1]/s/x',
+          'file:///etc/passwd',
+          'javascript:alert(1)',
+          'ftp://host.example/feed',
+          'https://user@sub.milky.homes/s/AbCdEf123456',
+          'https://sub.milky.homes/s/AbCdEf123456#f',
+          'https://sub.milky.homes/s/a b c',
+          '',
+        ]) {
+          expect(policy.isAllowed(bad), isFalse, reason: bad);
+        }
+      },
+    );
     test('deep link extraction + sanitization', () {
-      expect(policy.fromDeepLink('milkyvpn://import?url=https%3A%2F%2Fsub.milky.homes%2Fs%2FAbCdEf123456')!.path, '/s/AbCdEf123456');
-      expect(policy.fromDeepLink('milkyvpn://import?url=http://sub.milky.homes/s/AbCdEf123456'), isNotNull);
-      expect(policy.fromDeepLink('milkyvpn://other?url=https://sub.milky.homes/s/AbCdEf123456'), isNull);
-      expect(policy.fromDeepLink('https://import?url=https://sub.milky.homes/s/AbCdEf123456'), isNull);
-      expect(SubscriptionUrlPolicy.redact(Uri.parse('https://sub.milky.homes/s/AbCdEf123456')), isNot(contains('AbCdEf')));
+      expect(
+        policy
+            .fromDeepLink(
+              'milkyvpn://import?url=https%3A%2F%2Fsub.milky.homes%2Fs%2FAbCdEf123456',
+            )!
+            .path,
+        '/s/AbCdEf123456',
+      );
+      expect(
+        policy.fromDeepLink(
+          'milkyvpn://import?url=http://sub.milky.homes/s/AbCdEf123456',
+        ),
+        isNotNull,
+      );
+      expect(
+        policy.fromDeepLink(
+          'milkyvpn://other?url=https://sub.milky.homes/s/AbCdEf123456',
+        ),
+        isNull,
+      );
+      expect(
+        policy.fromDeepLink(
+          'https://import?url=https://sub.milky.homes/s/AbCdEf123456',
+        ),
+        isNull,
+      );
+      expect(
+        SubscriptionUrlPolicy.redact(
+          Uri.parse('https://sub.milky.homes/s/AbCdEf123456'),
+        ),
+        isNot(contains('AbCdEf')),
+      );
     });
   });
 
   group('redactor', () {
     test('strips uuid, token, userinfo, query creds', () {
       const r = Redactor();
-      final s = r.redact('vless://00000001-0000-4000-8000-000000000001@h:443?pbk=FAKEPBK_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=ab from https://sub.milky.homes/s/SECRET_TOKEN_1234');
+      final s = r.redact(
+        'vless://00000001-0000-4000-8000-000000000001@h:443?pbk=FAKEPBK_AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA&sid=ab from https://sub.milky.homes/s/SECRET_TOKEN_1234',
+      );
       expect(s, isNot(contains('00000001-0000')));
       expect(s, isNot(contains('SECRET_TOKEN')));
       expect(s, isNot(contains('FAKEPBK')));
@@ -605,24 +710,57 @@ proxies:
       expect(r.errorClass(const SocketException('timed out')), 'timeout');
       expect(r.errorClass(null), 'unknown');
     });
+
+    // BUG-2026-10-01-08 regression: a keychain refusal during the import write
+    // was classified as a tunnel failure and rendered «Туннель не поднялся».
+    test(
+      'keychain refusal classifies as secure_storage, not tunnel failure',
+      () {
+        const r = Redactor();
+        final e = Exception(
+          'Unexpected security result code: -34018 — '
+          'Client has neither application-identifier nor '
+          'keychain-access-groups entitlements',
+        );
+        expect(r.errorClass(e), 'secure_storage');
+        expect(
+          MilkyError.fromCode(r.errorClass(e)).kind,
+          MilkyErrorKind.storageFailure,
+        );
+      },
+    );
   });
 
   group('repository + secure storage abstraction', () {
-    test('import stores url and snapshot in secure store only; remove clears', () async {
-      final store = MemorySecureStore();
-      final repo = SubscriptionRepository(store: store, fetcher: FakeFetcher(fixture('subscription_16_fake.b64')));
-      await repo.load();
-      expect(repo.hasSubscription, isFalse);
-      final snap = await repo.importFromUrl('https://sub.milky.homes/s/AbCdEf123456');
-      expect(snap.profiles.length, 16);
-      expect(store.data.keys, containsAll(['subscription_url', 'subscription_snapshot']));
-      expect(repo.redactedUrl, isNot(contains('AbCdEf')));
-      final repo2 = SubscriptionRepository(store: store, fetcher: FakeFetcher(''));
-      await repo2.load();
-      expect(repo2.snapshot?.profiles.length, 16);
-      await repo2.remove();
-      expect(store.data, isEmpty);
-    });
+    test(
+      'import stores url and snapshot in secure store only; remove clears',
+      () async {
+        final store = MemorySecureStore();
+        final repo = SubscriptionRepository(
+          store: store,
+          fetcher: FakeFetcher(fixture('subscription_16_fake.b64')),
+        );
+        await repo.load();
+        expect(repo.hasSubscription, isFalse);
+        final snap = await repo.importFromUrl(
+          'https://sub.milky.homes/s/AbCdEf123456',
+        );
+        expect(snap.profiles.length, 16);
+        expect(
+          store.data.keys,
+          containsAll(['subscription_url', 'subscription_snapshot']),
+        );
+        expect(repo.redactedUrl, isNot(contains('AbCdEf')));
+        final repo2 = SubscriptionRepository(
+          store: store,
+          fetcher: FakeFetcher(''),
+        );
+        await repo2.load();
+        expect(repo2.snapshot?.profiles.length, 16);
+        await repo2.remove();
+        expect(store.data, isEmpty);
+      },
+    );
     test('kal2 pin, ech and cover survive snapshot reload', () async {
       final store = MemorySecureStore();
       final repo = SubscriptionRepository(
@@ -632,7 +770,10 @@ proxies:
         ),
       );
       await repo.importFromUrl('https://sub.milky.homes/s/AbCdEf123456');
-      final repo2 = SubscriptionRepository(store: store, fetcher: FakeFetcher(''));
+      final repo2 = SubscriptionRepository(
+        store: store,
+        fetcher: FakeFetcher(''),
+      );
       await repo2.load();
       final p = repo2.snapshot!.profiles.single;
       expect(p.network, 'mosaic');
@@ -640,31 +781,40 @@ proxies:
       expect(p.ech, 'ECH64');
       expect(p.cover, 'cover.example');
     });
-    test('fronts and altAddrs survive snapshot reload (fronting persistence)', () async {
-      // Regression: the snapshot codec used to drop front/fronts/altAddrs,
-      // silently degrading fronted links to direct-only after any restart.
-      const f1 = 'https://d5x123.functions.yandexcloud.net/relay';
-      const f2 = 'https://milky-front.acct.workers.dev';
-      final store = MemorySecureStore();
-      final repo = SubscriptionRepository(
-        store: store,
-        fetcher: FakeFetcher(
-          'kal2://psk@k.example:443?sni=k.example&pub=PUBK&carrier=mosaic'
-          '&alt=2.3.4.5:443,3.4.5.6:443'
-          '&front=${Uri.encodeComponent(f1)}&front=${Uri.encodeComponent(f2)}#M\n',
-        ),
-      );
-      await repo.importFromUrl('https://sub.milky.homes/s/AbCdEf123456');
-      final repo2 = SubscriptionRepository(store: store, fetcher: FakeFetcher(''));
-      await repo2.load();
-      final p = repo2.snapshot!.profiles.single;
-      expect(p.front, f1);
-      expect(p.fronts, [f1, f2]);
-      expect(p.altAddrs, '2.3.4.5:443,3.4.5.6:443');
-    });
+    test(
+      'fronts and altAddrs survive snapshot reload (fronting persistence)',
+      () async {
+        // Regression: the snapshot codec used to drop front/fronts/altAddrs,
+        // silently degrading fronted links to direct-only after any restart.
+        const f1 = 'https://d5x123.functions.yandexcloud.net/relay';
+        const f2 = 'https://milky-front.acct.workers.dev';
+        final store = MemorySecureStore();
+        final repo = SubscriptionRepository(
+          store: store,
+          fetcher: FakeFetcher(
+            'kal2://psk@k.example:443?sni=k.example&pub=PUBK&carrier=mosaic'
+            '&alt=2.3.4.5:443,3.4.5.6:443'
+            '&front=${Uri.encodeComponent(f1)}&front=${Uri.encodeComponent(f2)}#M\n',
+          ),
+        );
+        await repo.importFromUrl('https://sub.milky.homes/s/AbCdEf123456');
+        final repo2 = SubscriptionRepository(
+          store: store,
+          fetcher: FakeFetcher(''),
+        );
+        await repo2.load();
+        final p = repo2.snapshot!.profiles.single;
+        expect(p.front, f1);
+        expect(p.fronts, [f1, f2]);
+        expect(p.altAddrs, '2.3.4.5:443,3.4.5.6:443');
+      },
+    );
     test('rejects disallowed url without fetching', () async {
       final f = FakeFetcher('x');
-      final repo = SubscriptionRepository(store: MemorySecureStore(), fetcher: f);
+      final repo = SubscriptionRepository(
+        store: MemorySecureStore(),
+        fetcher: f,
+      );
       for (final bad in [
         'ftp://sub.milky.homes/s/AbCdEf123456',
         'https://192.168.1.1/s/AbCdEf123456',
@@ -679,8 +829,20 @@ proxies:
       expect(f.calls, 0);
     });
     test('empty subscription rejected', () async {
-      final repo = SubscriptionRepository(store: MemorySecureStore(), fetcher: FakeFetcher('garbage\nmore'));
-      await expectLater(repo.importFromUrl('https://sub.milky.homes/s/AbCdEf123456'), throwsA(predicate((e) => e is SubscriptionFetchException && e.errorClass == 'no_profiles')));
+      final repo = SubscriptionRepository(
+        store: MemorySecureStore(),
+        fetcher: FakeFetcher('garbage\nmore'),
+      );
+      await expectLater(
+        repo.importFromUrl('https://sub.milky.homes/s/AbCdEf123456'),
+        throwsA(
+          predicate(
+            (e) =>
+                e is SubscriptionFetchException &&
+                e.errorClass == 'no_profiles',
+          ),
+        ),
+      );
     });
   });
 
@@ -705,8 +867,17 @@ proxies:
       final us = sel.candidates(all, LocationChoice.usa, maxAttempts: 10);
       expect(us.length, 7);
       expect(us.every((p) => p.location == ServerLocation.usa), isTrue);
-      expect(sel.candidates(all, LocationChoice.finland, maxAttempts: 10).length, 9);
-      expect(sel.candidates(all.where((p) => p.kind == ProfileKind.other).toList(), LocationChoice.auto), isEmpty);
+      expect(
+        sel.candidates(all, LocationChoice.finland, maxAttempts: 10).length,
+        9,
+      );
+      expect(
+        sel.candidates(
+          all.where((p) => p.kind == ProfileKind.other).toList(),
+          LocationChoice.auto,
+        ),
+        isEmpty,
+      );
     });
   });
 }

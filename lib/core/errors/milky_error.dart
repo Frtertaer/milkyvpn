@@ -31,6 +31,10 @@ enum MilkyErrorKind {
   /// The subscription itself is missing, expired or unreadable.
   subscriptionProblem,
 
+  /// Protected on-device storage (keychain / keystore) refused the write — the
+  /// subscription could not be saved, not that the link was bad.
+  storageFailure,
+
   /// The user cancelled the attempt. Not an error to surface.
   cancelled,
 
@@ -121,6 +125,8 @@ class MilkyError {
           MilkyErrorAction.addSubscription,
           MilkyErrorAction.diagnostics,
         ];
+      case MilkyErrorKind.storageFailure:
+        return const [MilkyErrorAction.retry, MilkyErrorAction.diagnostics];
       case MilkyErrorKind.noServers:
         return const [
           MilkyErrorAction.addSubscription,
@@ -217,7 +223,8 @@ class MilkyError {
     if (bridgeTimeout != null) {
       return MilkyError(
         kind: MilkyErrorKind.tunnelFailed,
-        diagnosticsCode: 'BRIDGE_TIMEOUT_${bridgeTimeout.group(1)!.toUpperCase()}',
+        diagnosticsCode:
+            'BRIDGE_TIMEOUT_${bridgeTimeout.group(1)!.toUpperCase()}',
         category: MilkyFailureCategory.realDeviceFailure,
         rawCode: raw,
       );
@@ -321,6 +328,11 @@ class MilkyError {
     'no_subscription': (
       MilkyErrorKind.subscriptionProblem,
       'SUBSCRIPTION_MISSING',
+      MilkyFailureCategory.subscriptionFailure,
+    ),
+    'secure_storage': (
+      MilkyErrorKind.storageFailure,
+      'SECURE_STORAGE_WRITE_FAILED',
       MilkyFailureCategory.subscriptionFailure,
     ),
 
