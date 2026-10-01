@@ -102,4 +102,40 @@ void main() {
     expect(field().obscureText, isTrue);
     expect(tester.takeException(), isNull);
   });
+
+  testWidgets('Ctrl+V keeps line breaks of a multi-link clipboard block', (tester) async {
+    // The field is single-line: the framework strips '\n' out of paste, which
+    // merged a block of share links into one malformed line (windows-test-47).
+    const block =
+        'kal2://6570736b@a.example:443?sni=x\n'
+        'vless://00000000-0000-0000-0000-000000000000@b.example:443?security=reality\n'
+        'kal2://6570736b@c.example:443\n'
+        'kal2://6570736b@d.example:443';
+    tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+      SystemChannels.platform,
+      (call) async {
+        if (call.method == 'Clipboard.getData') {
+          return <String, dynamic>{'text': block};
+        }
+        return null;
+      },
+    );
+    addTearDown(
+      () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+        SystemChannels.platform,
+        null,
+      ),
+    );
+    await tester.pumpWidget(const MaterialApp(home: ImportScreen()));
+    await tester.tap(find.byType(TextField));
+    await tester.pump();
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.controlLeft);
+    await tester.sendKeyEvent(LogicalKeyboardKey.keyV);
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.controlLeft);
+    await tester.pump();
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.controller!.text, block);
+    expect(field.controller!.text.split('\n'), hasLength(4));
+    expect(tester.takeException(), isNull);
+  });
 }

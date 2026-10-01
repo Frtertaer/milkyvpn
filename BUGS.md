@@ -475,6 +475,27 @@
 - Issue: —  PR: —  Regression test:
   `pkg/kal2core/api_test.go::TestDecodeBase64AllVariants`
 
+### BUG-2026-10-01-03 — App: Ctrl+V в поле импорта слипает многострочные ссылки в одну строку
+- Severity: major (импорт блока ссылок клавиатурой почти гарантированно теряет
+  все профили кроме хвоста — «1 строка повреждена»; кнопка «Вставить из
+  буфера» работала, т.к. пишет текст в обход форматтеров)
+- Platform: windows (+android, +ios — тот же TextField)
+- Status: fixed-in-PR
+- Repro: сфокусировать поле импорта, Ctrl+V блок из 4 kal2://-ссылок → поле
+  содержит ОДНУ строку из 1024 символов, 0 переводов строк. Причина:
+  `EditableText` для `maxLines == 1` подставляет
+  `FilteringTextInputFormatter.singleLineFormatter` (deny '\n') ПЕРЕД
+  пользовательскими форматтерами — паста теряет разделители до контроллера.
+- Fix: `import_screen.dart` — оба входа вставки направлены в `_paste` (тот же
+  путь, что у кнопки): `Actions`-обёртка переопределяет `PasteTextIntent`
+  (framework-механизм `Action.overridable`), а `contextMenuBuilder`
+  переписывает пункт «Paste» тулбара — переводы строк сохраняются.
+- Found by: Windows live-verify windows-test-47 (поле = одна строка 1024
+  символа после Ctrl+V 4 ссылок)
+- Issue: —  PR: TBD  Regression test:
+  `test/features/import_and_sheets_v2_test.dart::'Ctrl+V keeps line breaks
+  of a multi-link clipboard block'`
+
 ### BUG-2026-10-02-01 — Windows: explicit carrier схлопывался в 'auto'
 - Severity: major (ссылка `carrier=quasar|quic2` на Windows не использовала
   UDP вообще — мост всегда передавал `-carrier auto`, то есть бежал
