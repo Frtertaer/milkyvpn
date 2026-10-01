@@ -21,9 +21,10 @@ class UpdateFlow {
 
   /// One silent check per launch — call from the home screen's first frame.
   /// Shows the update dialog only when a newer release has an asset for
-  /// this platform.
+  /// this platform. Debug builds skip it: they always report a stale dev
+  /// version, and a modal dialog on launch breaks automated UI tests.
   static Future<void> checkOnLaunch(BuildContext context) async {
-    if (_checked) return;
+    if (_checked || kDebugMode) return;
     _checked = true;
     await check(context, manual: false);
   }
