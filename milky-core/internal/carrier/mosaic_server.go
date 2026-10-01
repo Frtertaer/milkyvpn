@@ -45,7 +45,7 @@ type mosaicTable struct {
 func (v *VeilListener) MosaicHandler(base string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		var psk []byte
-		for _, u := range v.cfg.Users {
+		for _, u := range v.cfg.users() {
 			want := base + "/" + MosaicPathToken(u.PSK)
 			if subtle.ConstantTimeCompare([]byte(r.URL.Path), []byte(want)) == 1 {
 				psk = u.PSK
@@ -172,8 +172,8 @@ func (v *VeilListener) serveMosaic(s *mosaicSession) {
 		_ = bc.Close()
 		return
 	}
-	eph, totalLen, psk, _, err := v.authFlight(prefix, nil)
-	if err != nil || subtle.ConstantTimeCompare(psk, s.psk) != 1 {
+	eph, totalLen, user, _, err := v.authFlight(prefix, nil)
+	if err != nil || subtle.ConstantTimeCompare(user.PSK, s.psk) != 1 {
 		v.cfg.logf("mosaic: bad flight: %v", err)
 		_ = bc.Close()
 		return
@@ -184,7 +184,7 @@ func (v *VeilListener) serveMosaic(s *mosaicSession) {
 			return
 		}
 	}
-	if err := v.establishKAL(bc, eph, psk, nil); err != nil {
+	if err := v.establishKAL(bc, eph, user, nil, "mosaic"); err != nil {
 		v.cfg.logf("mosaic: handshake fail: %v", err)
 		_ = bc.Close()
 	}

@@ -79,6 +79,8 @@ func main() {
 	upstreamOnly := flag.String("upstream-only", "", "comma domain suffixes routed via -upstream (empty=all)")
 	var users userFlags
 	flag.Var(&users, "user", "id=psk (repeatable)")
+	usersFile := flag.String("users-file", "", "JSON file with users [{id,psk}] re-read on change — panel edits it, no restart needed")
+	statsFile := flag.String("stats-file", "", "JSONL accounting log (session open/close with uid+bytes) for the panel")
 	keygen := flag.Bool("keygen", false, "print a fresh ed25519 keypair and exit")
 	echGen := flag.String("echgen", "", "generate an ECH config+key for this outer cover name (public_name), print the client ECHConfigList (b64, goes into kal2:// links as ech=) and write the key file to -echkeys-out")
 	echKeysOut := flag.String("echkeys-out", "ech-keys.json", "key file written by -echgen")
@@ -189,6 +191,8 @@ func main() {
 		DecoyDir:         *decoy,
 		DriftPath:        *driftPath,
 		Users:            users,
+		UsersFile:        *usersFile,
+		StatsFile:        *statsFile,
 		ECHKeyFiles:      splitCommaStr(*echKeys),
 		Egress:           eg,
 		Logf:             func(f string, a ...any) { log.Printf(f, a...) },

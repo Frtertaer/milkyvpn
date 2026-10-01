@@ -196,6 +196,7 @@ type QuasarListener struct {
 	ln    *kcp.Listener
 	mu    sync.Mutex
 	conns map[*kcp.UDPSession]struct{}
+	name  string // session carrier label for OnSession accounting
 }
 
 // NewQuasarListener binds a UDP socket; v supplies users/replay/OnSession.
@@ -258,7 +259,7 @@ func (q *QuasarListener) handle(s *kcp.UDPSession) bool {
 		return false
 	}
 	flightPrefix := append(magic, rest...)
-	eph, totalLen, psk, _, err := q.v.authFlight(flightPrefix, nil)
+	eph, totalLen, user, _, err := q.v.authFlight(flightPrefix, nil)
 	if err != nil {
 		return false
 	}
@@ -268,7 +269,11 @@ func (q *QuasarListener) handle(s *kcp.UDPSession) bool {
 		}
 	}
 	_ = s.SetReadDeadline(time.Time{})
-	if err := q.v.establishKAL(bc, eph, psk, nil); err != nil {
+	name := q.name
+	if name == "" {
+		name = "quasar"
+	}
+	if err := q.v.establishKAL(bc, eph, user, nil, name); err != nil {
 		q.v.cfg.logf("quasar: handshake fail %s: %v", s.RemoteAddr(), err)
 		return false
 	}

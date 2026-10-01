@@ -46,6 +46,13 @@
           border:1px solid var(--edge); color:var(--mut); }
   .pill.on { color:var(--ok); border-color:var(--ok); }
   .pill.off { color:var(--bad); border-color:var(--bad); }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th { text-align:left; color:var(--mut); font-weight:500; font-size:11px;
+       text-transform:uppercase; letter-spacing:.05em; padding:4px 8px; }
+  td { padding:7px 8px; border-top:1px solid var(--edge); vertical-align:middle; }
+  td .link { margin-top:2px; font-size:10px; padding:4px 7px; }
+  button.mini { padding:4px 10px; font-size:11px; }
+  .num { font-variant-numeric:tabular-nums; }
   #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
            background:#1a2233; border:1px solid var(--edge); padding:10px 18px;
            border-radius:10px; display:none; }
@@ -81,6 +88,17 @@
     <div id="listeners" class="kv"></div>
   </div>
   <div class="card wide">
+    <h2>Пользователи <span class="pill" id="fileModePill"></span></h2>
+    <div class="row" style="margin-bottom:8px">
+      <input type="text" id="newUser" placeholder="имя нового юзера (a-z0-9_-)" style="max-width:240px">
+      <button onclick="addUser()">Добавить</button>
+    </div>
+    <table id="usersTbl"><thead><tr>
+      <th>Юзер</th><th>Трафик ↑/↓</th><th>Сессий</th><th>Онлайн</th><th>Активность</th><th></th>
+    </tr></thead><tbody id="usersBody"></tbody></table>
+    <div id="usersEmpty" class="pill">нет пользователей</div>
+  </div>
+  <div class="card wide">
     <h2>Генератор ссылок</h2>
     <div class="row">
       <div style="flex:1;min-width:240px">
@@ -99,6 +117,8 @@
         </select>
         <label>SNI</label>
         <input type="text" id="genSni" value="kal.mergescribe.dev">
+        <label>Пользователь</label>
+        <select id="genUser"></select>
         <div class="row" style="margin-top:14px">
           <button onclick="genLink()">Сгенерировать</button>
           <button class="ghost" onclick="saveLinks()">Сохранить в подписку</button>
@@ -159,7 +179,60 @@ async function loadAll(){
     $('jlog').textContent = st.journal||'';
     CFG = await api('/api/config'); renderCfg();
     LINKS = await api('/api/links'); renderLinks();
+    const u=await api('/api/users'); const s=await api('/api/stats'); renderUsers(u,s);
   }catch(e){ if(e.message!=='auth') toast('Ошибка: '+e.message,false); }
+}
+function fmtB(n){ const u=['Б','КБ','МБ','ГБ','ТБ']; let i=0;
+  while(n>=1024&&i<u.length-1){n/=1024;i++;} return (i?n.toFixed(1):n)+' '+u[i]; }
+function fmtAgo(t){ if(!t)return '—'; const s=Math.floor(Date.now()/1000)-t;
+  if(s<60)return 'только что'; if(s<3600)return Math.floor(s/60)+' мин назад';
+  if(s<86400)return Math.floor(s/3600)+' ч назад'; return Math.floor(s/86400)+' дн назад'; }
+function renderUsers(u,st){
+  const users=u.users||[], agg=(st&&st.users)||{};
+  $('fileModePill').textContent = u.file_mode?'users-file':'флаги (мигрирует при первом изменении)';
+  $('fileModePill').className='pill '+(u.file_mode?'on':'');
+  $('usersEmpty').style.display = users.length?'none':'inline-block';
+  $('usersBody').innerHTML = users.map(x=>{
+    const a=agg[x.id]||{};
+    return `<tr${x.disabled?' style="opacity:.45"':''}>
+      <td><b>${x.id}</b>${x.disabled?' <span class="pill off">выкл</span>':''}
+        <div class="link" onclick="navigator.clipboard?.writeText(this.textContent);toast('Подписка скопирована')" title="нажми — скопирует URL подписки">${x.sub_url}</div></td>
+      <td class="num">${fmtB(a.up||0)} / ${fmtB(a.down||0)}</td>
+      <td class="num">${a.sessions||0}</td>
+      <td>${a.online?`<span class="pill on">${a.online}</span>`:'—'}</td>
+      <td>${fmtAgo(a.last_seen)}</td>
+      <td style="white-space:nowrap">
+        <button class="mini ghost" onclick="userToggle('${x.id}',${!x.disabled})">${x.disabled?'Вкл':'Выкл'}</button>
+        <button class="mini ghost" onclick="userRekey('${x.id}')" title="новый PSK и URL подписки">Rekey</button>
+        <button class="mini danger" onclick="userDel('${x.id}')">Удалить</button>
+      </td></tr>`;
+  }).join('');
+  $('genUser').innerHTML = users.filter(x=>!x.disabled).map(x=>`<option value="${x.id}">${x.id}</option>`).join('');
+}
+async function addUser(){
+  const id=$('newUser').value.trim(); if(!id)return;
+  try{ await api('/api/users',{add:id}); $('newUser').value='';
+    toast('Пользователь '+id+' добавлен — сервер подхватил без перезапуска');
+    const u=await api('/api/users'); const s=await api('/api/stats'); renderUsers(u,s);
+  }catch(e){ toast('Ошибка: '+e.message,false); }
+}
+async function userToggle(id,dis){
+  try{ await api('/api/users',{disable:id,disabled:dis});
+    const u=await api('/api/users'); const s=await api('/api/stats'); renderUsers(u,s);
+  }catch(e){ toast('Ошибка: '+e.message,false); }
+}
+async function userRekey(id){
+  if(!confirm('Перевыпустить PSK и подписку для '+id+'? Старые ссылки перестанут работать.'))return;
+  try{ await api('/api/users',{rekey:id});
+    const u=await api('/api/users'); const s=await api('/api/stats'); renderUsers(u,s);
+    toast('Ключи '+id+' перевыпущены');
+  }catch(e){ toast('Ошибка: '+e.message,false); }
+}
+async function userDel(id){
+  if(!confirm('Удалить '+id+'? Его ссылки и подписка умрут сразу.'))return;
+  try{ await api('/api/users',{del:id});
+    const u=await api('/api/users'); const s=await api('/api/stats'); renderUsers(u,s);
+  }catch(e){ toast('Ошибка: '+e.message,false); }
 }
 const FLAG_LABELS={ 'front-listen':'Фронтинг (plain-HTTP для релеев)', 'quic2-listen':'QUICv2 listener',
   'rtc-listen':'rtc (WebRTC-облик) UDP', 'udp-listen':'quasar UDP/KCP', 'decoy':'Decoy-сайт',
@@ -205,7 +278,7 @@ function renderLinks(){
 async function genLink(){
   const addrs=[...document.querySelectorAll('.ge:checked')].map(x=>x.value);
   const fronts=[...document.querySelectorAll('.gf:checked')].map(x=>x.value);
-  try{ const r=await api('/api/genlink',{addrs, fronts, carrier:$('genCarrier').value, sni:$('genSni').value});
+  try{ const r=await api('/api/genlink',{addrs, fronts, carrier:$('genCarrier').value, sni:$('genSni').value, user:$('genUser').value});
     $('genOut').style.display='block'; $('genOut').textContent=r.link;
     await navigator.clipboard?.writeText(r.link).catch(()=>{});
     toast('Ссылка сгенерирована и скопирована');

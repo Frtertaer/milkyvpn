@@ -117,7 +117,7 @@ func newTestServerFull(t *testing.T, echKeys []tls.EncryptedClientHelloKey, muta
 			}
 		},
 		Users:    []User{{ID: "u1", PSK: psk}},
-		OnSession: func(s *kal2.Session) {
+		OnSession: func(s *kal2.Session, _ SessionInfo) {
 			go func() {
 				for {
 					st, err := s.Accept()
