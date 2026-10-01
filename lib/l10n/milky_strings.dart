@@ -120,6 +120,11 @@ class S {
   String get expires => t('Действует до', 'Valid until');
   String get noExpiry => t('Бессрочно', 'No expiry');
   String get profiles => t('Профили', 'Profiles');
+  String get profileDead => t('мёртв', 'dead');
+  String get pinnedFellBack => t(
+    'Закреплённый профиль недоступен — подключили резервный.',
+    'Pinned profile unreachable — connected via fallback.',
+  );
   String get profilesReceived => t('Профилей получено', 'Profiles received');
   String get compatibleCountLabel => t('Совместимо', 'Compatible');
   String get countsNeedRefresh => t(

@@ -81,6 +81,7 @@ func main() {
 	flag.Var(&users, "user", "id=psk (repeatable)")
 	usersFile := flag.String("users-file", "", "JSON file with users [{id,psk}] re-read on change — panel edits it, no restart needed")
 	statsFile := flag.String("stats-file", "", "JSONL accounting log (session open/close with uid+bytes) for the panel")
+	resume := flag.Bool("resume", true, "v2.1 session resumption/migration: issue tickets so clients survive network changes (wifi↔LTE) without re-dialing")
 	keygen := flag.Bool("keygen", false, "print a fresh ed25519 keypair and exit")
 	echGen := flag.String("echgen", "", "generate an ECH config+key for this outer cover name (public_name), print the client ECHConfigList (b64, goes into kal2:// links as ech=) and write the key file to -echkeys-out")
 	echKeysOut := flag.String("echkeys-out", "ech-keys.json", "key file written by -echgen")
@@ -196,6 +197,7 @@ func main() {
 		Users:            users,
 		UsersFile:        *usersFile,
 		StatsFile:        *statsFile,
+		Resume:           *resume,
 		ECHKeyFiles:      splitCommaStr(*echKeys),
 		Egress:           eg,
 		Logf:             func(f string, a ...any) { log.Printf(f, a...) },
