@@ -507,6 +507,22 @@
   `milky-core/internal/core/socks4_test.go::TestSocks4ConnectGranted`,
   `TestSocks4IPv4`, `TestSocks5StillWorks`
 
+### BUG-2026-10-02-03 — Android: протухший libcore.so в APK молча игнорировал front=/rtc
+- Severity: critical (новые носители — мёртвый код: профили с `front=`
+  диалят впрямую, т.е. весь whitelist-обход не работал в релизном APK;
+  никакой ошибки — просто «не подключается»)
+- Platform: android (упаковка, не core: `release.yml` собирал APK по
+  закоммиченным `jniLibs/*/libcore.so` без пересборки kal2native — бинарь
+  устарел ещё до коммита fronting'а)
+- Status: fixed-in-PR
+- Repro: заблокировать IP сервера в госте → профиль с `front=` → мгновенный
+  local refuse на прямой диал вместо HTTPS-ноги на фронт (~16ms)
+- Fix: `.so` пересобраны для всех трёх ABI в этом же коммите; `release.yml`
+  теперь сам пересобирает kal2native перед `flutter build apk`
+- Found by: Android emu verification session (hostile-region sim)
+- Issue: —  PR: #35  Regression test: regression — пересборка .so внутри
+  пайплайна (строгое решение: не коммитить бинари вообще, собирать в CI)
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 
