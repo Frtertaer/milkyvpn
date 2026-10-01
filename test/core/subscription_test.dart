@@ -479,6 +479,32 @@ proxies:
       );
     });
 
+    test('kal2 repeated front= params collect into fronts (universal link)', () {
+      const f1 = 'https://d5x123.functions.yandexcloud.net/relay';
+      const f2 = 'https://milky-front.acct.workers.dev';
+      final p = parser.parseLine(
+        'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK&carrier=auto'
+        '&front=${Uri.encodeComponent(f1)}&front=${Uri.encodeComponent(f2)}#M',
+      )!;
+      expect(p.front, f1);
+      expect(p.fronts, [f1, f2]);
+      // Bogus entries drop; duplicates dedupe.
+      final mixed = parser.parseLine(
+        'kal2://psk@1.2.3.4:443?sni=k.example&pub=PUBK'
+        '&front=${Uri.encodeComponent(f1)}&front=junk'
+        '&front=${Uri.encodeComponent(f1)}#M',
+      )!;
+      expect(mixed.fronts, [f1]);
+      // Export round-trip preserves every front as its own param.
+      final exported = const SubscriptionExporter().toShareLink(p)!;
+      expect(
+        'front='.allMatches(exported).length,
+        2,
+        reason: exported,
+      );
+      expect(parser.parseLine(exported)!.fronts, [f1, f2]);
+    });
+
     test('kal2 mosaic carrier and SPKI pin survive parse and export', () {
       const pin =
           'a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90';

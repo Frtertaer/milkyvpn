@@ -15,7 +15,8 @@
 ## 1. Сервер: plain-HTTP порт для фронта
 
 ```bash
-kal2-server ... -front-listen 127.0.0.1:8081   # или 0.0.0.0:8081
+kal2-server ... -front-listen 0.0.0.0:8081            # один порт
+kal2-server ... -front-listen 0.0.0.0:8081,0.0.0.0:8880  # несколько через запятую
 ```
 
 На нём поднимается тот же mux (drift/mosaic endpoints + decoy 404), без TLS —
@@ -48,13 +49,38 @@ Carrier: только `mosaic` (функция буферизует запрос
 ```bash
 npm i -g wrangler && wrangler login
 wrangler deploy --name milky-front cloudflare_worker.js \
-  --var UPSTREAM:http://<server-ip>:8081
+  --var UPSTREAM:http://<server-hostname>:8880
 # → https://milky-front.<acct>.workers.dev
 ```
+
+Ограничения воркера: `UPSTREAM` обязан быть именем хоста — fetch на голый IP
+Cloudflare рубит (error 1003); и порт из разрешённого списка для http://:
+80, 8080, 8880, 2052, 2082, 2086, 2095 (для https://: 443, 8443, 2053, 2083,
+2087, 2096). Под это выделен `-front-listen 0.0.0.0:8880`.
 
 Workers прозрачно проксируют WebSocket → carriers: `cdn` (WS-drift, стрим) и
 `mosaic`. workers.dev НЕ в белых списках — покрывает волны блокировки IP,
 но не whitelist-режим.
+
+### C. Timeweb App Platform — второй RU-фронт (от ~100₽/мес)
+
+Ещё один домен российского провайдера в белых списках — резерв, если
+Яндекс-фронт деградирует или его домен выпадет из списка.
+
+- Панель → **App Platform** → «Добавить» → **Backend**, репозиторий с этим
+  файлом как `app.py` (или загрузка исходников).
+- Build cmd — пусто (зависимостей нет), Run cmd — `python app.py`.
+- Env: `UPSTREAM=http://<server-ip>:8081`.
+- Публичный URL приложения из панели — это `front=`.
+- Carrier: только `mosaic` (буферизованный запрос/ответ, как у функций).
+
+### D. Что НЕ подходит
+
+- **VK Cloud** — managed-FaaS у них нет (только OpenFaaS поверх платного
+  k8s-кластера); как бесплатный фронт не годится.
+- Любой фронт, буферизующий запросы (serverless, app-платформы) — только
+  `mosaic`; стрим-носители (`drift`, `cdn`) требуют WS-прокси уровня
+  Cloudflare Worker.
 
 ## 3. Ссылка
 
@@ -67,6 +93,11 @@ pandora://<psk>@<server>:443?sni=<domain>&pub=<hex>&carrier=mosaic&front=https%3
   `cdn` — для WS-фронтов; `auto` также допустим — hedge-диал сам выберет
   живой носитель (veil напрямую vs mosaic через фронт).
 - `alt=` работает вместе с `front=`: фронт — ортогональный слой.
+- Один `front=` = фронт-only (как задумано для ссылки-фронта). Несколько
+  `front=` = универсальная ссылка: диал-свип идёт {прямой вход, фронт1,
+  фронт2, ...} — покрывает открытую сеть, блок-IP и белые списки одним
+  профилем. Пример:
+  `pandora://psk@ip:443?sni=d&pub=p&carrier=auto&front=https%3A%2F%2Ffn.yandex&front=https%3A%2F%2Fw.workers.dev`
 
 ## Ограничения
 
@@ -75,3 +106,7 @@ pandora://<psk>@<server>:443?sni=<domain>&pub=<hex>&carrier=mosaic&front=https%3
   прямого drift; это аварийный режим, не основной.
 - Фронт видит только: что клиент ходит на его домен (размеры/тайминги HTTPS
   запросов). IP сервера фронту известен (UPSTREAM), но РКН его не видит.
+- Гейтвеи функций (проверено на Яндексе) отвергают пути в URL вызова — логический
+  путь носителя едет в заголовке `X-Milky-Path`, релей разворачивает его в path
+  upstream'а. По той же причине фронт-нога говорит HTTP/1.1 (h2 ALPN в Chrome-
+  фингерпринте переписывается, иначе edge отвечает h2-префейсом).

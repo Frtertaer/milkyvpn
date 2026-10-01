@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MilkyVPN — панель Pandora</title>
+<style>
+  :root { --bg:#0b0e14; --card:#141926; --edge:#232c42; --tx:#e8ecf5; --mut:#8b94ab;
+          --ac:#6ea8ff; --ok:#4cd689; --bad:#ff6b6b; --warn:#ffc44d; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--tx);
+         font:14px/1.5 -apple-system,"Segoe UI",Roboto,sans-serif; }
+  header { padding:14px 22px; border-bottom:1px solid var(--edge); display:flex;
+           align-items:center; gap:12px; }
+  header b { font-size:16px; } header .dot { width:9px;height:9px;border-radius:50%;background:var(--mut); }
+  header .dot.on { background:var(--ok); box-shadow:0 0 8px var(--ok); }
+  header .dot.off { background:var(--bad); }
+  main { max-width:1060px; margin:0 auto; padding:20px 22px 60px; display:grid;
+         grid-template-columns:1fr 1fr; gap:16px; }
+  .card { background:var(--card); border:1px solid var(--edge); border-radius:14px;
+          padding:16px 18px; }
+  .card h2 { margin:0 0 12px; font-size:14px; color:var(--mut); text-transform:uppercase;
+             letter-spacing:.08em; }
+  .wide { grid-column:1/-1; }
+  label { display:block; color:var(--mut); font-size:12px; margin:10px 0 4px; }
+  input[type=text], input[type=password], select, textarea {
+    width:100%; background:#0d1119; border:1px solid var(--edge); border-radius:8px;
+    color:var(--tx); padding:8px 10px; font:inherit; }
+  textarea { font-family:ui-monospace,Menlo,monospace; font-size:12px; min-height:84px; }
+  button { background:var(--ac); color:#06101f; border:0; border-radius:8px; padding:8px 16px;
+           font:600 13px/1 inherit; cursor:pointer; }
+  button.ghost { background:transparent; color:var(--ac); border:1px solid var(--ac); }
+  button.danger { background:var(--bad); color:#200; }
+  button:disabled { opacity:.5; cursor:default; }
+  .row { display:flex; gap:10px; align-items:center; flex-wrap:wrap; }
+  .tog { display:flex; align-items:center; gap:8px; margin:8px 0; cursor:pointer; }
+  .tog input { accent-color:var(--ac); width:16px; height:16px; }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:4px 14px; font-size:13px; }
+  .kv b { color:var(--mut); font-weight:500; }
+  .link { background:#0d1119; border:1px solid var(--edge); border-radius:8px;
+          padding:8px 10px; font-family:ui-monospace,Menlo,monospace; font-size:11px;
+          word-break:break-all; margin-top:8px; }
+  .log { font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--mut);
+         max-height:200px; overflow:auto; white-space:pre-wrap; }
+  .pill { display:inline-block; padding:1px 9px; border-radius:99px; font-size:11px;
+          border:1px solid var(--edge); color:var(--mut); }
+  .pill.on { color:var(--ok); border-color:var(--ok); }
+  .pill.off { color:var(--bad); border-color:var(--bad); }
+  #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
+           background:#1a2233; border:1px solid var(--edge); padding:10px 18px;
+           border-radius:10px; display:none; }
+  #login { max-width:340px; margin:15vh auto; }
+  @media (max-width:760px){ main{grid-template-columns:1fr;} }
+</style>
+</head>
+<body>
+<div id="login" class="card" style="display:none">
+  <h2>MilkyVPN — вход в панель</h2>
+  <label>Токен администратора</label>
+  <input type="password" id="tok" autofocus>
+  <div class="row" style="margin-top:14px"><button onclick="login()">Войти</button></div>
+</div>
+<div id="app" style="display:none">
+<header>
+  <span class="dot" id="stDot"></span>
+  <b>MilkyVPN · Pandora</b>
+  <span class="pill" id="unitPill">…</span>
+  <span style="flex:1"></span>
+  <button class="ghost" onclick="loadAll()">Обновить</button>
+  <button class="ghost" onclick="logout()">Выйти</button>
+</header>
+<main>
+  <div class="card">
+    <h2>Состояние</h2>
+    <div class="kv" id="status"></div>
+    <h2 style="margin-top:16px">Журнал (последние)</h2>
+    <div class="log" id="jlog">…</div>
+  </div>
+  <div class="card">
+    <h2>Слушатели</h2>
+    <div id="listeners" class="kv"></div>
+  </div>
+  <div class="card wide">
+    <h2>Генератор ссылок</h2>
+    <div class="row">
+      <div style="flex:1;min-width:240px">
+        <label>Точки входа (multi-entry — клиент перебирает сам)</label>
+        <div id="genEntries"></div>
+        <label>Фронты (повторяющийся front= → прямой → фронт1 → фронт2)</label>
+        <div id="genFronts"></div>
+      </div>
+      <div style="flex:1;min-width:240px">
+        <label>Carrier</label>
+        <select id="genCarrier">
+          <option value="auto">auto (умный sweep)</option>
+          <option value="veil">veil</option><option value="drift">drift</option>
+          <option value="cdn">cdn</option><option value="mosaic">mosaic</option>
+          <option value="quasar">quasar</option><option value="quic2">quic2</option><option value="rtc">rtc (WebRTC-облик)</option>
+        </select>
+        <label>SNI</label>
+        <input type="text" id="genSni" value="kal.mergescribe.dev">
+        <div class="row" style="margin-top:14px">
+          <button onclick="genLink()">Сгенерировать</button>
+          <button class="ghost" onclick="saveLinks()">Сохранить в подписку</button>
+        </div>
+      </div>
+    </div>
+    <div class="link" id="genOut" style="display:none"></div>
+    <h2 style="margin-top:16px">Сохранённые ссылки (эндпоинт авто-обновления)</h2>
+    <div class="kv"><b>URL подписки</b><span class="link" id="subUrl">…</span></div>
+    <div id="linkList"></div>
+  </div>
+  <div class="card wide">
+    <h2>Настройки сервера <span class="pill" id="dirtyPill" style="display:none">есть изменения</span></h2>
+    <div id="cfg"></div>
+    <div class="row" style="margin-top:14px">
+      <button onclick="applyCfg()" id="applyBtn">Применить (перезапуск сервера)</button>
+      <span class="pill" id="applyMsg"></span>
+    </div>
+  </div>
+</main>
+</div>
+<div id="toast"></div>
+<script>
+let CFG=null, LINKS=null;
+const $=id=>document.getElementById(id);
+function toast(m,ok){ const t=$('toast'); t.textContent=m; t.style.display='block';
+  t.style.borderColor= ok===false?'var(--bad)':'var(--ok)'; setTimeout(()=>t.style.display='none',3500); }
+async function api(p,body){
+  const r=await fetch(p,{method:body?'POST':'GET',
+    headers:body?{'Content-Type':'application/json'}:{}, body:body?JSON.stringify(body):null});
+  if(r.status===401){ showLogin(); throw new Error('auth'); }
+  if(!r.ok){ const t=await r.text(); throw new Error(t.slice(0,200)); }
+  return r.json();
+}
+function showLogin(){ $('login').style.display='block'; $('app').style.display='none'; $('tok').focus(); }
+async function login(){ try{ await api('/api/login',{token:$('tok').value});
+  $('login').style.display='none'; $('app').style.display='block'; loadAll();
+}catch(e){ toast('Неверный токен или ошибка',false);} }
+async function logout(){ await api('/api/logout',{}); showLogin(); }
+$('tok').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+
+async function loadAll(){
+  try{
+    const st=await api('/api/status');
+    $('unitPill').textContent = st.unit_active?'сервер активен':'сервер ОСТАНОВЛЕН';
+    $('unitPill').className='pill '+(st.unit_active?'on':'off');
+    $('stDot').className='dot '+(st.unit_active?'on':'off');
+    $('status').innerHTML = [
+      ['Uptime', st.uptime], ['Версия', st.version||'—'],
+      ['Юнит', st.unit], ['QUIC2', st.quic2?'вкл':'выкл'],
+    ].map(([k,v])=>`<b>${k}</b><span>${v}</span>`).join('');
+    $('listeners').innerHTML = st.listeners.map(l=>`<b>${l.proto} ${l.addr}</b><span>${l.up?'<span class="pill on">up</span>':'<span class="pill off">down</span>'}</span>`).join('')||'<span class="pill off">нет данных</span>';
+    $('jlog').textContent = st.journal||'';
+    CFG = await api('/api/config'); renderCfg();
+    LINKS = await api('/api/links'); renderLinks();
+  }catch(e){ if(e.message!=='auth') toast('Ошибка: '+e.message,false); }
+}
+const FLAG_LABELS={ 'front-listen':'Фронтинг (plain-HTTP для релеев)', 'quic2-listen':'QUICv2 listener',
+  'rtc-listen':'rtc (WebRTC-облик) UDP', 'udp-listen':'quasar UDP/KCP', 'decoy':'Decoy-сайт',
+  'steal':'Steal fallback', 'echkeys':'ECH ключи', 'egress-family':'Семейство исходящих',
+  'upstream':'Upstream SOCKS5' };
+function renderCfg(){
+  const c=$('cfg'); c.innerHTML='';
+  for(const [f,lab] of Object.entries(FLAG_LABELS)){
+    const v=CFG.flags[f]??'';
+    const row=document.createElement('div'); row.className='tog';
+    row.innerHTML=`<input type="checkbox" id="cf-${f}" ${v!==''&&v!=='off'?'checked':''}>
+      <span style="flex:0 0 230px">${lab}</span>
+      <input type="text" id="cv-${f}" value="${v}" placeholder="выкл" style="flex:1">`;
+    c.appendChild(row);
+    row.querySelectorAll('input').forEach(i=>i.onchange=()=>{$('dirtyPill').style.display='inline';});
+  }
+}
+async function applyCfg(){
+  const flags={};
+  for(const f of Object.keys(FLAG_LABELS)){
+    const on=$('cf-'+f).checked, v=$('cv-'+f).value.trim();
+    if(on && v!=='') flags[f]=v;
+  }
+  $('applyBtn').disabled=true; $('applyMsg').textContent='применяю…';
+  try{ const r=await api('/api/config',{flags});
+    $('applyMsg').textContent=r.ok?'готово — сервер перезапущен':'ошибка';
+    toast(r.ok?'Настройки применены, сервер перезапущен':'Ошибка применения', r.ok);
+    $('dirtyPill').style.display='none';
+  }catch(e){ $('applyMsg').textContent=''; toast('Ошибка: '+e.message,false); }
+  $('applyBtn').disabled=false;
+}
+function renderLinks(){
+  $('subUrl').textContent = LINKS.sub_url;
+  $('genEntries').innerHTML = LINKS.entries.map((e,i)=>
+    `<div class="tog"><input type="checkbox" class="ge" value="${e.addr}" ${i===0?'checked':''}> ${e.label} <span class="pill">${e.addr}</span></div>`).join('');
+  $('genFronts').innerHTML = LINKS.fronts.map(f=>
+    `<div class="tog"><input type="checkbox" class="gf" value="${f.url}"> ${f.label} <span class="pill">${f.url}</span></div>`).join('');
+  $('linkList').innerHTML = LINKS.links.map(l=>`<div class="link">${l}</div>`).join('')||'<span class="pill">пусто</span>';
+}
+async function genLink(){
+  const addrs=[...document.querySelectorAll('.ge:checked')].map(x=>x.value);
+  const fronts=[...document.querySelectorAll('.gf:checked')].map(x=>x.value);
+  try{ const r=await api('/api/genlink',{addrs, fronts, carrier:$('genCarrier').value, sni:$('genSni').value});
+    $('genOut').style.display='block'; $('genOut').textContent=r.link;
+    await navigator.clipboard?.writeText(r.link).catch(()=>{});
+    toast('Ссылка сгенерирована и скопирована');
+  }catch(e){ toast('Ошибка: '+e.message,false); }
+}
+async function saveLinks(){
+  if(!$('genOut').textContent) { toast('Сначала сгенерируйте ссылку',false); return; }
+  try{ await api('/api/links',{add:$('genOut').textContent});
+    LINKS=await api('/api/links'); renderLinks(); toast('Ссылка добавлена в подписку');
+  }catch(e){ toast('Ошибка: '+e.message,false); }
+}
+api('/api/status').then(()=>{$('app').style.display='block';loadAll();}).catch(()=>showLogin());
+</script>
+</body>
+</html>

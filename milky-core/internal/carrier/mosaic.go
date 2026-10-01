@@ -730,6 +730,14 @@ func dialMosaicTLS(ctx context.Context, cfg ClientConfig, network string, wire *
 	}
 	raw = countingConn{Conn: raw, n: wire}
 	spec, _ := utls.UTLSIdToSpec(pickHelloID(cfg.Fingerprint))
+	// Chrome presets offer h2; front relays and plain HTTP/1.1 endpoints need
+	// the ALPN extension rewritten or the peer negotiates h2 and the tile
+	// transport reads the h2 preface as a broken HTTP/1.1 response.
+	for _, ext := range spec.Extensions {
+		if a, ok := ext.(*utls.ALPNExtension); ok {
+			a.AlpnProtocols = []string{alpn}
+		}
+	}
 	uc := utls.UClient(raw, cfg.legTLS(alpn), utls.HelloCustom)
 	if err := uc.ApplyPreset(&spec); err != nil {
 		_ = raw.Close()

@@ -173,7 +173,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
       ...kv('-log', _logPath),
       ...kv('-ech', p.ech ?? ''),
       ...kv('-pin', p.pin ?? ''),
-      ...kv('-front', p.front ?? ''),
+      ...kv('-front', p.fronts?.join(',') ?? p.front ?? ''),
       if (p.cover == '0' || p.cover == 'false') '-cover=false',
     ];
   }
