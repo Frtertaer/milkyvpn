@@ -119,9 +119,18 @@ void main() {
       // Raw Go error text carrying the token (iOS/desktop surface the
       // message, not the code) resolves to the same kind.
       expect(
-        MilkyError.fromCode('entries_blocked: all 4 endpoints unreachable (timeout)').kind,
+        MilkyError.fromCode(
+          'entries_blocked: all 4 endpoints unreachable (timeout)',
+        ).kind,
         MilkyErrorKind.entryBlocked,
       );
+      // BUG-2026-10-01-08: secure-storage refusals get their own kind — they
+      // used to fall into the UNKNOWN bucket and render «Туннель не поднялся».
+      final storage = MilkyError.fromCode('secure_storage');
+      expect(storage.kind, MilkyErrorKind.storageFailure);
+      expect(storage.diagnosticsCode, 'SECURE_STORAGE_WRITE_FAILED');
+      expect(storage.actions, contains(MilkyErrorAction.retry));
+
       expect(MilkyError.fromCode('cancelled').isCancelled, isTrue);
       expect(MilkyError.fromCode(null).diagnosticsCode, 'NO_ERROR_REPORTED');
       expect(

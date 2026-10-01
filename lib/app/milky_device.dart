@@ -20,10 +20,17 @@ class MilkyDevice {
   final int sdkInt;
   final String abi;
 
-  /// 'android', 'windows', … — absent on the Android channel (defaults to android).
+  /// 'android', 'windows', 'ios', 'macos', … — absent on the Android channel
+  /// (defaults to android).
   final String platform;
 
-  String get platformLabel => platform == 'android' ? 'Android' : 'Windows';
+  String get platformLabel => switch (platform) {
+    'ios' => 'iOS',
+    'macos' => 'macOS',
+    'android' => 'Android',
+    'windows' => 'Windows',
+    _ => platform,
+  };
 
   /// `13 (API 33)` on Android, the raw OS version elsewhere.
   String get osLabel {

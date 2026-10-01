@@ -1,5 +1,5 @@
 import 'dart:async';
-import 'dart:io' show Platform;
+import 'dart:io' show File, Platform;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -38,8 +38,21 @@ Future<void> main() async {
   final VpnBridge bridge = Platform.isWindows
       ? WindowsProcessVpnBridge()
       : MethodChannelVpnBridge();
+  // Sandboxed macOS builds signed ad-hoc have no keychain entitlement; a file
+  // inside the app container is the only store that works there.
+  final SecureStore store = Platform.isMacOS
+      ? FallbackSecureStore(
+          primary: KeystoreSecureStore(),
+          backup: FileSecureStore(
+            File(
+              '${Platform.environment['HOME']}/Library/Application Support/'
+              'homes.milky.vpn/secure_store.json',
+            ),
+          ),
+        )
+      : KeystoreSecureStore();
   final repo = SubscriptionRepository(
-    store: KeystoreSecureStore(),
+    store: store,
     fetcher: HttpsSubscriptionFetcher(),
   );
   await repo.load();
@@ -130,7 +143,10 @@ class _RootScreenState extends State<RootScreen> {
         // Deep links are a bonus path; the app must still start without a platform channel.
       }
       _refreshSub();
-      _subTimer = Timer.periodic(const Duration(hours: 6), (_) => _refreshSub());
+      _subTimer = Timer.periodic(
+        const Duration(hours: 6),
+        (_) => _refreshSub(),
+      );
       final snapshot = repo.snapshot;
       if (settings.autoConnect && repo.hasSubscription && snapshot != null) {
         if (!vpn.isConnected && !vpn.isBusy) {

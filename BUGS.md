@@ -652,6 +652,103 @@
   test/features/home_states_test.dart::'profile rows show carrier and
   front tags'
 
+## Закрытые (iOS/macOS sim-трек, main-consolidation, PR: —)
+
+### BUG-2026-10-01-05 — vendored Mirage.xcframework застрял на старом core: нет mosaic/quasar/quic2/rtc
+- Severity: major (бинарь в apple/Frameworks отставал от milky-core на
+  месяцы: нет символов mosaic/quasar/quic2/quic2Bound/quic2TLSClient,
+  нет EntriesBlockedError/IsEntriesBlocked/DecodeBase — ссылки с новыми
+  carriers на iOS/macOS физически неподъёмны: `unknown carrier`)
+- Platform: ios, macos
+- Status: fixed-in-PR
+- Repro: `strings`/`nm` по vendored framework — 41MB, только driftClientConn;
+  коннект профилем carrier=rtc → ядро отвечает unknown carrier
+- Found by: iOS sim verification run (iPhone 17, iOS 26.5)
+- Issue: —  PR: —  Regression test: docs/ios-setup.md зафиксировал digest
+  `5fd1de8b6491aea287d192cc6cd124e1eee32492fd105989e271665718ee4f0a`
+- Fix: gomobile bind свежего milky-core (-target ios,iossimulator,macos)
+  → apple/Frameworks/Mirage.xcframework (64MB); coreVersionString →
+  mirage@5fd1de8b6491. Тот же класс бага, что и stale libcore.so на Android.
+
+### BUG-2026-10-01-06 — main потерял фиксы PR #30: bare prepare, обрезанный kal2ConfigJSON, бинарный platformLabel
+- Severity: major (консолидированный main получил новые carriers/fronting,
+  но фиксы ветки milky-app (PR #30) до main не дошли: prepare() сохранял
+  NETunnelProviderProtocol() без serverAddress → consent невозможен;
+  kal2ConfigJSON не писал ech/cover/pin и сворачивал carriers;
+  platformLabel был бинарным (iOS → «Windows …»); permission/disclosure
+  копии были Android-only; macOS-плагин вообще не знал rtc/relay)
+- Platform: ios, macos
+- Status: fixed-in-PR
+- Repro: main@371cd8a в симуляторе: prepare → NEVPNErrorDomain Code=1;
+  Diagnostics → «Windows 26.5» на iOS; error sheet про Android; в
+  kal2ConfigJSON нет ech/pin/cover; carrier=rtc → auto
+- Found by: iOS sim run + diff origin/milky-app vs main
+- Issue: —  PR: —  Regression test: ios/RunnerTests (5 тестов:
+  placeholder/configured proto, ech-cover-pin+все 8 carriers, fronting/
+  altAddrs, отказ без addr/secret), test/milky_device_test.dart
+- Fix: union обеих веток — iOS и macOS VpnPlugin: placeholderProtocol()
+  для prepare, configuredProtocol() для connect, kal2ConfigJSON с
+  ech/pin/cover/front/fronts + carriers veil/drift/cdn/mosaic/quasar/
+  quic2/rtc/relay; platformLabel switch; русскоязычные iOS-копии
+  permission/disclosure
+
+### BUG-2026-10-01-07 — keychain OSStatus -34018 классифицировался как «Туннель не поднялся»
+- Severity: major-ux (на unsigned-сборках запись подписки в секюрное
+  хранилище падает; текст ошибки вводил в заблуждение — пользователь
+  чинил «туннель», а ломалось хранилище)
+- Platform: ios (unsigned sim), macos (ad-hoc)
+- Status: fixed-in-PR
+- Repro: `flutter build ios --simulator --no-codesign` → импорт →
+  OSStatus -34018 «no application-identifier/keychain-access-groups» →
+  errorClass=UNKNOWN → лист «Туннель не поднялся»
+- Found by: iOS sim run, log stream predicate Runner
+- Issue: —  PR: —  Regression test:
+  test/core/subscription_test.dart::'keychain refusal classifies as
+  secure_storage', test/core/milky_error_test.dart (secure_storage →
+  storageFailure, SECURE_STORAGE_WRITE_FAILED, retry)
+- Fix: redactor: '-34018'/'keychain'/'secure storage' → errorClass
+  'secure_storage'; MilkyErrorKind.storageFailure с русскими копиями
+  «Не удалось сохранить подписку» + действия retry/diagnostics
+
+### BUG-2026-10-01-08 — connect: result(nil) на iOS/macOS → `null as bool` TypeError сносил живое ядро
+- Severity: block (успешный connect на macOS отображался как «Не удалось
+  подключиться»: ядро поднималось (SOCKS слушал), после чего Dart
+  вызывал disconnect и сносил сессию; на iOS-девайсе та же развилка после
+  startVPNTunnel — падение на успешном пути)
+- Platform: ios, macos
+- Status: fixed-in-PR
+- Repro: macOS build → Connect → в логе `core: up`, SOCKS на :11808, но
+  UI показывает ошибку и туннель закрывается. Причина: оба Swift-плагина
+  отвечали result(nil) на успех, а _call<bool> делал `null as bool`
+- Found by: macOS live run + stderr-instrumented VpnPlugin
+- Issue: —  PR: —  Regression test:
+  test/core/vpn_bridge_test.dart (connect при nil и true ответе;
+  PlatformException → VpnBridgeException)
+- Fix: iOS+macOS: result(true) на успех (паритет с Android); Dart:
+  connect → _call<void> (nil допустим по контракту); таймаут вызова
+  connect 20с→40с — бюджет диала ядра ~25с, иначе bridge_timeout резал
+  почти поднявшуюся сессию
+
+### BUG-2026-10-01-09 — macOS: sandboxed ad-hoc сборка не может писать в keychain → импорт всегда падал
+- Severity: block на unsigned-сборках (sandbox + отсутствие
+  keychain-access-groups → SecItemAdd = errSecMissingEntitlement;
+  подписать entitlement нельзя без dev-сертификата — сборка ломается)
+- Platform: macos
+- Status: fixed-in-PR
+- Repro: `flutter build macos` (ad-hoc) → Import → запись подписки падает
+  -34018. Добавление keychain-access-groups в entitlements →
+  `flutter build macos` фейлится целиком (требует dev signing)
+- Found by: macOS live run
+- Issue: —  PR: —  Regression test: test/core/secure_store_test.dart
+  (FallbackSecureStore: primary бросает → backup; read-through; stale-
+  shadow; FileSecureStore round-trip/corrupt/delete)
+- Fix: на macOS store = FallbackSecureStore(KeystoreSecureStore,
+  FileSecureStore в контейнере ~/Library/Containers/.../Application
+  Support/homes.milky.vpn/secure_store.json): подписанные сборки
+  используют keychain, unsigned — файл внутри песочного контейнера.
+  Для distribution сборок остаётся шаг keychain-access-groups
+  (docs/macos-setup.md)
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 

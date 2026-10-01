@@ -53,6 +53,14 @@ class Redactor {
     if (text.contains('socket') || text.contains('failed host lookup')) {
       return 'network_error';
     }
+    // Keychain/keystore refusal (e.g. OSStatus -34018 on a build without the
+    // keychain-access-groups entitlement) is a storage failure, not a network
+    // or tunnel problem.
+    if (text.contains('-34018') ||
+        text.contains('keychain') ||
+        text.contains('secure storage')) {
+      return 'secure_storage';
+    }
     if (text.contains('permission')) return 'permission_denied';
     if (text.contains('format') || text.contains('parse')) {
       return 'format_error';

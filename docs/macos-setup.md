@@ -46,7 +46,15 @@ true only for `protocol: kal2` (no Xray core on Apple platforms yet).
    Runner target; Xcode produces a Development profile. For outside
    distribution use *Developer ID Application* signing then notarize:
    `xcrun notarytool submit milkyvpn.zip --keychain-profile <profile>`.
-2. **Hardened runtime.** Release entitlements keep the sandbox on; add
+2. **Keychain entitlement.** Signed builds should add
+   `keychain-access-groups` (`$(AppIdentifierPrefix)…`) so
+   `flutter_secure_storage` can write to the keychain. Without a signing
+   identity the entitlement cannot be stamped — unsigned sandboxed builds
+   get `OSStatus -34018` on every write and fall back to a file inside
+   the app container (`…/Application Support/homes.milky.vpn/
+   secure_store.json`) via `FallbackSecureStore`. The keychain path is
+   always preferred; the file is only used when the platform refuses.
+3. **Hardened runtime.** Release entitlements keep the sandbox on; add
    `com.apple.security.cs.disable-library-validation` only if the Go
    runtime trips it (it did not in testing).
 

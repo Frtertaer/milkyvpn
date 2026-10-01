@@ -14,7 +14,7 @@ import os.log
 /// proxy path (NETransparentProxyProvider system extension) is the remaining
 /// piece for full-device coverage — see docs/macos-setup.md.
 final class VpnPlugin: NSObject {
-    static let coreVersionString = "mirage@183226d7638a" // vendored xcframework digest
+    static let coreVersionString = "mirage@5fd1de8b6491" // vendored xcframework digest
     static let localSocks = "127.0.0.1:11808"
 
     static var shared: VpnPlugin?
@@ -101,7 +101,7 @@ final class VpnPlugin: NSObject {
                     self.state = "connected"
                     self.connectedSince = Int(Date().timeIntervalSince1970 * 1000)
                     self.emitState()
-                    result(nil)
+                    result(true)
                 } else {
                     self.state = "error"
                     self.connectedSince = nil
@@ -193,8 +193,10 @@ final class VpnPlugin: NSObject {
         }
         let port = (p["port"] as? NSNumber)?.intValue ?? 0
         let network = (p["network"] as? String ?? "").lowercased()
-        let known: Set<String> = ["veil", "drift", "cdn", "mosaic", "quasar", "quic2"]
+        let known: Set<String> = ["veil", "drift", "cdn", "mosaic", "quasar", "quic2", "rtc", "relay"]
         let carrier = known.contains(network) ? network : "auto"
+        // cover defaults on in the native core; "0"/"false" disables it.
+        let coverOff = (p["cover"] as? String)?.lowercased()
         // altAddrs: extra entry points of the same server (multi-entry link);
         // the native core fails over across the comma list.
         let alt = (p["altAddrs"] as? String).map { $0.isEmpty ? "" : ",\($0)" } ?? ""
@@ -206,6 +208,9 @@ final class VpnPlugin: NSObject {
             "pub": p["publicKey"] as? String ?? "",
             "psk": secret,
             "socks": Self.localSocks,
+            "ech": p["ech"] as? String ?? "",
+            "pin": p["pin"] as? String ?? "",
+            "cover": coverOff != "0" && coverOff != "false",
             // front= front-relay URL (blocked entry / whitelisted domain).
             "front": p["front"] as? String ?? "",
             "fronts": p["fronts"] as? [String] ?? [],

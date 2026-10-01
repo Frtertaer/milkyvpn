@@ -32,7 +32,7 @@ rsync -a --delete build/Mirage.xcframework ../apple/Frameworks/
 ```
 
 Tree digest of the vendored copy:
-`183226d7638a8a77c1de415023fd77cc79e1dd2b438a94c54a1b0820b06863d9`
+`5fd1de8b6491aea287d192cc6cd124e1eee32492fd105989e271665718ee4f0a`
 (`find Mirage.xcframework -type f -print0 | sort -z | xargs -0 shasum -a 256 | shasum -a 256`;
 first 12 chars are hard-coded in `VpnPlugin.swift` as `coreVersion`).
 
