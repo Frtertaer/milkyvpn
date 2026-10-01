@@ -41,6 +41,18 @@ jobs:
       - name: NDK (for kal2native rebuild check)
         run: echo "ANDROID_NDK=$ANDROID_NDK_LATEST_HOME" >> "$GITHUB_ENV"
 
+      - name: Rebuild libcore.so for all ABIs (kal2native)
+        working-directory: milky-core
+        run: |
+          NDK="$ANDROID_NDK/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          for spec in "arm64-v8a:aarch64-linux-android24-clang:arm64" \
+                      "armeabi-v7a:armv7a-linux-androideabi24-clang:arm" \
+                      "x86_64:x86_64-linux-android24-clang:amd64"; do
+            abi="${spec%%:*}"; rest="${spec#*:}"; cc="${rest%%:*}"; arch="${rest##*:}"
+            CGO_ENABLED=1 GOOS=android GOARCH="$arch" CC="$NDK/$cc" \
+              go build -buildmode=c-shared -o "../android/app/src/main/jniLibs/$abi/libcore.so" ./cmd/kal2native
+          done
+
       - name: Signing key (release keystore from secrets, debug fallback)
         working-directory: android
         run: |

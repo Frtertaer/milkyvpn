@@ -277,6 +277,7 @@ class SubscriptionParser {
     if (!_validHost(host)) return null;
 
     final params = <String, String>{};
+    final paramsMulti = <String, List<String>>{};
     if (query.isNotEmpty) {
       for (final pair in query.split('&')) {
         if (pair.isEmpty) continue;
@@ -285,7 +286,9 @@ class SubscriptionParser {
           equals < 0 ? pair : pair.substring(0, equals),
         ).toLowerCase();
         final value = equals < 0 ? '' : _dec(pair.substring(equals + 1));
-        if (key.isNotEmpty && !params.containsKey(key)) params[key] = value;
+        if (key.isEmpty) continue;
+        if (!params.containsKey(key)) params[key] = value;
+        (paramsMulti[key] ??= []).add(value);
       }
     }
 
@@ -294,6 +297,7 @@ class SubscriptionParser {
       host: host,
       port: port,
       params: params,
+      paramsMulti: paramsMulti,
       remark: _dec(fragment).trim(),
     );
   }
@@ -346,6 +350,7 @@ class SubscriptionParser {
       _nz(profile.pin) ?? '',
       _nz(profile.altAddrs) ?? '',
       _nz(profile.front) ?? '',
+      (profile.fronts ?? const <String>[]).join('\u001f'),
     ];
 
     return jsonEncode([
@@ -407,6 +412,7 @@ class SubscriptionParser {
     plugin: profile.plugin,
     altAddrs: profile.altAddrs,
     front: profile.front,
+    fronts: profile.fronts,
   );
 
   VpnProfile? _parseVless(String line) {
@@ -722,6 +728,7 @@ class SubscriptionParser {
         pin: _nz(query['pin']),
         altAddrs: _altAddrs(query['alt']),
         front: _frontUrl(query['front']),
+        fronts: _frontUrls(parts.paramsMulti['front']),
       ),
     );
   }
@@ -736,6 +743,19 @@ class SubscriptionParser {
     const ok = {'https', 'http', 'wss', 'ws'};
     if (!ok.contains(u.scheme.toLowerCase())) return null;
     return raw.trim();
+  }
+
+  /// All `front=` values: several fronts make the link universal — the
+  /// dial sweep tries the direct entry first, then each front in order.
+  /// Invalid entries are dropped like in [_frontUrl]; null when none left.
+  static List<String>? _frontUrls(List<String>? raw) {
+    if (raw == null) return null;
+    final out = <String>[];
+    for (final v in raw) {
+      final u = _frontUrl(v);
+      if (u != null && !out.contains(u)) out.add(u);
+    }
+    return out.isEmpty ? null : out;
   }
 
   /// `alt=` param: comma-separated `host:port` alternates for the kal2 entry.
@@ -1610,6 +1630,7 @@ class _Parts {
     required this.host,
     required this.port,
     required this.params,
+    required this.paramsMulti,
     required this.remark,
   });
 
@@ -1617,5 +1638,6 @@ class _Parts {
   final String host;
   final int port;
   final Map<String, String> params;
+  final Map<String, List<String>> paramsMulti;
   final String remark;
 }

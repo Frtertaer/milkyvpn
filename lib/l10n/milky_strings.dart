@@ -331,6 +331,12 @@ class S {
   String get themeDark => t('Тёмная', 'Dark');
   String get checkSubscriptionUpdate =>
       t('Обновить подписку', 'Refresh subscription');
+  String get autoUpdateSub =>
+      t('Авто-обновление ссылок', 'Auto-update links');
+  String get autoUpdateSubHint => t(
+    'Проверять свежие входы при запуске и каждые 6 часов',
+    'Refreshes entry links on launch and every 6 hours',
+  );
   String get diagnostics => t('Диагностика', 'Diagnostics');
   String get diagnosticsHint =>
       t('Технические коды для поддержки', 'Technical codes for support');

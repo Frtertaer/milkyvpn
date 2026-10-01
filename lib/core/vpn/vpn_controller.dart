@@ -237,7 +237,11 @@ class VpnController extends ChangeNotifier {
   }
 
   /// Returns true when a verified tunnel is up.
-  Future<bool> connect(List<VpnProfile> all, LocationChoice choice) async {
+  Future<bool> connect(
+    List<VpnProfile> all,
+    LocationChoice choice, {
+    String? profileId,
+  }) async {
     if (_autoConnecting) return false;
     _autoConnecting = true;
     _cancelRequested = false;
@@ -252,11 +256,22 @@ class VpnController extends ChangeNotifier {
         return false;
       }
       final supported = await supportedProfiles(all);
-      final candidates = _selector.candidates(
-        supported,
-        choice,
-        maxAttempts: maxAttempts,
-      );
+      VpnProfile? pinned;
+      if (profileId != null) {
+        for (final p in supported) {
+          if (p.id == profileId) {
+            pinned = p;
+            break;
+          }
+        }
+      }
+      final candidates = pinned != null
+          ? [pinned]
+          : _selector.candidates(
+              supported,
+              choice,
+              maxAttempts: maxAttempts,
+            );
       _attemptTotal = candidates.length;
       notifyListeners();
       if (candidates.isEmpty) {

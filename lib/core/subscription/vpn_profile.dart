@@ -56,6 +56,7 @@ class VpnProfile {
     this.plugin,
     this.altAddrs,
     this.front,
+    this.fronts,
   });
 
   /// Opaque stable correlation id.
@@ -112,6 +113,12 @@ class VpnProfile {
   /// the relay forwards to the server's plain front listener. Used when
   /// entry IPs are blocked or only whitelisted domains are reachable.
   final String? front;
+
+  /// Additional `front=` values for the universal sweep: when several are
+  /// present the client tries the direct entry first, then each front in
+  /// order — one link covering open networks, IP blocks and whitelists.
+  /// [front] remains the first entry for backward compat.
+  final List<String>? fronts;
 
   ProfileKind get kind {
     final proto = protocol.toLowerCase();
@@ -190,6 +197,7 @@ class VpnProfile {
     'plugin': plugin,
     'altAddrs': altAddrs,
     'front': front,
+    'fronts': fronts,
   };
 
   /// Remark with anything that looks like credential material removed.

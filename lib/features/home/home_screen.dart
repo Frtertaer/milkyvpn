@@ -68,7 +68,9 @@ class _HomeScreenState extends State<HomeScreen> {
       enabled: !vpn.isBusy,
       onChanged: (choice) {
         if (choice == settings.location) return;
-        context.read<AppSettings>().setLocation(choice);
+        final s = context.read<AppSettings>();
+        s.setSelectedProfile(null);
+        s.setLocation(choice);
       },
     );
     final subscription = MilkySubscriptionStatus(
@@ -187,6 +189,7 @@ class _HomeScreenState extends State<HomeScreen> {
       ok = await vpn.connect(
         repo.snapshot?.profiles ?? const <VpnProfile>[],
         settings.location,
+        profileId: settings.selectedProfileId,
       );
     } finally {
       if (mounted) setState(() => _working = false);
@@ -218,27 +221,47 @@ class _HomeScreenState extends State<HomeScreen> {
     final counts = locationCounts(
       context.read<SubscriptionRepository>().snapshot?.profiles ?? [],
     );
-    final next = await showModalBottomSheet<LocationChoice>(
+    final profiles =
+        context.read<SubscriptionRepository>().snapshot?.profiles ??
+            const <VpnProfile>[];
+    final next = await showModalBottomSheet<(LocationChoice?, String?)>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
       builder: (ctx) => MilkySheetFrame(
         child: Column(
           mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(S.of(ctx).chooseCountry, style: MilkyType.headline),
+            Center(
+              child: Text(S.of(ctx).chooseCountry, style: MilkyType.headline),
+            ),
             const SizedBox(height: 24),
             MilkyServerSelector(
               value: settings.location,
               counts: counts,
-              onChanged: (choice) => Navigator.of(ctx).pop(choice),
+              onChanged: (choice) => Navigator.of(ctx).pop((choice, null)),
             ),
+            if (profiles.isNotEmpty) ...[
+              const SizedBox(height: 16),
+              _ProfilePickList(
+                profiles: profiles,
+                selectedId: settings.selectedProfileId,
+                onPick: (id) => Navigator.of(ctx).pop((null, id)),
+              ),
+            ],
           ],
         ),
       ),
     );
     if (next == null) return;
-    await settings.setLocation(next);
+    final (choice, profileId) = next;
+    if (profileId != null) {
+      await settings.setSelectedProfile(profileId);
+    } else {
+      await settings.setSelectedProfile(null);
+      if (choice != null) await settings.setLocation(choice);
+    }
     if (mounted) _toggle();
   }
 
@@ -465,6 +488,86 @@ class _ConnectionClockState extends State<_ConnectionClock> {
     return Text(
       format(dur < Duration.zero ? Duration.zero : dur),
       style: widget.style,
+    );
+  }
+}
+
+// ------------------------------------------------------------------ profile pick
+
+/// The per-profile list inside the server sheet: tap a profile to pin it —
+/// connects use exactly that server until the user picks a location again.
+class _ProfilePickList extends StatelessWidget {
+  const _ProfilePickList({
+    required this.profiles,
+    required this.selectedId,
+    required this.onPick,
+  });
+
+  final List<VpnProfile> profiles;
+  final String? selectedId;
+  final ValueChanged<String> onPick;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.milky;
+    final t = S.of(context);
+    final items =
+        profiles.where((p) => p.isStaticCompatible).toList(growable: false);
+    if (items.isEmpty) return const SizedBox.shrink();
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(t.profiles, style: MilkyType.bodySmall),
+        const SizedBox(height: 8),
+        ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 280),
+          child: ListView.separated(
+            shrinkWrap: true,
+            itemCount: items.length,
+            separatorBuilder: (_, __) => const SizedBox(height: 6),
+            itemBuilder: (ctx, i) {
+              final p = items[i];
+              final sel = p.id == selectedId;
+              final label = p.redactedRemark.trim().isEmpty
+                  ? '${p.address}:${p.port}'
+                  : p.redactedRemark.trim();
+              return Material(
+                color: sel
+                    ? c.accent.withValues(alpha: 0.14)
+                    : (c.isDark
+                        ? c.glassTint
+                        : Colors.white.withValues(alpha: 0.6)),
+                borderRadius: BorderRadius.circular(MilkyRadius.control),
+                child: InkWell(
+                  borderRadius: BorderRadius.circular(MilkyRadius.control),
+                  onTap: () => onPick(p.id),
+                  child: Padding(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 14,
+                      vertical: 12,
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: MilkyType.body,
+                          ),
+                        ),
+                        if (sel)
+                          Icon(Icons.check_rounded, size: 18, color: c.accent),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
     );
   }
 }

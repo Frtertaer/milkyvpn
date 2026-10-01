@@ -48,10 +48,10 @@ type ServerConfig struct {
 	// StealMap splices specific foreign SNIs to per-SNI upstreams before
 	// StealAddr: a scanner probing different cover names reaches the real
 	// matching site for each.
-	StealMap map[string]string
-	DriftPath        string // secret drift path, default carrier.DefaultDriftPath
-	DecoyDir         string // directory served for plain HTTP probes
-	Users            []User
+	StealMap  map[string]string
+	DriftPath string // secret drift path, default carrier.DefaultDriftPath
+	DecoyDir  string // directory served for plain HTTP probes
+	Users     []User
 	// Egress controls upstream dialing: IPv4 preference and an optional
 	// chained SOCKS5 upstream (e.g. for reputation-flagged ranges).
 	Egress *core.EgressConfig
@@ -71,6 +71,10 @@ type ServerConfig struct {
 	// a v2 handshake yields no SNI to filter. Shares the veil TLS material
 	// and KAL/2 handshake path.
 	Quic2Listen string
+	// RTCListen enables the rtc (WebRTC-shaped) UDP listener, e.g. ":20445" —
+	// quasar on the inside, valid RTP packets on the wire, so DPI sees a
+	// media flow instead of an unknown UDP tunnel.
+	RTCListen string
 	// FrontListen enables a plain-HTTP listener (e.g. ":8081") serving the
 	// same drift/mosaic/decoy mux without TLS — the backend leg of a front
 	// relay (serverless function, CDN worker): the front terminates TLS on
@@ -157,7 +161,7 @@ type ClientConfig struct {
 	// net.Dialer.Control): TUN mode pins carrier sockets to the physical
 	// egress device so they bypass the tunnel without FIB bypass routes.
 	// Ignored when DialContext is set.
-	DialControl      func(network, address string, c syscall.RawConn) error
+	DialControl func(network, address string, c syscall.RawConn) error
 	// Front is an optional front-relay URL ("https://host[:port][/base]", e.g.
 	// a serverless function or CDN worker domain) that the HTTP-shaped
 	// carriers — drift, cdn, mosaic — dial instead of Addr: the relay
@@ -166,6 +170,12 @@ type ClientConfig struct {
 	// leg to the front is ordinary browser TLS on the front's own domain.
 	// Raw drift needs a streaming relay; mosaic/cdn survive buffering ones.
 	Front string
+	// Fronts lists additional front relays: when any are present the dial
+	// sweep becomes universal — the direct entry is tried first, then each
+	// front in order — so one link covers open networks, IP-block waves and
+	// whitelist mode. Inside a front the hedge narrows to the HTTP-shaped
+	// carriers; veil/quasar/quic2 keep dialing only on the direct context.
+	Fronts           []string
 	HandshakeTimeout time.Duration
 	Logf             func(string, ...any)
 	// Resume, set internally by the migration path, makes dialers run a
@@ -178,11 +188,11 @@ type ClientConfig struct {
 type Client struct {
 	Sess *kal2.Session
 
-	cfg      ClientConfig
-	logf     func(string, ...any)
-	mu       sync.Mutex
-	lanes    []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
-	laneRR   atomic.Uint32
+	cfg    ClientConfig
+	logf   func(string, ...any)
+	mu     sync.Mutex
+	lanes  []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
+	laneRR atomic.Uint32
 	// laneRTT records the last watchdog pong RTT per lane (ns; 0 = not yet
 	// measured). A lane whose pongs crawl is throttled rather than dead —
 	// the kill path would never fire on it, so it must be quarantined out of
@@ -195,7 +205,7 @@ type Client struct {
 	// Ping method): the session routes each PONG to a single registered
 	// channel, so concurrent Pings would steal each other's replies.
 	pingMu sync.Mutex
-	scores   *core.Scorecard
+	scores *core.Scorecard
 }
 
 // laneQuarantineRTT is the watchdog pong RTT above which a lane is
@@ -430,14 +440,18 @@ func Serve(cfg ServerConfig) error {
 	}
 	v.SetMux(mux)
 
-	if cfg.FrontListen != "" {
-		fsrv := &http.Server{Addr: cfg.FrontListen, Handler: mux}
+	for _, addr := range strings.Split(cfg.FrontListen, ",") {
+		addr = strings.TrimSpace(addr)
+		if addr == "" {
+			continue
+		}
+		fsrv := &http.Server{Addr: addr, Handler: mux}
 		go func() {
 			if err := fsrv.ListenAndServe(); err != nil {
-				logf("core: front listener %s stopped: %v", cfg.FrontListen, err)
+				logf("core: front listener %s stopped: %v", addr, err)
 			}
 		}()
-		logf("core: front relay listener on %s", cfg.FrontListen)
+		logf("core: front relay listener on %s", addr)
 	}
 
 	if cfg.UDPListen != "" {
@@ -459,6 +473,27 @@ func Serve(cfg ServerConfig) error {
 			}
 		}()
 		logf("core: quasar udp on %s (fec %d,%d)", ql.Addr(), cfg.UDPFECData, cfg.UDPFECParity)
+	}
+
+	if cfg.RTCListen != "" {
+		wireKey := carrier.QuasarWireKey(ed25519.PrivateKey(cfg.Identity).Public().(ed25519.PublicKey))
+		rl, err := carrier.NewRTCListener(v, &carrier.QuasarConfig{
+			WireKey:      wireKey,
+			DataShards:   cfg.UDPFECData,
+			ParityShards: cfg.UDPFECParity,
+			SndWnd:       cfg.UDPSndWnd,
+			Resend:       cfg.UDPResend,
+			RateLimit:    cfg.UDPRate,
+		}, cfg.RTCListen)
+		if err != nil {
+			return fmt.Errorf("rtc listen: %w", err)
+		}
+		go func() {
+			if err := rl.Serve(); err != nil {
+				logf("core: rtc listener %s stopped: %v", cfg.RTCListen, err)
+			}
+		}()
+		logf("core: rtc udp on %s", rl.Addr())
 	}
 
 	if cfg.Quic2Listen != "" {
@@ -719,22 +754,56 @@ func IsEntriesBlocked(err error) bool {
 	return errors.As(err, &eb)
 }
 
-// dialAny walks the endpoint list starting at index start, returning the
+// frontableCarriers intersects the configured carriers with the HTTP-shaped
+// ones that can cross a front relay. An explicit non-HTTP carrier list
+// yields an empty set — the caller skips front contexts entirely.
+func frontableCarriers(cfg ClientConfig) []string {
+	var out []string
+	for _, c := range carriers(cfg) {
+		switch c {
+		case "drift", "cdn", "mosaic":
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// dialAny walks the entry contexts starting at index start, returning the
 // first session that completes the handshake (hedged across carriers).
 // SNI also accepts a comma list (decoy pool): the attempt index rotates
 // through endpoints AND cover names, so over retries the client sweeps the
 // addr×sni cross-product — a single SNI block can't kill the link.
+//
+// With a single front the legacy semantics hold — every attempt dials
+// through it. With several fronts the sweep is universal: the direct entry
+// is tried first, then each front in order — the same link survives open
+// networks, IP blocks and whitelist mode.
 func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scorecard) (*kal2.Session, error) {
 	addrs := endpoints(cfg)
 	snis := splitCommaList(cfg.SNI)
+	fronts := cfg.fronts()
+	universal := len(fronts) > 1
 	var lastErr error
 	sawInner := false
-	for i := range addrs {
+	for i := 0; i < len(addrs)+len(fronts)-btoi(len(fronts) == 1); i++ {
 		c2 := cfg
-		attempt := start + i
-		c2.Addr = addrs[attempt%len(addrs)]
-		if len(snis) > 1 {
-			c2.SNI = snis[attempt%len(snis)]
+		if i < len(addrs) || len(fronts) == 1 {
+			attempt := start + i
+			c2.Addr = addrs[attempt%len(addrs)]
+			if len(snis) > 1 {
+				c2.SNI = snis[attempt%len(snis)]
+			}
+			if universal {
+				c2.Front, c2.Fronts = "", nil
+			}
+		} else {
+			fc := frontableCarriers(cfg)
+			if len(fc) == 0 {
+				continue
+			}
+			c2.Carrier = strings.Join(fc, ",")
+			c2.Front = fronts[i-len(addrs)]
+			c2.Fronts = nil
 		}
 		s, err := dialHedged(ctx, c2, scores)
 		if err == nil {
@@ -749,13 +818,36 @@ func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scor
 		}
 	}
 	if !sawInner {
-		attempts := len(addrs)
+		// Attempts counts the nominal sweep (addr x sni + fronts) the retry
+		// rotation covers, not the iterations this call performed.
+		sweep := len(addrs)
 		if len(snis) > 1 {
-			attempts *= len(snis)
+			sweep *= len(snis)
 		}
-		return nil, &EntriesBlockedError{Attempts: attempts, Err: lastErr}
+		return nil, &EntriesBlockedError{Attempts: sweep + len(fronts) - btoi(len(fronts) == 1), Err: lastErr}
 	}
 	return nil, lastErr
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// fronts returns the deduped front list: Front first (legacy single-front
+// links), then Fronts in order.
+func (c ClientConfig) fronts() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range append([]string{c.Front}, c.Fronts...) {
+		if f = strings.TrimSpace(f); f != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // dialOneFn is the per-carrier dialer (a knob for tests). Atomic value:
@@ -806,6 +898,14 @@ func dialOne(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
 		return s, err
 	case "quic2":
 		s, _, err := carrier.DialQuic2(ctx, cc)
+		return s, err
+	case "rtc":
+		s, _, err := carrier.DialRTC(ctx, cc, &carrier.QuasarConfig{
+			DataShards:   cfg.QuasarFEC[0],
+			ParityShards: cfg.QuasarFEC[1],
+			RcvWnd:       cfg.QuasarRcvWnd,
+			Resend:       cfg.QuasarResend,
+		})
 		return s, err
 	case "mosaic":
 		cc.Endpoints = endpoints(cfg)
