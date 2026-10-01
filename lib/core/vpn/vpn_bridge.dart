@@ -73,6 +73,11 @@ abstract class VpnBridge {
   Future<Map<String, Object?>> deviceInfo();
   Future<String?> getInitialLink();
   Stream<String> get links;
+
+  /// Hands a downloaded installer to the OS (Android: package-manager intent
+  /// via FileProvider; Windows: launches the Inno Setup exe). Platforms with
+  /// no self-update path throw VpnBridgeException('unsupported_platform').
+  Future<bool> installUpdate(String localPath);
 }
 
 class MethodChannelVpnBridge implements VpnBridge {
@@ -181,4 +186,8 @@ class MethodChannelVpnBridge implements VpnBridge {
 
   @override
   Future<String?> getInitialLink() => _call<String?>('getInitialLink');
+
+  @override
+  Future<bool> installUpdate(String localPath) =>
+      _call<bool>('installApk', {'path': localPath});
 }

@@ -606,4 +606,13 @@ $t=Add-Type -MemberDefinition $sig -Name W -Namespace I -PassThru
 [void]$t::InternetSetOption([System.IntPtr]::Zero,37,[System.IntPtr]::Zero,0)
 ''',
   ]);
+
+  /// Hands the downloaded Inno Setup installer to the OS. Detached so the
+  /// installer outlives this process — Inno replaces the app and relaunches
+  /// it after the upgrade completes.
+  @override
+  Future<bool> installUpdate(String localPath) async {
+    await Process.start(localPath, const [], mode: ProcessStartMode.detached);
+    return true;
+  }
 }

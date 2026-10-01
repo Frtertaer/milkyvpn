@@ -9,6 +9,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import androidx.core.content.FileProvider
+import java.io.File
 import homes.milky.vpn.core.XrayConfigBuilder
 import homes.milky.vpn.vpn.DeviceProfile
 import homes.milky.vpn.vpn.KeystoreSealedStore
@@ -180,6 +182,39 @@ class MainActivity : FlutterActivity() {
                             }
                         }
                         result.success(ok)
+                    }
+
+                    // Self-update: serve the downloaded APK to the package installer
+                    // through the FileProvider declared for .updateprovider.
+                    "installApk" -> {
+                        val path = (call.arguments as? Map<*, *>)?.get("path") as? String
+                            ?: throw IllegalArgumentException("path required")
+                        val apk = File(path)
+                        if (!apk.isFile) {
+                            result.error("error", "apk_missing", null)
+                        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O &&
+                            !packageManager.canRequestPackageInstalls()) {
+                            // API 26+: unknown-apps install is a per-app grant — take the
+                            // user to the settings page for this package, report back.
+                            startActivity(
+                                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES,
+                                    Uri.parse("package:$packageName"))
+                                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                            )
+                            result.error("permission", "install_unknown_apps", null)
+                        } else {
+                            val uri = FileProvider.getUriForFile(
+                                this, "${packageName}.updateprovider", apk
+                            )
+                            startActivity(
+                                Intent(Intent.ACTION_VIEW).apply {
+                                    setDataAndType(uri, "application/vnd.android.package-archive")
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                }
+                            )
+                            result.success(true)
+                        }
                     }
 
                     "deviceInfo" -> result.success(
