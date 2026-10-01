@@ -197,7 +197,10 @@ func main() {
 		log.Fatal(err)
 	}
 	cli.EnableReconnect()
-	log.Printf("kal2: socks5 on %s (reconnect watchdog on)", ln.Addr())
+	// Carrier blackouts (packets dropped without RST) leave WaitClosed
+	// silent; the watchdog retires dead sessions so reconnectLoop redials.
+	cli.EnableLiveness(4*time.Second, 4*time.Second, 2)
+	log.Printf("kal2: socks5 on %s (reconnect+liveness watchdogs on)", ln.Addr())
 
 	var ctl *ctlServer
 	if *ctlAddr != "" {
