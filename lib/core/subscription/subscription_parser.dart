@@ -702,7 +702,7 @@ class SubscriptionParser {
     final carrier = (query['carrier'] ?? 'veil').trim().toLowerCase();
     if (carrier != 'veil' && carrier != 'drift' &&
         carrier != 'cdn' && carrier != 'mosaic' && carrier != 'quasar' &&
-        carrier != 'quic2' &&
+        carrier != 'quic2' && carrier != 'rtc' &&
         carrier != 'auto' && carrier != 'relay') {
       return null;
     }
@@ -1536,7 +1536,7 @@ class SubscriptionParser {
         final carrier = (s('carrier') ?? 'veil').trim().toLowerCase();
         if (carrier != 'veil' && carrier != 'drift' &&
         carrier != 'cdn' && carrier != 'mosaic' && carrier != 'quasar' &&
-        carrier != 'quic2' &&
+        carrier != 'quic2' && carrier != 'rtc' &&
         carrier != 'auto' && carrier != 'relay') {
           return null;
         }
@@ -1556,6 +1556,13 @@ class SubscriptionParser {
             ech: _nz(s('ech')),
             cover: _nz(s('cover')),
             pin: _nz(s('pin')),
+            altAddrs: _altAddrs(s('alt')),
+            front: _frontUrl(s('front')),
+            fronts: m['fronts'] is List
+                ? _frontUrls(
+                    (m['fronts'] as List).map((e) => e.toString()).toList(),
+                  )
+                : null,
           ),
         );
       default:

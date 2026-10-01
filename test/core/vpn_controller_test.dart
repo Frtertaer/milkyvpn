@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:milkyvpn/core/errors/milky_error.dart';
 import 'package:milkyvpn/core/subscription/vpn_profile.dart';
 import 'package:milkyvpn/core/vpn/vpn_bridge.dart';
 import 'package:milkyvpn/core/vpn/vpn_controller.dart';
@@ -11,6 +12,8 @@ class FakeBridge implements VpnBridge {
   Set<String> failIds = {};
   Set<String> unsupportedIds = {};
   bool hang = false;
+  bool bridgeTimeout = false;
+  bool silentDisconnect = false;
   List<String> connectCalls = [];
   int disconnectCalls = 0;
   VpnSnapshot _state = VpnSnapshot.initial;
@@ -34,6 +37,7 @@ class FakeBridge implements VpnBridge {
   @override
   Future<void> connect(VpnProfile p) async {
     connectCalls.add(p.id);
+    if (bridgeTimeout) throw VpnBridgeException('bridge_timeout:connect');
     emit(
       VpnSnapshot(
         state: VpnState.connecting,
@@ -66,6 +70,7 @@ class FakeBridge implements VpnBridge {
   @override
   Future<void> disconnect() async {
     disconnectCalls++;
+    if (silentDisconnect) return;
     emit(const VpnSnapshot(state: VpnState.disconnected));
   }
 
@@ -155,6 +160,63 @@ void main() {
     expect(await c.connect([p('a'), p('b')], LocationChoice.auto), isFalse);
     expect(b.connectCalls, ['a', 'b']);
     expect(c.lastErrorClass, 'timeout');
+  });
+
+  test('dead core (bridge timeouts) fails fast, no full sweep', () async {
+    // Regression: a wedged native core answered every platform call with a
+    // timeout and the sweep ground through all candidates, holding the UI
+    // busy ~8min. Now two consecutive bridge timeouts bail out as core_dead.
+    final b = FakeBridge()..bridgeTimeout = true;
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(milliseconds: 50),
+      maxAttempts: 4,
+    );
+    expect(
+      await c.connect([p('a'), p('b'), p('c'), p('d')], LocationChoice.auto),
+      isFalse,
+    );
+    expect(b.connectCalls, ['a', 'b']);
+    expect(c.lastErrorClass, 'core_dead');
+    expect(MilkyError.fromCode(c.lastErrorClass).diagnosticsCode,
+        'CORE_UNRESPONSIVE');
+  });
+
+  test('failed sweep with silent teardown does not wedge UI busy', () async {
+    // Regression: when the native side emitted 'connecting' but never
+    // confirmed teardown, `state` stayed connecting forever — button read
+    // «Подключаем…» and ate taps until force-stop (2nd wedge mechanism).
+    final b = FakeBridge()
+      ..hang = true
+      ..silentDisconnect = true;
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(seconds: 1),
+      maxAttempts: 2,
+    );
+    expect(await c.connect([p('a'), p('b')], LocationChoice.auto), isFalse);
+    expect(c.state, VpnState.disconnected);
+    expect(c.isBusy, isFalse);
+    expect(c.lastErrorClass, isNotNull);
+  });
+
+  test('pinned-but-unsupported profile fails loudly, no silent fallback',
+      () async {
+    // Regression: pinning an unsupported profile used to silently sweep
+    // another one — a VPN exiting through an unpicked country with no
+    // user-visible signal.
+    final b = FakeBridge()..unsupportedIds = {'rtc'};
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(seconds: 1),
+    );
+    expect(
+      await c.connect([p('rtc'), p('b')], LocationChoice.auto,
+          profileId: 'rtc'),
+      isFalse,
+    );
+    expect(b.connectCalls, isEmpty);
+    expect(c.lastErrorClass, 'unsupported_profile');
   });
 
   test('VPN permission denied stops before connecting', () async {

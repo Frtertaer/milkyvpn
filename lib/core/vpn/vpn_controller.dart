@@ -226,11 +226,17 @@ class VpnController extends ChangeNotifier {
   /// Filters profiles the engine can genuinely execute.
   Future<List<VpnProfile>> supportedProfiles(List<VpnProfile> all) async {
     final out = <VpnProfile>[];
+    var consecutiveErrors = 0;
     for (final p in all) {
       if (p.kind == ProfileKind.other) continue;
       try {
         if (await _bridge.isProfileSupported(p)) out.add(p);
-      } catch (_) {}
+        consecutiveErrors = 0;
+      } catch (_) {
+        // A wedged native core answers every call with a timeout — bail out
+        // instead of grinding a 20s timeout through each remaining profile.
+        if (++consecutiveErrors >= 3) break;
+      }
     }
     _compatibleCount = out.length;
     return out;
@@ -248,6 +254,7 @@ class VpnController extends ChangeNotifier {
     _lastErrorClass = null;
     _attemptsMade = 0;
     _attemptTotal = 0;
+    var connected = false;
     notifyListeners();
     try {
       final granted = await _bridge.prepare();
@@ -265,6 +272,13 @@ class VpnController extends ChangeNotifier {
           }
         }
       }
+      // A pin that resolves to nothing executable must fail loudly — silently
+      // sweeping another profile would exit the tunnel through a country the
+      // user did not pick.
+      if (profileId != null && pinned == null) {
+        _lastErrorClass = 'unsupported_profile';
+        return false;
+      }
       final candidates = pinned != null
           ? [pinned]
           : _selector.candidates(
@@ -278,6 +292,7 @@ class VpnController extends ChangeNotifier {
         _lastErrorClass = 'no_compatible_profiles';
         return false;
       }
+      var consecutiveBridgeTimeouts = 0;
       for (final p in candidates) {
         if (_cancelRequested) {
           _lastErrorClass = 'cancelled';
@@ -287,7 +302,19 @@ class VpnController extends ChangeNotifier {
         final ok = await _attempt(p);
         if (ok) {
           _lastErrorClass = null;
+          connected = true;
           return true;
+        }
+        // Bridge-call timeouts mean the native core is wedged, not that the
+        // servers are down — fail fast rather than sweeping all candidates
+        // (previously this could hold the UI busy for ~8min on a dead core).
+        if (_lastErrorClass?.startsWith('bridge_timeout') ?? false) {
+          if (++consecutiveBridgeTimeouts >= 2) {
+            _lastErrorClass = 'core_dead';
+            return false;
+          }
+        } else {
+          consecutiveBridgeTimeouts = 0;
         }
       }
       _lastErrorClass ??= 'all_attempts_failed';
@@ -297,6 +324,26 @@ class VpnController extends ChangeNotifier {
       return false;
     } finally {
       _autoConnecting = false;
+      // A failed sweep can leave _native stuck on a transitional snapshot:
+      // the native side emitted 'connecting' for the last attempt but never
+      // confirmed its teardown — then `state` stays `connecting` forever,
+      // the button reads «Подключаем…» and taps are eaten until force-stop.
+      // Confirm teardown ourselves, then drop the stale snapshot.
+      if (!connected &&
+          (_native.state == VpnState.connecting ||
+              _native.state == VpnState.disconnecting)) {
+        try {
+          await _bridge.disconnect();
+        } catch (_) {}
+        if (!connected &&
+            (_native.state == VpnState.connecting ||
+                _native.state == VpnState.disconnecting)) {
+          _native = VpnSnapshot(
+            state: VpnState.disconnected,
+            errorCode: _lastErrorClass,
+          );
+        }
+      }
       notifyListeners();
     }
   }

@@ -523,6 +523,78 @@
 - Issue: —  PR: #35  Regression test: regression — пересборка .so внутри
   пайплайна (строгое решение: не коммитить бинари вообще, собирать в CI)
 
+### BUG-2026-10-02-04 — App: snapshot-кодек профилей ронял front/fronts/altAddrs
+- Severity: critical (после ЛЮБОГО рестарта/force-stop фронтированная ссылка
+  молча деградировала в прямую — в регионе с блоком backend это «мертвый
+  профиль»: `entries_blocked: all 1 endpoints unreachable`; весь fronting
+  умирал для сохранённых профилей)
+- Platform: android (+desktop — тот же codec)
+- Status: fixed-in-PR
+- Repro: импортировать ссылку с `front=` → force-stop/перезапуск → профиль
+  теряет fronts → коннект идёт впрямую и падает под блоком (воспроизведено
+  3× включая reboot)
+- Fix: `_profileToJson`/`_profileFromJson` сериализуют altAddrs/front/fronts
+  (VpnProfile.toJson их уже имел — расходился репозиторный codec)
+- Found by: Android emu verification session (hostile-region sim)
+- Issue: —  PR: TBD  Regression test:
+  test/core/subscription_test.dart::'fronts and altAddrs survive snapshot
+  reload (fronting persistence)'
+
+### BUG-2026-10-02-05 — App: `carrier=rtc` отбрасывался на ТРЁХ уровнях
+- Severity: major (rtc-ссылки не импортировались/не подключались в
+  приложении — ядро и сервер работают, юзер не может подключиться)
+- Platform: android (+ios, +desktop)
+- Status: fixed-in-PR
+- Repro: вставить `kal2://…&carrier=rtc` → «1 строка повреждена»; после
+  фикса парсера — импорт и пин ОК, но коннект молча свипает в другой
+  профиль: нативный gate `SUPPORTED_KAL2_CARRIERS` без rtc/quic2.
+  Урок: carrier-списки дублируются в Dart-парсере, Kotlin isSupported,
+  Windows passThrough, iOS known — добавление носителя требует ВСЕХ.
+- Fix: 'rtc' добавлен в оба пути Dart-парсера, в XrayConfigBuilder
+  (заодно 'quic2' — он тоже был забытым), в Windows passThrough, в iOS
+  known (заодно 'relay'); outbound-map путь получил front/fronts/alt.
+- Found by: Android emu verification session
+- Issue: —  PR: TBD  Regression test:
+  test/core/subscription_test.dart::'kal2 rtc carrier parses and
+  round-trips'; XrayConfigBuilderTest carrier loop теперь включает
+  quic2+rtc
+
+### BUG-2026-10-02-06 — App: UI «Подключаем…» намертво — ДВА механизма wedge
+- Severity: major (кнопки неактивны минуты — внешне приложение зависло,
+  лечилось только force-stop; воспроизведено 2×)
+- Platform: android (интермиттентно, после падения fronted-пробы)
+- Status: fixed-in-PR
+- Repro A (мёртвое ядро): :kal2 перестаёт отвечать → свип гонит N профилей
+  × (20с connect + 40с waiter) + N×20с isProfileSupported ≈ 8-10 мин.
+- Repro B (живое ядро, тихий teardown): последнее native-событие
+  'connecting' → таймаут waiter возвращает СИНТЕТИЧЕСКИЙ error, который
+  минует _onNative → _native навсегда stuck 'connecting' → state=connecting,
+  кнопки едят тапы, _autoConnecting сброшен но снапшот не честный.
+- Fix A: fail-fast — 3 подряд isProfileSupported-ошибки прерывают скан, 2
+  подряд bridge_timeout в свипе → 'core_dead' (CORE_UNRESPONSIVE).
+- Fix B: finally коннекта при провале сам дёргает disconnect и снимает
+  застрявший transitional-снапшот до disconnected(errorCode).
+- Found by: Android emu verification session
+- Issue: —  PR: TBD  Regression tests:
+  test/core/vpn_controller_test.dart::'dead core (bridge timeouts) fails
+  fast, no full sweep' + 'failed sweep with silent teardown does not
+  wedge UI busy'
+
+### BUG-2026-10-02-07 — App: пин на неподдерживаемом профиле молча свипал в другой
+- Severity: major (юзер видит ✓ на rtc-профиле, а туннель поднимается через
+  ДРУГОЙ сервер/страну без какого-либо сигнала — для VPN это потенциально
+  неверная страна выхода)
+- Platform: android (+desktop)
+- Status: fixed-in-PR
+- Repro: запинить профиль, который не проходит isProfileSupported →
+  коннект молча выбирает другой кандидат
+- Fix: pinned и не найден среди supported → _lastErrorClass
+  'unsupported_profile' + ошибка пользователю вместо свипа
+- Found by: Android emu verification session
+- Issue: —  PR: TBD  Regression test:
+  test/core/vpn_controller_test.dart::'pinned-but-unsupported profile
+  fails loudly, no silent fallback'
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 

@@ -302,7 +302,7 @@ class XrayConfigBuilderTest {
 
     @Test
     fun kal2AcceptsEveryNativeCarrierAndPropagatesPin() {
-        for (c in listOf("veil", "drift", "relay", "cdn", "mosaic", "auto")) {
+        for (c in listOf("veil", "drift", "relay", "cdn", "mosaic", "quasar", "quic2", "rtc", "auto")) {
             val p = ProfileSpec("kal2", "k.example", 443, "psk", network = c, publicKey = "ab".repeat(32))
             assertTrue(c, XrayConfigBuilder.isSupported(p))
         }
@@ -315,6 +315,14 @@ class XrayConfigBuilderTest {
         val json = homes.milky.vpn.bridge.Kal2Config.toJson(spec)
         assertEquals("mosaic", json.getString("carrier"))
         assertEquals("cd".repeat(32), json.getString("pin"))
+        // BUG-2026-10-02-05: toJson must pass every supported carrier through —
+        // a second allowlist here once dropped rtc/relay to "auto" (mosaic then
+        // dialed TCP at the UDP-only rtc port).
+        for (c in listOf("rtc", "relay", "quic2", "quasar", "auto", "bogus")) {
+            val s = ProfileSpec("kal2", "k.example", 443, "psk", network = c, publicKey = "ab".repeat(32))
+            val want = if (c == "bogus") "auto" else c
+            assertEquals(c, want, homes.milky.vpn.bridge.Kal2Config.toJson(s).getString("carrier"))
+        }
     }
 
     @Test

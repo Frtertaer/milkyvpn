@@ -1,6 +1,7 @@
 package homes.milky.vpn.bridge
 
 import android.os.Build
+import homes.milky.vpn.core.XrayConfigBuilder
 import homes.milky.vpn.core.XrayConfigBuilder.ProfileSpec
 import org.json.JSONObject
 
@@ -14,16 +15,13 @@ object Kal2Config {
 
     fun toJson(p: ProfileSpec): JSONObject {
         // "auto" hedges veil+drift in parallel inside the native core — default
-        // for plain kal2:// links; an explicit carrier is honored.
-        val carrier = when (p.network.lowercase()) {
-            "drift" -> "drift"
-            "veil" -> "veil"
-            "cdn" -> "cdn"
-            "mosaic" -> "mosaic"
-            "quasar" -> "quasar"
-            "quic2" -> "quic2"
-            else -> "auto"
-        }
+        // for plain kal2:// links; any carrier the support gate accepts passes
+        // through verbatim (single source: SUPPORTED_KAL2_CARRIERS — a second
+        // allowlist here dropped rtc/relay to "auto", BUG-2026-10-02-05).
+        val network = p.network.lowercase()
+        val carrier =
+            if (network in XrayConfigBuilder.SUPPORTED_KAL2_CARRIERS) network
+            else "auto"
         return JSONObject()
             // altAddrs: extra entry points of the same server — the native
             // core fails over across the comma list (multi-entry link).

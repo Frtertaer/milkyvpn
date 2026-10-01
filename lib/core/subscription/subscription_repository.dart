@@ -381,6 +381,9 @@ class SubscriptionRepository extends ChangeNotifier {
     'alterId': p.alterId,
     'cipher': p.cipher,
     'plugin': p.plugin,
+    'altAddrs': p.altAddrs,
+    'front': p.front,
+    'fronts': p.fronts,
   };
 
   static VpnProfile? _profileFromJson(Map<String, dynamic> m) {
@@ -413,6 +416,9 @@ class SubscriptionRepository extends ChangeNotifier {
         alterId: (m['alterId'] as num?)?.toInt() ?? 0,
         cipher: s('cipher'),
         plugin: s('plugin'),
+        altAddrs: s('altAddrs'),
+        front: s('front'),
+        fronts: (m['fronts'] as List?)?.map((e) => e.toString()).toList(),
       );
     } catch (_) {
       return null;
