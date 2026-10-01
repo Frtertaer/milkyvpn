@@ -648,7 +648,7 @@
   (host URL'а фронта; >26 симв. — middle-truncate с хвостом домена,
   напр. `milky-front.mi…workers.dev`)
 - Found by: Windows verification session (windows-test-49)
-- Issue: —  PR: TBD  Regression test:
+- Issue: —  PR: #42  Regression test:
   test/features/home_states_test.dart::'profile rows show carrier and
   front tags'
 
