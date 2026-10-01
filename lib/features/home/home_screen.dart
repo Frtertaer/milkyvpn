@@ -5,6 +5,7 @@ import 'package:provider/provider.dart';
 
 import '../../app/app_settings.dart';
 import '../../app/milky_device.dart';
+import '../../core/subscription/profile_health.dart';
 import '../../core/subscription/subscription_repository.dart';
 import '../../core/subscription/vpn_profile.dart';
 import '../../core/vpn/vpn_bridge.dart';
@@ -209,6 +210,11 @@ class _HomeScreenState extends State<HomeScreen> {
     if (!mounted) return;
     if (ok) {
       MilkyHaptics.success();
+      if (vpn.pinnedFellBack) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(S.of(context).pinnedFellBack)));
+      }
       return;
     }
     final err = vpn.lastError;
@@ -527,7 +533,7 @@ class _ConnectionClockState extends State<_ConnectionClock> {
 
 /// The per-profile list inside the server sheet: tap a profile to pin it —
 /// connects use exactly that server until the user picks a location again.
-class _ProfilePickList extends StatelessWidget {
+class _ProfilePickList extends StatefulWidget {
   const _ProfilePickList({
     required this.profiles,
     required this.selectedId,
@@ -568,11 +574,46 @@ class _ProfilePickList extends StatelessWidget {
   }
 
   @override
+  State<_ProfilePickList> createState() => _ProfilePickListState();
+}
+
+class _ProfilePickListState extends State<_ProfilePickList> {
+  Map<String, ProfileProbe> _health = const {};
+
+  @override
+  void initState() {
+    super.initState();
+    ProfileHealth.measure(widget.profiles).then((m) {
+      if (mounted) setState(() => _health = m);
+    });
+  }
+
+  /// Health chip text for a probe result — ms RTT, 'udp' for UDP-only
+  /// carriers, 'мёртв' when the dial target didn't answer.
+  static String? _healthText(ProfileProbe? h, S t) {
+    if (h == null) return null;
+    if (h.udp) return 'udp';
+    if (h.dead) return t.profileDead;
+    final ms = h.ms;
+    return ms == null ? null : '$ms ms';
+  }
+
+  /// Chip tint: healthy accent, slow warning, dead danger.
+  static Color _healthColor(ProfileProbe? h, MilkyColors c) {
+    if (h == null || h.udp) return c.accent;
+    if (h.dead) return c.danger;
+    final ms = h.ms ?? 9999;
+    if (ms <= 300) return c.accent;
+    if (ms <= 800) return c.warning;
+    return c.danger;
+  }
+
+  @override
   Widget build(BuildContext context) {
     final c = context.milky;
     final t = S.of(context);
     final items =
-        profiles.where((p) => p.isStaticCompatible).toList(growable: false);
+        widget.profiles.where((p) => p.isStaticCompatible).toList(growable: false);
     if (items.isEmpty) return const SizedBox.shrink();
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -588,11 +629,14 @@ class _ProfilePickList extends StatelessWidget {
             separatorBuilder: (_, __) => const SizedBox(height: 6),
             itemBuilder: (ctx, i) {
               final p = items[i];
-              final sel = p.id == selectedId;
+              final sel = p.id == widget.selectedId;
               final label = p.redactedRemark.trim().isEmpty
                   ? '${p.address}:${p.port}'
                   : p.redactedRemark.trim();
-              final tag = _tagFor(p);
+              final tag = _ProfilePickList._tagFor(p);
+              final health = _health[p.id];
+              final healthText = _healthText(health, t);
+              final healthColor = _healthColor(health, c);
               return Material(
                 color: sel
                     ? c.accent.withValues(alpha: 0.14)
@@ -602,7 +646,7 @@ class _ProfilePickList extends StatelessWidget {
                 borderRadius: BorderRadius.circular(MilkyRadius.control),
                 child: InkWell(
                   borderRadius: BorderRadius.circular(MilkyRadius.control),
-                  onTap: () => onPick(p.id),
+                  onTap: () => widget.onPick(p.id),
                   child: Padding(
                     padding: const EdgeInsets.symmetric(
                       horizontal: 14,
@@ -637,6 +681,31 @@ class _ProfilePickList extends StatelessWidget {
                               maxLines: 1,
                               style: MilkyType.label.copyWith(
                                 color: c.accent,
+                                fontSize: 10.5,
+                                letterSpacing: 0.4,
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (healthText != null) ...[
+                          const SizedBox(width: 6),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 7,
+                              vertical: 3,
+                            ),
+                            decoration: BoxDecoration(
+                              color: healthColor.withValues(alpha: 0.10),
+                              borderRadius: BorderRadius.circular(999),
+                              border: Border.all(
+                                color: healthColor.withValues(alpha: 0.4),
+                              ),
+                            ),
+                            child: Text(
+                              healthText,
+                              maxLines: 1,
+                              style: MilkyType.label.copyWith(
+                                color: healthColor,
                                 fontSize: 10.5,
                                 letterSpacing: 0.4,
                               ),

@@ -219,6 +219,66 @@ void main() {
     expect(c.lastErrorClass, 'unsupported_profile');
   });
 
+  test('dead pin falls back within same location, sets pinnedFellBack',
+      () async {
+    final b = FakeBridge()..failIds = {'a'};
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(seconds: 1),
+    );
+    expect(
+      await c.connect(
+        [p('a'), p('b'), p('c', remark: 'USA-1')],
+        LocationChoice.auto,
+        profileId: 'a',
+      ),
+      isTrue,
+    );
+    // a failed -> same-location b served; usa profile c never tried.
+    expect(b.connectCalls, ['a', 'b']);
+    expect(c.pinnedFellBack, isTrue);
+    expect(c.isConnected, isTrue);
+  });
+
+  test('live pin connects directly, pinnedFellBack stays false', () async {
+    final b = FakeBridge();
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(seconds: 1),
+    );
+    expect(
+      await c.connect(
+        [p('a'), p('b')],
+        LocationChoice.auto,
+        profileId: 'a',
+      ),
+      isTrue,
+    );
+    expect(b.connectCalls, ['a']);
+    expect(c.pinnedFellBack, isFalse);
+  });
+
+  test('dead pin with no same-location candidate fails, pin not crossed',
+      () async {
+    final b = FakeBridge()..failIds = {'a'};
+    final c = VpnController(
+      bridge: b,
+      attemptTimeout: const Duration(seconds: 1),
+    );
+    expect(
+      await c.connect(
+        [p('a'), p('c', remark: 'USA-1')],
+        LocationChoice.auto,
+        profileId: 'a',
+      ),
+      isFalse,
+    );
+    // a retried once; the usa profile was never dialed behind the pin.
+    expect(b.connectCalls, ['a']);
+    expect(c.pinnedFellBack, isFalse);
+    expect(c.lastErrorClass, isNotNull);
+  });
+
   test('VPN permission denied stops before connecting', () async {
     final b = FakeBridge()..permission = false;
     final c = VpnController(bridge: b);

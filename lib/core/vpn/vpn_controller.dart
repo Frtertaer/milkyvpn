@@ -142,6 +142,7 @@ class VpnController extends ChangeNotifier {
   String? _lastErrorClass;
   VpnProfile? _activeProfile;
   VpnProfile? _attemptingProfile;
+  bool _pinnedFellBack = false;
   int _attemptsMade = 0;
   int _attemptTotal = 0;
   int _compatibleCount = 0;
@@ -149,6 +150,11 @@ class VpnController extends ChangeNotifier {
 
   VpnSnapshot get native => _native;
   VpnState get state => _autoConnecting ? VpnState.connecting : _native.state;
+
+  /// True when the last successful connect reached a profile other than the
+  /// user's pin — the pinned entry was dead and a same-location fallback
+  /// served. Reset on every connect; read after a successful one.
+  bool get pinnedFellBack => _pinnedFellBack;
   bool get isBusy =>
       state == VpnState.connecting || state == VpnState.disconnecting;
   bool get isConnected => _native.state == VpnState.connected;
@@ -252,6 +258,7 @@ class VpnController extends ChangeNotifier {
     _autoConnecting = true;
     _cancelRequested = false;
     _lastErrorClass = null;
+    _pinnedFellBack = false;
     _attemptsMade = 0;
     _attemptTotal = 0;
     var connected = false;
@@ -293,7 +300,11 @@ class VpnController extends ChangeNotifier {
         return false;
       }
       var consecutiveBridgeTimeouts = 0;
-      for (final p in candidates) {
+      var fellBack = false;
+      // Index-based: the fallback path appends same-location candidates while
+      // iterating — a for-in iterator would throw on the mutation.
+      for (var i = 0; i < candidates.length; i++) {
+        final p = candidates[i];
         if (_cancelRequested) {
           _lastErrorClass = 'cancelled';
           return false;
@@ -302,6 +313,7 @@ class VpnController extends ChangeNotifier {
         final ok = await _attempt(p);
         if (ok) {
           _lastErrorClass = null;
+          _pinnedFellBack = fellBack;
           connected = true;
           return true;
         }
@@ -315,6 +327,29 @@ class VpnController extends ChangeNotifier {
           }
         } else {
           consecutiveBridgeTimeouts = 0;
+        }
+        // A dead pin is retried first, then we fall back to other profiles
+        // in the SAME location — the exit country stays the one the user
+        // picked; a pin to a foreign country never silently crosses borders.
+        if (pinned != null && !fellBack) {
+          final fallback = _selector
+              .candidates(
+                supported
+                    .where(
+                      (x) =>
+                          x.id != pinned!.id && x.location == pinned.location,
+                    )
+                    .toList(),
+                LocationChoice.auto,
+                maxAttempts: maxAttempts - 1,
+              )
+              .toList();
+          if (fallback.isNotEmpty) {
+            candidates.addAll(fallback);
+            _attemptTotal = candidates.length;
+            notifyListeners();
+          }
+          fellBack = true;
         }
       }
       _lastErrorClass ??= 'all_attempts_failed';
