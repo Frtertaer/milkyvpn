@@ -83,7 +83,7 @@ class MilkyVpnService : VpnService() {
         private val RECOVERABLE_CODES = setOf(
             "connection_refused", "network_unreachable", "network_error", "timeout",
             "dns_failure", "tunnel_unverified", "tls_handshake", "reality_handshake",
-            "core_failure",
+            "entries_blocked", "core_failure",
         )
 
         @Volatile

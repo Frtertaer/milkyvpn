@@ -54,6 +54,7 @@ class VpnProfile {
     this.alterId = 0,
     this.cipher,
     this.plugin,
+    this.altAddrs,
   });
 
   /// Opaque stable correlation id.
@@ -96,6 +97,13 @@ class VpnProfile {
 
   /// Shadowsocks SIP002 `plugin=` string, when present in the share link.
   final String? plugin;
+
+  /// pandora/kal2 `alt=` param: comma-separated alternate `host:port`
+  /// entry points for the same server identity. The native core hedges/
+  /// fails over across `address:port,alt...` — used when one entry IP is
+  /// blocked but the server itself is reachable via another path (e.g. a
+  /// domestic relay or a second VPS).
+  final String? altAddrs;
 
   ProfileKind get kind {
     final proto = protocol.toLowerCase();
@@ -172,6 +180,7 @@ class VpnProfile {
     'alterId': alterId,
     'cipher': cipher,
     'plugin': plugin,
+    'altAddrs': altAddrs,
   };
 
   /// Remark with anything that looks like credential material removed.

@@ -25,3 +25,13 @@ description: Run and UI-test the MilkyVPN Flutter app (Android-first codebase) o
 `SubscriptionUrlPolicy` rejects localhost/.local/.internal/.lan/.home suffixes and private/loopback/link-local IP *literals* — it inspects the URL string only, so `http://127.0.0.1:port/...` is rejected but a public-looking hostname mapped in `C:\Windows\System32\drivers\etc\hosts` to 127.0.0.1 passes (`feed.testfixture-example.com` works; the code documents this caveat). Serve fixtures with a tiny python HTTP server (`python` = C:\Python314\python.exe) and send `Subscription-Userinfo: expire=<unix>` to exercise the expiry path. Feed bodies may be plaintext URI lists or base64 — both decode.
 - Real feed for end-to-end: `https://sub.example.com/s/EXAMPLE_TOKEN_REPLACE_WITH_YOURS` → 16 profiles, all compatible, expiry ~2100.
 - Crafted mixed fixture: `test/fixtures/mixed_formats.txt` + server `C:\Users\Administrator\sub_server.py` (port 8811) → 9 parsed / 6 compatible / 1 malformed (covers vmess/trojan/ss/kal2 + tuic + plugin + garbage).
+## Reaching the Windows box
+The Windows test box is a Devin-hosted Windows VM in another Devin session — it is NOT SSH-reachable from agent boxes (don't burn time hunting keys). Ask the lead session to spawn/keep a Windows child session (e.g. devin_session_create with a Windows platform) and run the checks there. Attachment dumps with `C:\Users\user` are from the *user's own PC*, not the test box (`C:\Users\Administrator`).
+
+## Linux-side kal2 link verification (no Windows needed)
+Prove endpoint+link health from any Linux box with the prebuilt client:
+```
+kal2-client -addr 23.133.88.167:443 -psk <hex> -pub <hex> -sni kal.mergescribe.dev \
+  -carrier auto -ech <base64url> -socks 127.0.0.1:12000 -fetch https://api.ipify.org
+```
+`session up via auto` + fetch 200 = link+server alive. Add `-proxy http://127.0.0.1:12345` (e.g. DataImpulse RU-residential SOCKS via ~/auth_proxy.py) to simulate a hostile-RU base dial. RU-relay link: same params, addr=5.35.99.196:443. `ech=` accepts std|url padded|raw (kal2core.DecodeBase64).

@@ -153,10 +153,7 @@ func main() {
 		cfg.PinSHA256 = append(cfg.PinSHA256, b)
 	}
 	if *ech != "" {
-		list, err := base64.StdEncoding.DecodeString(*ech)
-		if err != nil {
-			list, err = base64.RawURLEncoding.DecodeString(*ech)
-		}
+		list, err := kal2core.DecodeBase64(*ech)
 		if err != nil {
 			log.Fatalf("bad -ech: %v", err)
 		}

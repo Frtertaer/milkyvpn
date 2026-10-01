@@ -193,9 +193,13 @@ final class VpnPlugin: NSObject {
         }
         let port = (p["port"] as? NSNumber)?.intValue ?? 0
         let network = (p["network"] as? String ?? "").lowercased()
-        let carrier = (network == "drift" || network == "veil") ? network : "auto"
+        let known: Set<String> = ["veil", "drift", "quasar", "quic2"]
+        let carrier = known.contains(network) ? network : "auto"
+        // altAddrs: extra entry points of the same server (multi-entry link);
+        // the native core fails over across the comma list.
+        let alt = (p["altAddrs"] as? String).map { $0.isEmpty ? "" : ",\($0)" } ?? ""
         let cfg: [String: Any] = [
-            "addr": "\(address):\(port)",
+            "addr": "\(address):\(port)\(alt)",
             "sni": p["sni"] as? String ?? "",
             "carrier": carrier,
             "path": p["path"] as? String ?? "",

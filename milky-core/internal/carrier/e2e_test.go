@@ -400,3 +400,113 @@ func TestWrongPSKRejected(t *testing.T) {
 		t.Fatal("expected auth failure")
 	}
 }
+
+// Decoy pool: an SNI in AltDomains terminates locally exactly like Domain —
+// a burned primary doesn't kill the endpoint.
+func TestVeilAltDomainTerminates(t *testing.T) {
+	ts := newTestServerCfg(t, func(c *VeilConfig) {
+		c.AltDomains = []string{"alt.test"}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	sess, _, err := DialVeil(ctx, ClientConfig{
+		Addr:               ts.ln.Addr().String(),
+		SNI:                "alt.test",
+		ServerPub:          ts.pub,
+		PSK:                ts.psk,
+		InsecureSkipVerify: true,
+	})
+	if err != nil {
+		t.Fatalf("dial alt domain: %v", err)
+	}
+	defer sess.Close()
+	streamEchoTest(t, sess)
+}
+
+// StealMap routes a foreign SNI to its own upstream before the StealAddr
+// default — each cover name must reach its matching real site.
+func TestVeilStealMapPerSNI(t *testing.T) {
+	mapped := make(chan string, 2)
+	deflt := make(chan string, 2)
+	serve := func(ch chan string) string {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { ln.Close() })
+		go func() {
+			for {
+				c, err := ln.Accept()
+				if err != nil {
+					return
+				}
+				ch <- c.RemoteAddr().String()
+				go io.Copy(c, c)
+			}
+		}()
+		return ln.Addr().String()
+	}
+	mappedAddr := serve(mapped)
+	defltAddr := serve(deflt)
+	ts := newTestServerCfg(t, func(c *VeilConfig) {
+		c.StealAddr = defltAddr
+		c.StealMap = map[string]string{"foreign.test": mappedAddr}
+	})
+	dialHello := func(sni string) {
+		c, err := tls.Dial("tcp", ts.ln.Addr().String(), &tls.Config{
+			ServerName:         sni,
+			InsecureSkipVerify: true,
+		})
+		if err == nil {
+			c.Close()
+		}
+	}
+	dialHello("foreign.test")
+	select {
+	case <-mapped:
+	case <-time.After(5 * time.Second):
+		t.Fatal("mapped steal target saw no connection")
+	}
+	select {
+	case <-deflt:
+		t.Fatal("unlisted-path hit the default steal target")
+	case <-time.After(300 * time.Millisecond):
+	}
+	dialHello("other.test")
+	select {
+	case <-deflt:
+	case <-time.After(5 * time.Second):
+		t.Fatal("default steal target saw no connection")
+	}
+}
+
+// ECH pool: every key's public_name terminates — not just the first. With
+// two ECH keys a client presenting the SECOND cover name must still reach
+// the decoy/handshake path instead of being spliced or penalized.
+func TestVeilECHAllPublicNamesAccepted(t *testing.T) {
+	list1, k1, err := GenerateECHConfig("cover1.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	list2, k2, err := GenerateECHConfig("cover2.test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := newTestServerWith(t, []tls.EncryptedClientHelloKey{k1, k2})
+	for i, list := range [][]byte{list1, list2} {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		sess, _, err := DialVeil(ctx, ClientConfig{
+			Addr:               ts.ln.Addr().String(),
+			SNI:                "kal.test",
+			ServerPub:          ts.pub,
+			PSK:                ts.psk,
+			InsecureSkipVerify: true,
+			ECHConfigList:      list,
+		})
+		cancel()
+		if err != nil {
+			t.Fatalf("ech key %d dial: %v", i, err)
+		}
+		sess.Close()
+	}
+}

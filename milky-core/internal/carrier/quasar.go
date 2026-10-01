@@ -175,7 +175,9 @@ func DialQuasar(ctx context.Context, cfg ClientConfig, qc *QuasarConfig) (*kal2.
 	inner, err := runClientHandshake(bc, cfg)
 	if err != nil {
 		_ = bc.Close()
-		return nil, nil, err
+		// The KCP transport came up — failure past this point means the
+		// entry is reachable but rejecting us (auth/config), not blocked.
+		return nil, nil, handshakeStageError{err}
 	}
 	_ = bc.SetDeadline(time.Time{})
 	return inner, bc, nil

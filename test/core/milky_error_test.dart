@@ -106,6 +106,22 @@ void main() {
         MilkyError.fromCode('subscription_not_found').kind,
         MilkyErrorKind.subscriptionProblem,
       );
+      // Entry-block canary: every endpoint dead at transport stage — the
+      // user sees "entry blocked", never a generic unreachable.
+      expect(
+        MilkyError.fromCode('entries_blocked').kind,
+        MilkyErrorKind.entryBlocked,
+      );
+      expect(
+        MilkyError.fromCode('entries_blocked').diagnosticsCode,
+        'ENTRY_BLOCKED',
+      );
+      // Raw Go error text carrying the token (iOS/desktop surface the
+      // message, not the code) resolves to the same kind.
+      expect(
+        MilkyError.fromCode('entries_blocked: all 4 endpoints unreachable (timeout)').kind,
+        MilkyErrorKind.entryBlocked,
+      );
       expect(MilkyError.fromCode('cancelled').isCancelled, isTrue);
       expect(MilkyError.fromCode(null).diagnosticsCode, 'NO_ERROR_REPORTED');
       expect(

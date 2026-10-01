@@ -183,6 +183,20 @@ type handshakeStageError struct{ err error }
 func (e handshakeStageError) Error() string { return e.err.Error() }
 func (e handshakeStageError) Unwrap() error { return e.err }
 
+// IsHandshakeStage reports whether err came from after the carrier transport
+// was established (inner KAL/2 flight, resume, or a server in-protocol
+// reply). Such errors prove the entry point is reachable — a dial sweep that
+// never reaches this stage signals a blocked entry, not a bad config.
+func IsHandshakeStage(err error) bool {
+	var hse handshakeStageError
+	return errors.As(err, &hse)
+}
+
+// MarkHandshakeStage wraps err as an inner-stage failure — used by tests and
+// any future carrier whose transport-established boundary isn't covered by
+// the wrappers above.
+func MarkHandshakeStage(err error) error { return handshakeStageError{err} }
+
 func DialVeil(ctx context.Context, cfg ClientConfig) (*kal2.Session, BoundConn, error) {
 	sess, bc, bound, err := dialVeilOnce(ctx, cfg, false)
 	var hse handshakeStageError

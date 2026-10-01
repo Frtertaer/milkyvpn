@@ -3,6 +3,7 @@ module github.com/Frtertaer/milkyvpn/milky-core
 go 1.27.1
 
 require (
+	github.com/quic-go/quic-go v0.63.0
 	github.com/refraction-networking/utls v1.8.2
 	github.com/sagernet/gvisor v0.0.0-20250811-sing-box-mod.1
 	github.com/xtaci/kcp-go/v5 v5.6.60

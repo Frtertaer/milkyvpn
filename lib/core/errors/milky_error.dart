@@ -17,6 +17,11 @@ enum MilkyErrorKind {
   /// A server was reached but refused / timed out / failed the handshake.
   serverUnreachable,
 
+  /// Every entry point of the server died at transport stage — the
+  /// provider/TSPU-block signature (IP block, RST injection, UDP cutoff).
+  /// The server itself may be fine; the entry is filtered.
+  entryBlocked,
+
   /// The tunnel could not be established (core, TUN, verification).
   tunnelFailed,
 
@@ -167,6 +172,18 @@ class MilkyError {
         kind: known.$1,
         diagnosticsCode: known.$2,
         category: known.$3,
+        rawCode: raw,
+      );
+    }
+
+    // The kal2 core embeds the token inside its error text
+    // ("entries_blocked: all N endpoints unreachable (...)") — catch it on
+    // platforms that surface the raw Go message as the code.
+    if (raw.toLowerCase().contains('entries_blocked')) {
+      return MilkyError(
+        kind: MilkyErrorKind.entryBlocked,
+        diagnosticsCode: 'ENTRY_BLOCKED',
+        category: MilkyFailureCategory.networkFailure,
         rawCode: raw,
       );
     }
@@ -336,6 +353,12 @@ class MilkyError {
     'offline': (
       MilkyErrorKind.noInternet,
       'NETWORK_UNAVAILABLE',
+      MilkyFailureCategory.networkFailure,
+    ),
+
+    'entries_blocked': (
+      MilkyErrorKind.entryBlocked,
+      'ENTRY_BLOCKED',
       MilkyFailureCategory.networkFailure,
     ),
 

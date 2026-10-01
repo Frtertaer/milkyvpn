@@ -29,7 +29,18 @@ func ServeSOCKS5(sessFn func() *kal2.Session, ln net.Listener) error {
 func handleSocks(c net.Conn, sessFn func() *kal2.Session) {
 	defer c.Close()
 	_ = c.SetDeadline(time.Now().Add(15 * time.Second))
-	if err := socksHandshake(c); err != nil {
+	// SOCKS4 has no greeting — the first byte is the request version
+	// itself. Chromium-family browsers issue SOCKS4 (not SOCKS5) against a
+	// Windows `socks=` system-proxy entry, so peek the version and route.
+	ver, err := socksPeekVer(c)
+	if err != nil {
+		return
+	}
+	if ver == 0x04 {
+		handleSocks4(c, sessFn)
+		return
+	}
+	if err := socksHandshake(c, ver); err != nil {
 		return
 	}
 	cmd, host, port, err := socksRequest(c)
@@ -57,11 +68,97 @@ func handleSocks(c net.Conn, sessFn func() *kal2.Session) {
 		return
 	}
 	_ = c.SetDeadline(time.Time{})
+	pumpSocks(c, st)
+}
+
+// pumpSocks relays client<->stream until either side closes.
+func pumpSocks(c net.Conn, st *kal2.Stream) {
 	errCh := make(chan struct{}, 2)
 	go func() { _, _ = io.CopyBuffer(st, c, make([]byte, 1<<16)); errCh <- struct{}{} }()
 	go func() { _, _ = io.CopyBuffer(c, st, make([]byte, 1<<16)); errCh <- struct{}{} }()
 	<-errCh
 	st.Close()
+}
+
+// socksPeekVer reads the first byte — the SOCKS version marker.
+func socksPeekVer(c net.Conn) (byte, error) {
+	b := []byte{0}
+	_, err := io.ReadFull(c, b)
+	return b[0], err
+}
+
+// handleSocks4 serves a SOCKS4/4a CONNECT request (VER already consumed):
+// `04 CMD PORT IP USERID\0 [DOMAIN\0]`; reply `00 CD PORT IP`. Chromium on
+// Windows speaks exactly this to a `socks=` endpoint — without it every
+// browser page dies with ERR_CONNECTION_RESET while the tunnel is healthy.
+func handleSocks4(c net.Conn, sessFn func() *kal2.Session) {
+	refuse := func() { _ = socks4Reply(c, 0x5b, nil, 0) }
+	h := make([]byte, 7) // CMD(1) PORT(2) IP(4)
+	if _, err := io.ReadFull(c, h); err != nil {
+		return
+	}
+	if h[0] != 0x01 { // CONNECT only (no BIND)
+		refuse()
+		return
+	}
+	port := binary.BigEndian.Uint16(h[1:3])
+	ip := h[3:7]
+	if _, err := readNulTerm(c, 256); err != nil { // USERID
+		return
+	}
+	host := net.IP(ip).String()
+	if ip[0] == 0 && ip[1] == 0 && ip[2] == 0 && ip[3] != 0 {
+		// SOCKS4a: 0.0.0.x ip means a domain name follows the userid.
+		d, err := readNulTerm(c, 256)
+		if err != nil {
+			return
+		}
+		host = d
+	}
+	sess := sessFn()
+	if sess == nil {
+		refuse()
+		return
+	}
+	st, err := sess.OpenOpt(host, port)
+	if err != nil {
+		refuse()
+		return
+	}
+	if err := socks4Reply(c, 0x5a, ip, port); err != nil {
+		st.Close()
+		return
+	}
+	_ = c.SetDeadline(time.Time{})
+	pumpSocks(c, st)
+}
+
+// readNulTerm consumes a NUL-terminated field (SOCKS4 userid/domain).
+func readNulTerm(c net.Conn, max int) (string, error) {
+	b := make([]byte, 0, 32)
+	one := []byte{0}
+	for i := 0; i < max; i++ {
+		if _, err := io.ReadFull(c, one); err != nil {
+			return "", err
+		}
+		if one[0] == 0 {
+			return string(b), nil
+		}
+		b = append(b, one[0])
+	}
+	return "", fmt.Errorf("unterminated socks4 field")
+}
+
+// socks4Reply writes the 8-byte SOCKS4 reply: VN=0, CD, DSTPORT, DSTIP.
+func socks4Reply(c net.Conn, cd byte, ip []byte, port uint16) error {
+	out := []byte{0x00, cd, byte(port >> 8), byte(port)}
+	if len(ip) == 4 {
+		out = append(out, ip...)
+	} else {
+		out = append(out, 0, 0, 0, 0)
+	}
+	_, err := c.Write(out)
+	return err
 }
 
 // socksUDPAssociate answers a UDP ASSOCIATE request: opens a "udp" stream over
@@ -210,12 +307,15 @@ func socksUDPPacket(frame []byte) []byte {
 	return append(pkt, frame...)
 }
 
-func socksHandshake(c net.Conn) error {
-	h := make([]byte, 2)
-	if _, err := io.ReadFull(c, h); err != nil || h[0] != 0x05 {
+func socksHandshake(c net.Conn, ver byte) error {
+	if ver != 0x05 {
 		return fmt.Errorf("bad socks greeting")
 	}
-	methods := make([]byte, int(h[1]))
+	nm := make([]byte, 1)
+	if _, err := io.ReadFull(c, nm); err != nil {
+		return err
+	}
+	methods := make([]byte, int(nm[0]))
 	if _, err := io.ReadFull(c, methods); err != nil {
 		return err
 	}
