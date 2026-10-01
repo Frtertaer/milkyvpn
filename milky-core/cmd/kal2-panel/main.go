@@ -329,15 +329,27 @@ func listenerUp(proto, addr string) bool {
 
 // ------------------------------------------------------------------ config
 
-// unitArgs returns the argv of a unit's ExecStart line.
-func unitArgs(unit string) []string {
-	out := sh("systemctl", "cat", unit)
-	re := regexp.MustCompile(`(?m)^ExecStart=(.*)$`)
-	m := re.FindStringSubmatch(out)
-	if len(m) < 2 {
-		return nil
+var execStartRe = regexp.MustCompile(`(?m)^ExecStart=(.*)$`)
+
+// parseExecStart returns the argv of the effective ExecStart inside a
+// `systemctl cat` dump: systemd merges main file + drop-ins and the LAST
+// non-empty ExecStart= line wins.
+func parseExecStart(cat string) []string {
+	var argv []string
+	for _, m := range execStartRe.FindAllStringSubmatch(cat, -1) {
+		// Empty ExecStart= clears the accumulated list (that's how drop-ins
+		// override); a later non-empty line then wins.
+		if f := strings.Fields(m[1]); len(f) > 0 {
+			argv = f
+		} else {
+			argv = nil
+		}
 	}
-	return strings.Fields(m[1])
+	return argv
+}
+
+func unitArgs(unit string) []string {
+	return parseExecStart(sh("systemctl", "cat", unit))
 }
 
 func (p *panel) config(w http.ResponseWriter, r *http.Request) {
@@ -421,7 +433,7 @@ func (p *panel) config(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	drop := filepath.Join(dir, "90-panel.conf")
+	drop := filepath.Join(dir, "zz-panel.conf")
 	prev, _ := os.ReadFile(drop)
 	_ = os.WriteFile(drop+".bak", prev, 0600)
 	conf := fmt.Sprintf("[Service]\nExecStart=\nExecStart=%s\n", newExec)
@@ -700,7 +712,7 @@ func (p *panel) ensureUserMode() error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	drop := filepath.Join(dir, "90-panel.conf")
+	drop := filepath.Join(dir, "zz-panel.conf")
 	prev, _ := os.ReadFile(drop)
 	_ = os.WriteFile(drop+".bak", prev, 0600)
 	conf := fmt.Sprintf("[Service]\nExecStart=\nExecStart=%s %s\n", bin, strings.Join(kept, " "))
