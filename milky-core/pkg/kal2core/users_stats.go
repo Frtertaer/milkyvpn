@@ -126,6 +126,9 @@ func newStatsWriter(path string, logf func(string, ...any)) *statsWriter {
 func (w *statsWriter) write(r statRec) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
+	if w.f == nil {
+		return
+	}
 	b, err := json.Marshal(r)
 	if err == nil {
 		_, _ = w.f.Write(append(b, '\n'))
@@ -142,4 +145,17 @@ func (w *statsWriter) close(s *kal2.Session, info carrier.SessionInfo, started t
 		T: time.Now().Unix(), Ev: "close", UID: info.UID, Carrier: info.Carrier, Remote: info.Remote,
 		Up: s.ReceivedBytes(), Down: s.SentBytes(), DurMs: time.Since(started).Milliseconds(),
 	})
+}
+
+// Close flushes nothing (writes are unbuffered) but releases the file handle —
+// required on Windows for callers that remove or rotate the file.
+func (w *statsWriter) Close() error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.f == nil {
+		return nil
+	}
+	err := w.f.Close()
+	w.f = nil
+	return err
 }

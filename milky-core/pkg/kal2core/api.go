@@ -384,6 +384,9 @@ func Serve(cfg ServerConfig) error {
 	}
 
 	stats := newStatsWriter(cfg.StatsFile, logf)
+	if stats != nil {
+		defer stats.Close()
+	}
 	usersFn := fileUsersFn(cfg.UsersFile, logf)
 	if len(cfg.Users) > 0 {
 		base := toCarrierUsers(cfg.Users)

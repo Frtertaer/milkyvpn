@@ -118,7 +118,7 @@ func TestStatsFileRecords(t *testing.T) {
 	if stats == nil {
 		t.Fatal("stats writer nil")
 	}
-	var gotInfo carrier.SessionInfo
+	infos := make(chan carrier.SessionInfo, 1)
 	done := make(chan struct{}, 1)
 	v := carrier.NewVeilListener(carrier.VeilConfig{
 		Domain:   "kal.test",
@@ -126,7 +126,7 @@ func TestStatsFileRecords(t *testing.T) {
 		Identity: priv,
 		Users:    []carrier.User{{ID: "u-stats", PSK: psk}},
 		OnSession: func(s *kal2.Session, info carrier.SessionInfo) {
-			gotInfo = info
+			infos <- info
 			stats.open(s, info)
 			go func() {
 				for {
@@ -161,6 +161,12 @@ func TestStatsFileRecords(t *testing.T) {
 	if err != nil {
 		t.Fatalf("dial: %v", err)
 	}
+	var gotInfo carrier.SessionInfo
+	select {
+	case gotInfo = <-infos:
+	case <-time.After(5 * time.Second):
+		t.Fatal("OnSession never fired")
+	}
 	if gotInfo.UID != "u-stats" || gotInfo.Carrier != "veil" {
 		t.Fatalf("SessionInfo = %+v", gotInfo)
 	}
@@ -169,6 +175,9 @@ func TestStatsFileRecords(t *testing.T) {
 	case <-done:
 	case <-time.After(5 * time.Second):
 		t.Fatal("session never closed server-side")
+	}
+	if err := stats.Close(); err != nil {
+		t.Fatal(err)
 	}
 
 	var evs []map[string]any
