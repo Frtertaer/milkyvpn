@@ -424,7 +424,7 @@ func (p *panel) config(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), 500)
 		return
 	}
-	drop := filepath.Join(dir, "90-panel.conf")
+	drop := filepath.Join(dir, "zz-panel.conf")
 	prev, _ := os.ReadFile(drop)
 	_ = os.WriteFile(drop+".bak", prev, 0600)
 	conf := fmt.Sprintf("[Service]\nExecStart=\nExecStart=%s\n", newExec)
@@ -703,7 +703,7 @@ func (p *panel) ensureUserMode() error {
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return err
 	}
-	drop := filepath.Join(dir, "90-panel.conf")
+	drop := filepath.Join(dir, "zz-panel.conf")
 	prev, _ := os.ReadFile(drop)
 	_ = os.WriteFile(drop+".bak", prev, 0600)
 	conf := fmt.Sprintf("[Service]\nExecStart=\nExecStart=%s %s\n", bin, strings.Join(kept, " "))
