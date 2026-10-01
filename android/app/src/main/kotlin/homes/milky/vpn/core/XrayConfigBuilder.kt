@@ -97,6 +97,7 @@ object XrayConfigBuilder {
         val plugin: String? = null,
         val altAddrs: String? = null,
         val front: String? = null,
+        val fronts: List<String>? = null,
     ) {
         companion object {
             fun fromMap(m: Map<*, *>): ProfileSpec {
@@ -128,6 +129,7 @@ object XrayConfigBuilder {
                     plugin = s("plugin"),
                     altAddrs = s("altAddrs"),
                     front = s("front"),
+                    fronts = (m["fronts"] as? List<*>)?.mapNotNull { it as? String },
                 )
             }
         }

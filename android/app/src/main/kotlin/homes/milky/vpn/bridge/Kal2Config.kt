@@ -39,6 +39,7 @@ object Kal2Config {
             // front= front-relay URL: HTTP-shaped carriers dial it instead
             // of addr (blocked entry / whitelisted-domain only).
             .put("front", p.front ?: "")
+            .put("fronts", org.json.JSONArray(p.fronts ?: emptyList<String>()))
             // cover defaults on in the native core; "0"/"false" disables it.
             .put("cover", !p.cover.equals("0") && !p.cover.equals("false", true))
             // The core verifies the outer TLS chain; Android < 7.1.1 lacks

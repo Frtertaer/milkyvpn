@@ -371,3 +371,98 @@ func TestDialHedgedStageErrorBeatsTransport(t *testing.T) {
 		t.Fatalf("want stage error, got %v", err)
 	}
 }
+
+// Universal multi-front sweep: with several fronts the dial tries the
+// direct entry first (all configured carriers), then each front in order
+// hedged over the HTTP-shaped carriers only. A single front keeps the
+// legacy front-only semantics.
+func TestDialAnyUniversalFrontSweep(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	var mu sync.Mutex
+	var got []struct{ front, car string }
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		mu.Lock()
+		got = append(got, struct{ front, car string }{cfg.Front, cfg.Carrier})
+		n := len(got)
+		mu.Unlock()
+		_ = n
+		if cfg.Front == "https://f2.example" {
+			return &kal2.Session{}, nil
+		}
+		return nil, errors.New("dead")
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, err := dialAny(ctx, ClientConfig{
+		Addrs:  []string{"a1:443"},
+		SNI:    "s1.test",
+		Carrier: "auto",
+		Fronts: []string{"https://f1.example", "https://f2.example"},
+	}, 0, nil)
+	if err != nil {
+		t.Fatalf("dialAny: %v", err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	var fronts []string
+	direct := 0
+	for _, g := range got {
+		if g.front == "" {
+			direct++
+		} else {
+			fronts = append(fronts, g.front)
+		}
+	}
+	if direct == 0 {
+		t.Fatalf("no direct lanes: %+v", got)
+	}
+	// f1 lanes run before f2 wins; within a front only HTTP-shaped carriers.
+	var f1, f2 int
+	for i, g := range got {
+		if g.front == "https://f1.example" && f1 == 0 {
+			f1 = i
+		}
+		if g.front == "https://f2.example" && f2 == 0 {
+			f2 = i
+		}
+		if g.front != "" && g.car != "drift" && g.car != "cdn" && g.car != "mosaic" {
+			t.Fatalf("non-HTTP carrier %q on front lane", g.car)
+		}
+	}
+	if f1 == 0 || f2 == 0 || f1 > f2 {
+		t.Fatalf("front order broken: %+v", got)
+	}
+}
+
+// Legacy single-front link: every attempt dials through the front (no
+// direct context), preserving the front-only semantics existing links rely
+// on.
+func TestDialAnySingleFrontStaysFrontOnly(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	var mu sync.Mutex
+	var got []string
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		mu.Lock()
+		got = append(got, cfg.Front)
+		mu.Unlock()
+		return nil, errors.New("dead")
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, _ = dialAny(ctx, ClientConfig{
+		Addrs:  []string{"a1:443", "a2:443"},
+		SNI:    "s1.test",
+		Carrier: "veil",
+		Front:  "https://f1.example",
+	}, 0, nil)
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("attempts = %v", got)
+	}
+	for _, f := range got {
+		if f != "https://f1.example" {
+			t.Fatalf("attempt dialed without front: %v", got)
+		}
+	}
+}

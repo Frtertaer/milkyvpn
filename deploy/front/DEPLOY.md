@@ -73,6 +73,11 @@ pandora://<psk>@<server>:443?sni=<domain>&pub=<hex>&carrier=mosaic&front=https%3
   `cdn` — для WS-фронтов; `auto` также допустим — hedge-диал сам выберет
   живой носитель (veil напрямую vs mosaic через фронт).
 - `alt=` работает вместе с `front=`: фронт — ортогональный слой.
+- Один `front=` = фронт-only (как задумано для ссылки-фронта). Несколько
+  `front=` = универсальная ссылка: диал-свип идёт {прямой вход, фронт1,
+  фронт2, ...} — покрывает открытую сеть, блок-IP и белые списки одним
+  профилем. Пример:
+  `pandora://psk@ip:443?sni=d&pub=p&carrier=auto&front=https%3A%2F%2Ffn.yandex&front=https%3A%2F%2Fw.workers.dev`
 
 ## Ограничения
 

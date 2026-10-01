@@ -202,7 +202,9 @@ class SubscriptionExporter {
     q.put('cover', p.cover);
     q.put('pin', p.pin);
     q.put('alt', p.altAddrs);
-    q.put('front', p.front);
+    for (final f in p.fronts ?? [if (p.front != null) p.front!]) {
+      q.put('front', f);
+    }
     return _uri('pandora', p.secret, p.address, p.port, q, p.remark);
   }
 

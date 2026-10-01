@@ -208,6 +208,7 @@ final class VpnPlugin: NSObject {
             "socks": Self.localSocks,
             // front= front-relay URL (blocked entry / whitelisted domain).
             "front": p["front"] as? String ?? "",
+            "fronts": p["fronts"] as? [String] ?? [],
         ]
         guard JSONSerialization.isValidJSONObject(cfg),
               let data = try? JSONSerialization.data(withJSONObject: cfg),

@@ -51,6 +51,9 @@ type mobileConfig struct {
 	// instead of addr — a serverless function / CDN worker that forwards
 	// to the server's front listener. For blocked entries / whitelists.
 	Front     string `json:"front"`
+	// Fronts: extra front relay URLs — with two or more total the dial
+	// sweep goes universal: direct first, then each front in order.
+	Fronts    []string `json:"fronts"`
 	Insecure  bool   `json:"insecure"`
 	Tun       bool   `json:"tun"`    // platform TUN adapter (root/admin)
 	TunFd     int    `json:"tun_fd"` // Android: adopt a VpnService fd
@@ -155,6 +158,7 @@ func Start(configJSON string) (int, error) {
 		ECHConfigList:      echList,
 		Cover:              cover,
 		Front:              mc.Front,
+		Fronts:             mc.Fronts,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()

@@ -166,6 +166,12 @@ type ClientConfig struct {
 	// leg to the front is ordinary browser TLS on the front's own domain.
 	// Raw drift needs a streaming relay; mosaic/cdn survive buffering ones.
 	Front string
+	// Fronts lists additional front relays: when any are present the dial
+	// sweep becomes universal — the direct entry is tried first, then each
+	// front in order — so one link covers open networks, IP-block waves and
+	// whitelist mode. Inside a front the hedge narrows to the HTTP-shaped
+	// carriers; veil/quasar/quic2 keep dialing only on the direct context.
+	Fronts []string
 	HandshakeTimeout time.Duration
 	Logf             func(string, ...any)
 	// Resume, set internally by the migration path, makes dialers run a
@@ -723,22 +729,56 @@ func IsEntriesBlocked(err error) bool {
 	return errors.As(err, &eb)
 }
 
-// dialAny walks the endpoint list starting at index start, returning the
+// frontableCarriers intersects the configured carriers with the HTTP-shaped
+// ones that can cross a front relay. An explicit non-HTTP carrier list
+// yields an empty set — the caller skips front contexts entirely.
+func frontableCarriers(cfg ClientConfig) []string {
+	var out []string
+	for _, c := range carriers(cfg) {
+		switch c {
+		case "drift", "cdn", "mosaic":
+			out = append(out, c)
+		}
+	}
+	return out
+}
+
+// dialAny walks the entry contexts starting at index start, returning the
 // first session that completes the handshake (hedged across carriers).
 // SNI also accepts a comma list (decoy pool): the attempt index rotates
 // through endpoints AND cover names, so over retries the client sweeps the
 // addr×sni cross-product — a single SNI block can't kill the link.
+//
+// With a single front the legacy semantics hold — every attempt dials
+// through it. With several fronts the sweep is universal: the direct entry
+// is tried first, then each front in order — the same link survives open
+// networks, IP blocks and whitelist mode.
 func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scorecard) (*kal2.Session, error) {
 	addrs := endpoints(cfg)
 	snis := splitCommaList(cfg.SNI)
+	fronts := cfg.fronts()
+	universal := len(fronts) > 1
 	var lastErr error
 	sawInner := false
-	for i := range addrs {
+	for i := 0; i < len(addrs)+len(fronts)-btoi(len(fronts) == 1); i++ {
 		c2 := cfg
-		attempt := start + i
-		c2.Addr = addrs[attempt%len(addrs)]
-		if len(snis) > 1 {
-			c2.SNI = snis[attempt%len(snis)]
+		if i < len(addrs) || len(fronts) == 1 {
+			attempt := start + i
+			c2.Addr = addrs[attempt%len(addrs)]
+			if len(snis) > 1 {
+				c2.SNI = snis[attempt%len(snis)]
+			}
+			if universal {
+				c2.Front, c2.Fronts = "", nil
+			}
+		} else {
+			fc := frontableCarriers(cfg)
+			if len(fc) == 0 {
+				continue
+			}
+			c2.Carrier = strings.Join(fc, ",")
+			c2.Front = fronts[i-len(addrs)]
+			c2.Fronts = nil
 		}
 		s, err := dialHedged(ctx, c2, scores)
 		if err == nil {
@@ -753,13 +793,36 @@ func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scor
 		}
 	}
 	if !sawInner {
-		attempts := len(addrs)
+		// Attempts counts the nominal sweep (addr x sni + fronts) the retry
+		// rotation covers, not the iterations this call performed.
+		sweep := len(addrs)
 		if len(snis) > 1 {
-			attempts *= len(snis)
+			sweep *= len(snis)
 		}
-		return nil, &EntriesBlockedError{Attempts: attempts, Err: lastErr}
+		return nil, &EntriesBlockedError{Attempts: sweep + len(fronts) - btoi(len(fronts) == 1), Err: lastErr}
 	}
 	return nil, lastErr
+}
+
+func btoi(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+// fronts returns the deduped front list: Front first (legacy single-front
+// links), then Fronts in order.
+func (c ClientConfig) fronts() []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, f := range append([]string{c.Front}, c.Fronts...) {
+		if f = strings.TrimSpace(f); f != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
+	return out
 }
 
 // dialOneFn is the per-carrier dialer (a knob for tests). Atomic value:
