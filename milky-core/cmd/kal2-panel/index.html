@@ -53,6 +53,14 @@
   td .link { margin-top:2px; font-size:10px; padding:4px 7px; }
   button.mini { padding:4px 10px; font-size:11px; }
   .num { font-variant-numeric:tabular-nums; }
+  .qbar { height:6px; border-radius:3px; background:#0d1119; border:1px solid var(--edge);
+          overflow:hidden; margin-top:4px; }
+  .qbar i { display:block; height:100%; background:var(--ac); }
+  .qbar.warn i { background:var(--warn); } .qbar.over i { background:var(--bad); }
+  .sub { color:var(--mut); font-size:11px; }
+  .editrow td { background:#0d1119; }
+  .editrow input { max-width:170px; }
+  img.qr { border-radius:10px; margin-top:6px; display:block; }
   #toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%);
            background:#1a2233; border:1px solid var(--edge); padding:10px 18px;
            border-radius:10px; display:none; }
@@ -86,6 +94,8 @@
   <div class="card">
     <h2>Слушатели</h2>
     <div id="listeners" class="kv"></div>
+    <h2 style="margin-top:16px">Входы живы из РФ</h2>
+    <div id="canary" class="kv"></div>
   </div>
   <div class="card wide">
     <h2>Пользователи <span class="pill" id="fileModePill"></span></h2>
@@ -94,7 +104,7 @@
       <button onclick="addUser()">Добавить</button>
     </div>
     <table id="usersTbl"><thead><tr>
-      <th>Юзер</th><th>Трафик ↑/↓</th><th>Сессий</th><th>Онлайн</th><th>Активность</th><th></th>
+      <th>Юзер</th><th>Трафик ↑/↓</th><th>Месяц / квота</th><th>Сессий</th><th>Онлайн</th><th>Активность</th><th></th>
     </tr></thead><tbody id="usersBody"></tbody></table>
     <div id="usersEmpty" class="pill">нет пользователей</div>
   </div>
@@ -134,6 +144,17 @@
     </div>
     <div class="kv"><b>URL подписки</b><span class="link" id="subUrl">…</span></div>
     <div id="linkList"></div>
+  </div>
+  <div class="card">
+    <h2>Администрирование</h2>
+    <label>Смена токена панели</label>
+    <input type="password" id="pwCur" placeholder="текущий токен">
+    <input type="password" id="pwNew" placeholder="новый токен (≥16 символов)" style="margin-top:6px">
+    <div class="row" style="margin-top:10px">
+      <button class="mini" onclick="pwChange()">Сменить</button>
+      <a class="mini ghost" style="padding:4px 10px;border-radius:8px" href="/api/backup" download="kal2-backup.json">Скачать бэкап</a>
+    </div>
+    <div class="sub" style="margin-top:8px">После смены придётся войти заново — все сессии слетают.</div>
   </div>
   <div class="card wide">
     <h2>Настройки сервера <span class="pill" id="dirtyPill" style="display:none">есть изменения</span></h2>
@@ -176,6 +197,9 @@ async function loadAll(){
       ['Юнит', st.unit], ['QUIC2', st.quic2?'вкл':'выкл'],
     ].map(([k,v])=>`<b>${k}</b><span>${v}</span>`).join('');
     $('listeners').innerHTML = st.listeners.map(l=>`<b>${l.proto} ${l.addr}</b><span>${l.up?'<span class="pill on">up</span>':'<span class="pill off">down</span>'}</span>`).join('')||'<span class="pill off">нет данных</span>';
+    $('canary').innerHTML = (st.canary||[]).map(c=>
+      `<b>${c.carrier} → ${c.entry}</b><span>${c.ok?`<span class="pill on">жив ${c.ms} мс</span>`:'<span class="pill off">мёртв</span>'} <span class="sub">${c.ts.slice(5,16).replace('T',' ')} UTC</span></span>`
+    ).join('')||'<span class="pill">пробник не развёрнут</span>';
     $('jlog').textContent = st.journal||'';
     CFG = await api('/api/config'); renderCfg();
     LINKS = await api('/api/links'); renderLinks();
@@ -192,20 +216,39 @@ function renderUsers(u,st){
   $('fileModePill').textContent = u.file_mode?'users-file':'флаги (мигрирует при первом изменении)';
   $('fileModePill').className='pill '+(u.file_mode?'on':'');
   $('usersEmpty').style.display = users.length?'none':'inline-block';
+  const tok = x => (x.sub_url||'').split('/sub/')[1]||'';
+  const expStr = x => x.expires_at?`<div class="sub">до ${new Date(x.expires_at*1000).toISOString().slice(0,10)}${x.expires_at<Date.now()/1000?' <span class="pill off">истёк</span>':''}</div>`:'';
   $('usersBody').innerHTML = users.map(x=>{
-    const a=agg[x.id]||{};
+    const a=agg[x.id]||{}, mo=a.month||0, q=x.quota_mb||0;
+    const qGB=(q/1024).toFixed(1);
+    const pct=q?Math.min(100,Math.round(mo/(q*1048576)*100)):0;
+    const qcls=q?(pct>=100?'qbar over':pct>=80?'qbar warn':'qbar'):'qbar';
+    const qcell=q?`<span class="num">${fmtB(mo)} / ${qGB} ГБ</span><div class="${qcls}"><i style="width:${pct}%"></i></div>`
+                 :`<span class="num">${fmtB(mo)}</span> <span class="sub">∞</span>`;
+    const expIso=x.expires_at?new Date(x.expires_at*1000).toISOString().slice(0,10):'';
     return `<tr${x.disabled?' style="opacity:.45"':''}>
-      <td><b>${x.id}</b>${x.disabled?' <span class="pill off">выкл</span>':''}
-        <div class="link" onclick="navigator.clipboard?.writeText(this.textContent);toast('Подписка скопирована')" title="нажми — скопирует URL подписки">${x.sub_url}</div></td>
+      <td><b>${x.id}</b>${x.disabled?' <span class="pill off">выкл</span>':''}${expStr(x)}
+        <div class="link" onclick="navigator.clipboard?.writeText(this.textContent);toast('Подписка скопирована')" title="нажми — скопирует URL подписки">${x.sub_url}</div>
+        <div id="qr-${x.id}" style="display:none"><img class="qr" src="/api/qr?t=${tok(x)}"></div></td>
       <td class="num">${fmtB(a.up||0)} / ${fmtB(a.down||0)}</td>
+      <td>${qcell}</td>
       <td class="num">${a.sessions||0}</td>
       <td>${a.online?`<span class="pill on">${a.online}</span>`:'—'}</td>
       <td>${fmtAgo(a.last_seen)}</td>
       <td style="white-space:nowrap">
         <button class="mini ghost" onclick="userToggle('${x.id}',${!x.disabled})">${x.disabled?'Вкл':'Выкл'}</button>
         <button class="mini ghost" onclick="userRekey('${x.id}')" title="новый PSK и URL подписки">Rekey</button>
+        <button class="mini ghost" onclick="$('qr-${x.id}').style.display=$('qr-${x.id}').style.display==='none'?'block':'none'" title="QR подписки">QR</button>
+        <button class="mini ghost" onclick="$('ed-${x.id}').style.display=$('ed-${x.id}').style.display==='none'?'table-row':'none'" title="квота и срок">⚙</button>
         <button class="mini danger" onclick="userDel('${x.id}')">Удалить</button>
-      </td></tr>`;
+      </td></tr>
+    <tr class="editrow" id="ed-${x.id}" style="display:none"><td colspan="7">
+      <div class="row"><span class="sub">Квота ГБ/мес (0 = безлимит)</span>
+        <input type="text" id="eq-${x.id}" value="${q?qGB:''}" placeholder="0">
+        <span class="sub">Срок до (YYYY-MM-DD, пусто = бессрочно)</span>
+        <input type="text" id="ee-${x.id}" value="${expIso}" placeholder="—">
+        <button class="mini" onclick="userSet('${x.id}')">Сохранить</button></div>
+    </td></tr>`;
   }).join('');
   $('genUser').innerHTML = users.filter(x=>!x.disabled).map(x=>`<option value="${x.id}">${x.id}</option>`).join('');
 }
@@ -226,6 +269,22 @@ async function userRekey(id){
   try{ await api('/api/users',{rekey:id});
     const u=await api('/api/users'); const s=await api('/api/stats'); renderUsers(u,s);
     toast('Ключи '+id+' перевыпущены');
+  }catch(e){ toast('Ошибка: '+e.message,false); }
+}
+async function userSet(id){
+  const qv=parseFloat($('eq-'+id).value.replace(',','.'))||0;
+  const ev=$('ee-'+id).value.trim();
+  let exp=0;
+  if(ev){ const d=new Date(ev+'T23:59:59Z'); if(isNaN(d)) { toast('Дата не понял (YYYY-MM-DD)',false); return; } exp=Math.floor(d/1000); }
+  try{ await api('/api/users',{set:id,quota_mb:Math.round(qv*1024),expires_at:exp});
+    const u=await api('/api/users'); const s=await api('/api/stats'); renderUsers(u,s);
+    toast('Квота/срок '+id+' сохранены — применяются в течение минуты');
+  }catch(e){ toast('Ошибка: '+e.message,false); }
+}
+async function pwChange(){
+  if(($('pwNew').value||'').length<16){ toast('Новый токен: минимум 16 символов',false); return; }
+  try{ await api('/api/password',{cur:$('pwCur').value,new:$('pwNew').value});
+    toast('Токен сменён — войдите заново'); setTimeout(showLogin,1500);
   }catch(e){ toast('Ошибка: '+e.message,false); }
 }
 async function userDel(id){

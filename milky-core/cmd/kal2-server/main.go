@@ -115,8 +115,11 @@ func main() {
 		}
 	}
 	udpOnly := *listen == "off"
-	if *identity == "" || len(users) == 0 || (*udpListen == "" && *domain == "") || (!udpOnly && *cert == "" && *autocertDir == "") {
-		log.Fatal("need -identity, at least one -user, and (-udp-listen or -domain); -cert/-key or -autocert unless -listen off")
+	// A -users-file path counts as a user source: the file is re-read on
+	// change, so users the panel adds later don't need a restart (an empty
+	// file at boot just means nobody can auth yet).
+	if *identity == "" || (len(users) == 0 && *usersFile == "") || (*udpListen == "" && *domain == "") || (!udpOnly && *cert == "" && *autocertDir == "") {
+		log.Fatal("need -identity, at least one -user or -users-file, and (-udp-listen or -domain); -cert/-key or -autocert unless -listen off")
 	}
 	idKey, err := hex.DecodeString(*identity)
 	if err != nil || len(idKey) != ed25519.PrivateKeySize {
