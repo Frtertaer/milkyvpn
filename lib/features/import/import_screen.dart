@@ -149,52 +149,85 @@ class _ImportScreenState extends State<ImportScreen> {
                 style: MilkyType.label.copyWith(color: c.textFaint),
               ),
               const SizedBox(height: MilkySpace.md),
-              TextField(
-                controller: _ctrl,
-                obscureText: _obscure,
-                enableSuggestions: false,
-                autocorrect: false,
-                keyboardType: TextInputType.url,
-                onChanged: (_) => setState(() => _error = null),
-                decoration: InputDecoration(
-                  hintText: 'https://example.com/s/…  или  pandora://…',
-                  errorText: _error,
-                  errorMaxLines: 4,
-                  suffixIcon: _ctrl.text.isEmpty
-                      ? IconButton(
-                          icon: Icon(
-                            _obscure
-                                ? Icons.visibility_outlined
-                                : Icons.visibility_off_outlined,
-                            size: 18,
-                          ),
-                          tooltip: _obscure ? t.showLink : t.hideLink,
-                          onPressed: () =>
-                              setState(() => _obscure = !_obscure),
+              // maxLines==1 makes the framework prepend a formatter that strips
+              // '\n' on paste (EditableText), which merges a pasted block of
+              // share links into one line. Routing every paste entry point
+              // through _paste writes the clipboard text verbatim — the same
+              // path the 'Вставить из буфера' button takes.
+              Actions(
+                actions: <Type, Action<Intent>>{
+                  PasteTextIntent: CallbackAction<PasteTextIntent>(
+                    onInvoke: (_) {
+                      _paste();
+                      return null;
+                    },
+                  ),
+                },
+                child: TextField(
+                  controller: _ctrl,
+                  obscureText: _obscure,
+                  enableSuggestions: false,
+                  autocorrect: false,
+                  keyboardType: TextInputType.url,
+                  contextMenuBuilder: (context, editableTextState) =>
+                      AdaptiveTextSelectionToolbar.buttonItems(
+                    buttonItems: editableTextState.contextMenuButtonItems
+                        .map(
+                          (item) => item.type == ContextMenuButtonType.paste
+                              ? ContextMenuButtonItem(
+                                  label: item.label,
+                                  type: item.type,
+                                  onPressed: _paste,
+                                )
+                              : item,
                         )
-                      : Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            IconButton(
-                              icon: Icon(
-                                _obscure
-                                    ? Icons.visibility_outlined
-                                    : Icons.visibility_off_outlined,
-                                size: 18,
+                        .toList(),
+                    anchors: editableTextState.contextMenuAnchors,
+                  ),
+                  onChanged: (_) => setState(() => _error = null),
+                  decoration: InputDecoration(
+                    hintText: 'https://example.com/s/…  или  pandora://…',
+                    errorText: _error,
+                    errorMaxLines: 4,
+                    suffixIcon: _ctrl.text.isEmpty
+                        ? IconButton(
+                            icon: Icon(
+                              _obscure
+                                  ? Icons.visibility_outlined
+                                  : Icons.visibility_off_outlined,
+                              size: 18,
+                            ),
+                            tooltip: _obscure ? t.showLink : t.hideLink,
+                            onPressed: () =>
+                                setState(() => _obscure = !_obscure),
+                          )
+                        : Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                icon: Icon(
+                                  _obscure
+                                      ? Icons.visibility_outlined
+                                      : Icons.visibility_off_outlined,
+                                  size: 18,
+                                ),
+                                tooltip: _obscure ? t.showLink : t.hideLink,
+                                onPressed: () =>
+                                    setState(() => _obscure = !_obscure),
                               ),
-                              tooltip: _obscure ? t.showLink : t.hideLink,
-                              onPressed: () =>
-                                  setState(() => _obscure = !_obscure),
-                            ),
-                            IconButton(
-                              icon: const Icon(Icons.close_rounded, size: 18),
-                              onPressed: () => setState(() {
-                                _ctrl.clear();
-                                _error = null;
-                              }),
-                            ),
-                          ],
-                        ),
+                              IconButton(
+                                icon: const Icon(
+                                  Icons.close_rounded,
+                                  size: 18,
+                                ),
+                                onPressed: () => setState(() {
+                                  _ctrl.clear();
+                                  _error = null;
+                                }),
+                              ),
+                            ],
+                          ),
+                  ),
                 ),
               ),
               const SizedBox(height: MilkySpace.md),
