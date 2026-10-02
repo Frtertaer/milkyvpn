@@ -29,6 +29,7 @@ import (
 	"github.com/skip2/go-qrcode"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -122,6 +123,7 @@ func main() {
 	quasar := flag.String("unit-quasar", "kal2-quasar.service", "quasar UDP unit (toggled by the udp-listen switch)")
 	pubOrigin := flag.String("pub-origin", "", "public base URL for the subscription link, e.g. https://kal.example:9443 (empty = request Host)")
 	ops := flag.String("ops-listen", "", "loopback-only ops API addr, e.g. 127.0.0.1:9449 — no auth, never expose externally (used by the tg-bot helper)")
+	releasesDir := flag.String("releases-dir", "", "directory served publicly at /releases/ — release mirror filled by deploy/release-mirror.sh so app updates work when github.com is throttled")
 	flag.Parse()
 
 	if *token == "" {
@@ -172,6 +174,10 @@ func main() {
 	mux.HandleFunc("/api/audit", p.auth(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"events": auditTail(auditPath, auditLimit)})
 	}))
+	if *releasesDir != "" {
+		mux.Handle("/releases/", http.StripPrefix("/releases/",
+			http.FileServer(http.Dir(*releasesDir))))
+	}
 	mux.HandleFunc("/api/totp/status", p.auth(p.totpStatus))
 	mux.HandleFunc("/api/totp/begin", p.auth(p.totpBegin))
 	mux.HandleFunc("/api/totp/enable", p.auth(p.totpEnable))
@@ -341,8 +347,73 @@ type canRec struct {
 	TS      string `json:"ts"`
 	Entry   string `json:"entry"`
 	Carrier string `json:"carrier"`
+	Front   string `json:"front"` // front URL when the probe went through a relay
 	OK      bool   `json:"ok"`
 	Ms      int64  `json:"ms"`
+}
+
+// deadFronts reports front relay URLs the RU canary currently sees dead:
+// >=3 consecutive failed probes for that front (a passing probe resets the
+// streak). Dead fronts are dropped from generated links and stripped out of
+// served subscription links.
+func deadFronts(path string) map[string]bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	streak := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var r struct {
+			Front string `json:"front"`
+			OK    bool   `json:"ok"`
+		}
+		if json.Unmarshal([]byte(line), &r) != nil || r.Front == "" {
+			continue
+		}
+		if r.OK {
+			streak[r.Front] = 0
+		} else {
+			streak[r.Front]++
+		}
+	}
+	dead := map[string]bool{}
+	for fr, n := range streak {
+		if n >= 3 {
+			dead[fr] = true
+		}
+	}
+	return dead
+}
+
+// dropDeadFronts removes dead front= params from a kal2:// link; the direct
+// entry stays so the link degrades to a plain connection, not a dead end.
+func dropDeadFronts(link string, dead map[string]bool) string {
+	if len(dead) == 0 {
+		return link
+	}
+	u, err := url.Parse(link)
+	if err != nil {
+		return link
+	}
+	q := u.Query()
+	var kept []string
+	dropped := false
+	for _, fr := range q["front"] {
+		if dead[fr] {
+			dropped = true
+		} else {
+			kept = append(kept, fr)
+		}
+	}
+	if !dropped {
+		return link
+	}
+	q.Del("front")
+	for _, fr := range kept {
+		q.Add("front", fr)
+	}
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // canSeries is the per-entry trend the history card renders: ordered
@@ -668,7 +739,18 @@ func (p *panel) links(w http.ResponseWriter, r *http.Request) {
 		"links":       p.store.Links,
 		"sub_url":     p.subURL(r),
 		"auto_update": !p.store.SubDisabled,
+		"fronts_dead": frontsDeadList(deadFronts(canaryPath)),
 	})
+}
+
+// frontsDeadList returns dead front URLs in stable order for the links card.
+func frontsDeadList(dead map[string]bool) []string {
+	var out []string
+	for fr := range dead {
+		out = append(out, fr)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func (p *panel) subURL(r *http.Request) string {
@@ -707,6 +789,10 @@ func (p *panel) sub(w http.ResponseWriter, r *http.Request) {
 	if !ok || disabled {
 		http.Error(w, "not found", 404)
 		return
+	}
+	dead := deadFronts(canaryPath)
+	for i := range links {
+		links[i] = dropDeadFronts(links[i], dead)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(strings.Join(links, "\n")))
@@ -775,11 +861,17 @@ func (p *panel) genlink(w http.ResponseWriter, r *http.Request) {
 	if len(in.Addrs) > 1 {
 		q = append(q, "alt="+strings.Join(in.Addrs[1:], ","))
 	}
+	dead := deadFronts(canaryPath)
+	dropped := 0
 	for _, f := range in.Fronts {
+		if dead[f] {
+			dropped++
+			continue
+		}
 		q = append(q, "front="+url.QueryEscape(f))
 	}
 	link := "kal2://" + psk + "@" + primary + "?" + strings.Join(q, "&")
-	writeJSON(w, map[string]string{"link": link})
+	writeJSON(w, map[string]any{"link": link, "fronts_dropped": dropped})
 }
 
 // unitUserPSK pulls the first `-user id=psk` value from the unit's
@@ -1147,25 +1239,36 @@ func (p *panel) opsUsers(w http.ResponseWriter, r *http.Request) {
 		var in struct {
 			ID       string `json:"id"`
 			Disabled bool   `json:"disabled"`
+			Rekey    bool   `json:"rekey"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.ID == "" {
-			http.Error(w, "need {id,disabled}", 400)
+			http.Error(w, "need {id,disabled?|rekey?}", 400)
 			return
 		}
 		p.mu.Lock()
 		found := false
 		for i := range p.store.Users {
-			if p.store.Users[i].ID == in.ID {
-				p.store.Users[i].Disabled = in.Disabled
-				found = true
+			if p.store.Users[i].ID != in.ID {
+				continue
 			}
+			if in.Rekey {
+				p.store.Users[i].PSK = randHex(32)
+				p.store.Users[i].SubToken = randHex(16)
+			} else {
+				p.store.Users[i].Disabled = in.Disabled
+			}
+			found = true
 		}
 		if !found {
 			p.mu.Unlock()
 			http.Error(w, "no such user", 404)
 			return
 		}
-		p.audit(r, "user_disable", fmt.Sprintf("%s=%v (ops)", in.ID, in.Disabled))
+		if in.Rekey {
+			p.audit(r, "user_rekey", fmt.Sprintf("%s (ops)", in.ID))
+		} else {
+			p.audit(r, "user_disable", fmt.Sprintf("%s=%v (ops)", in.ID, in.Disabled))
+		}
 		p.save()
 		p.mu.Unlock()
 		if err := p.ensureUserMode(); err != nil {

@@ -24,9 +24,15 @@ SOCKS=127.0.0.1:13918
 mkdir -p /opt/kal2
 
 # probe <entry-label> <addr> <carrier> [extra client args...]
+# If a -front <url> pair is among the extra args, its URL is echoed as the
+# record's "front" field — the panel's front watchdog keys on it.
 probe() {
   local entry=$1 addr=$2 carrier=$3; shift 3
-  local t0 ok=0 log=/tmp/canary-ru-client.log
+  local t0 ok=0 log=/tmp/canary-ru-client.log front=""
+  local args=("$@")
+  for i in "${!args[@]}"; do
+    [ "${args[$i]}" = "-front" ] && front=${args[$((i+1))]:-}
+  done
   timeout 25 "$CLIENT" -addr "$addr" -sni "$SNI" -pub "$PUB" -psk "$PSK" \
     -carrier "$carrier" -socks "$SOCKS" "$@" >"$log" 2>&1 &
   local pid=$! t0=$(date +%s%3N)
@@ -37,8 +43,9 @@ probe() {
   done
   kill $pid 2>/dev/null; wait $pid 2>/dev/null
   local okb=false; [ $ok -eq 1 ] && okb=true
-  printf '{"ts":"%s","entry":"%s","carrier":"%s","ok":%s,"ms":%d}\n' \
-    "$(date -u +%FT%TZ)" "$entry" "$carrier" "$okb" "$(( $(date +%s%3N) - t0 ))"
+  local fj=""; [ -n "$front" ] && fj=",\"front\":\"$front\""
+  printf '{"ts":"%s","entry":"%s","carrier":"%s"%s,"ok":%s,"ms":%d}\n' \
+    "$(date -u +%FT%TZ)" "$entry" "$carrier" "$fj" "$okb" "$(( $(date +%s%3N) - t0 ))"
 }
 
 {

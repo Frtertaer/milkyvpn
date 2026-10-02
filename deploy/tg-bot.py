@@ -16,9 +16,13 @@ Commands (in the allowed chat):
     /status    units + listeners + panel/tunnel probes
     /users     user table: state, month traffic, sessions, online
     /disable id /enable id   flip a user via the panel ops API
+    /rekey id                new PSK + sub token for one user
     /rotate_all              new PSK for every enabled user (sub URLs survive)
+    /backup                  send the newest backup tarball as a document
+    /restart unit            restart a whitelisted systemd unit
     /help
 """
+import glob
 import json
 import os
 import re
@@ -31,11 +35,16 @@ import urllib.request
 BASE = "/etc/kal2"
 STATE = os.path.join(BASE, "tg-bot-state")
 STATS = os.path.join(BASE, "stats.jsonl")
+AUDIT = os.path.join(BASE, "audit.jsonl")
+BACKUPS = "/root/backups"
 OPS = "http://127.0.0.1:9449"
 PANEL_URL = "https://panel.mergescribe.dev/"
 
 SPIKE_MIN_BYTES = 500 * 1024 * 1024   # never alert below 500MB/day
 SPIKE_FACTOR = 3.0                    # and >3x the user's 7-day median
+BF_THROTTLE = 1800                    # one bruteforce alert per IP per 30min
+RESTART_OK = {"kal2", "kal2-quasar", "kal2-panel", "kal2-tgbot",
+              "kal2-panel-staging", "cloudflared"}
 
 
 def read(name):
@@ -60,6 +69,23 @@ def send(text):
         call("sendMessage", chat_id=CHAT, text=text, disable_web_page_preview=True)
     except Exception as e:
         sys.stderr.write("send failed: %s\n" % e)
+
+
+def send_doc(path, caption=""):
+    """POST a local file as a Telegram document (sendDocument, multipart)."""
+    bound = "----kal2bot%d" % int(time.time() * 1000)
+    fname = os.path.basename(path)
+    with open(path, "rb") as f:
+        blob = f.read()
+    body = b"".join([
+        b"--" + bound.encode() + b'\r\nContent-Disposition: form-data; name="chat_id"\r\n\r\n' + CHAT.encode() + b"\r\n",
+        b"--" + bound.encode() + b'\r\nContent-Disposition: form-data; name="caption"\r\n\r\n' + caption.encode() + b"\r\n",
+        b"--" + bound.encode() + b'\r\nContent-Disposition: form-data; name="document"; filename="' + fname.encode() + b'"\r\nContent-Type: application/gzip\r\n\r\n' + blob + b"\r\n",
+        b"--" + bound.encode() + b"--\r\n",
+    ])
+    req = urllib.request.Request(API + "sendDocument", data=body)
+    req.add_header("Content-Type", "multipart/form-data; boundary=%s" % bound)
+    urllib.request.urlopen(req, timeout=60).read()
 
 
 def state_get(name, default):
@@ -212,10 +238,44 @@ def cmd_rotate_all():
         return "Ошибка: %s" % e
 
 
+def cmd_rekey(uid):
+    try:
+        ops("/ops/users", {"id": uid, "rekey": True})
+        return ("%s: новый PSK и новая ссылка подписки — старые ключи мертвы, "
+                "выдай подписку заново" % uid)
+    except urllib.error.HTTPError as e:
+        return "Ошибка: %s" % e.read().decode()[:80]
+    except Exception as e:
+        return "Ошибка: %s" % e
+
+
+def cmd_backup():
+    files = sorted(glob.glob(os.path.join(BACKUPS, "kal2-backup-*.tar.gz")))
+    if not files:
+        return "Бэкапов нет (backup-kal2.sh ещё не отработал)."
+    newest = files[-1]
+    send_doc(newest, caption="Бэкап %s (%s)" % (
+        os.path.basename(newest),
+        time.strftime("%Y-%m-%d %H:%M", time.gmtime(os.path.getmtime(newest)))))
+    return "Отправил %s" % os.path.basename(newest)
+
+
+def cmd_restart(unit):
+    if unit not in RESTART_OK:
+        return "Разрешено только: " + ", ".join(sorted(RESTART_OK))
+    subprocess.run(["systemctl", "restart", unit], timeout=20)
+    time.sleep(1)
+    st = sh("systemctl is-active %s" % unit).strip()
+    return "%s: %s" % (unit, st)
+
+
 HELP = ("Команды:\n/status — юниты, слушатели, туннель, канарейка\n"
         "/users — юзеры: состояние, трафик месяца, онлайн\n"
         "/disable <id> /enable <id> — выкл/вкл юзера без перезапуска\n"
+        "/rekey <id> — новый PSK+ссылка одному юзеру\n"
         "/rotate_all — перевыпустить PSK всем активным (ссылки подписок те же)\n"
+        "/backup — прислать свежий бэкап файлом\n"
+        "/restart <unit> — рестарт kal2/kal2-quasar/kal2-panel/kal2-tgbot/cloudflared\n"
         "/help — это сообщение")
 
 
@@ -233,6 +293,12 @@ def handle(text):
         return cmd_disable(arg, False)
     if cmd == "rotate_all":
         return cmd_rotate_all()
+    if cmd == "rekey" and re.match(r"^[a-z0-9_-]{1,32}$", arg):
+        return cmd_rekey(arg)
+    if cmd == "backup":
+        return cmd_backup()
+    if cmd == "restart" and arg:
+        return cmd_restart(arg)
     return HELP
 
 
@@ -280,6 +346,38 @@ def check_alerts():
     state_put("seen_users", sorted(seen))
     state_put("daily", {u: {d: b for d, b in days.items() if d > "0000"} for u, days in daily.items()})
     state_put("spike_alerted", sorted(a for a in alerted if a.endswith(today)))
+    check_audit()
+
+
+def check_audit():
+    """Tail audit.jsonl for login_fail events — bruteforce early warning.
+    One alert per source IP per BF_THROTTLE seconds."""
+    off = state_get("audit_off", {"pos": 0})
+    try:
+        size = os.path.getsize(AUDIT)
+    except FileNotFoundError:
+        return
+    if off["pos"] > size:  # rotated
+        off["pos"] = 0
+    last = state_get("bf_last", {})
+    now = time.time()
+    with open(AUDIT) as f:
+        f.seek(off["pos"])
+        for line in f:
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            if e.get("action") != "login_fail":
+                continue
+            ip = e.get("ip", "?")
+            if now - last.get(ip, 0) < BF_THROTTLE:
+                continue
+            last[ip] = now
+            send("🚨 Подбор пароля к панели: login_fail с ip=%s" % ip)
+        off["pos"] = f.tell()
+    state_put("audit_off", off)
+    state_put("bf_last", last)
 
 
 def main():
