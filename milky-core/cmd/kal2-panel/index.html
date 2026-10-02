@@ -416,7 +416,7 @@ async function userDel(id){
   }catch(e){ toast('Ошибка: '+e.message,false); }
 }
 const FLAG_LABELS={ 'front-listen':'Фронтинг (plain-HTTP для релеев)', 'quic2-listen':'QUICv2 listener',
-  'rtc-listen':'rtc (WebRTC-облик) UDP', 'udp-listen':'quasar UDP/KCP', 'decoy':'Decoy-сайт',
+  'rtc-listen':'rtc (WebRTC-облик) UDP', 'udp-listen':'quasar UDP/KCP (legacy)', 'decoy':'Decoy-сайт',
   'steal':'Steal fallback', 'echkeys':'ECH ключи', 'egress-family':'Семейство исходящих',
   'upstream':'Upstream SOCKS5' };
 function renderCfg(){

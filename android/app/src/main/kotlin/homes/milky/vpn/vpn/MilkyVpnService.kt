@@ -14,6 +14,7 @@ import android.net.NetworkRequest
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
+import android.telephony.TelephonyManager
 import androidx.core.app.NotificationCompat
 import go.Seq
 import homes.milky.vpn.MainActivity
@@ -554,7 +555,13 @@ class MilkyVpnService : VpnService() {
         }
     }
 
-    /** "wifi"/"mobile"/"other" — key for the core's per-network carrier memory. */
+    /**
+     * "wifi" / "mobile:<mccmnc>" / "other" — key for the core's per-network
+     * carrier memory. Mobile networks get the operator's MCC-MNC appended:
+     * operators throttle UDP/QUIC differently, so carrier memory learned on
+     * one MNO must not leak into another's key. simOperator/networkOperator
+     * need no permission.
+     */
     private fun currentNetClass(): String {
         for (n in connectivity.allNetworks) {
             val c = connectivity.getNetworkCapabilities(n) ?: continue
@@ -562,7 +569,12 @@ class MilkyVpnService : VpnService() {
                 c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
             return when {
                 c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
-                c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "mobile"
+                c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> {
+                    val tm = getSystemService(TelephonyManager::class.java)
+                    val op = tm?.simOperator?.takeIf { it.isNotBlank() }
+                        ?: tm?.networkOperator?.takeIf { it.isNotBlank() }
+                    "mobile:${op ?: ""}"
+                }
                 else -> "other"
             }
         }
