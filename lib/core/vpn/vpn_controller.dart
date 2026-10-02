@@ -44,16 +44,10 @@ class ProfileSelector {
 
     final all = supported.where((p) => p.kind != ProfileKind.other).toList();
     Iterable<VpnProfile> pool;
-    switch (choice) {
-      case LocationChoice.finland:
-        pool = _preferLocation(all, ServerLocation.finland);
-        break;
-      case LocationChoice.usa:
-        pool = _preferLocation(all, ServerLocation.usa);
-        break;
-      case LocationChoice.auto:
-        pool = all;
-        break;
+    if (choice == locationAuto) {
+      pool = all;
+    } else {
+      pool = _preferLocation(all, choice);
     }
     final families = <ProfileKind, List<VpnProfile>>{};
     for (final profile in pool) {
@@ -74,7 +68,7 @@ class ProfileSelector {
         final family = families[kind]!;
         if (family.isEmpty) continue;
         var candidateIndex = 0;
-        if (choice == LocationChoice.auto) {
+        if (choice == locationAuto) {
           var lowestUse = locationUse[family.first.location] ?? 0;
           for (var i = 1; i < family.length; i++) {
             final use = locationUse[family[i].location] ?? 0;
@@ -104,11 +98,11 @@ class ProfileSelector {
   /// the choice and must never dead-end a single-profile subscription.
   static List<VpnProfile> _preferLocation(
     List<VpnProfile> profiles,
-    ServerLocation location,
+    String location,
   ) {
     return [
       ...profiles.where((p) => p.location == location),
-      ...profiles.where((p) => p.location == ServerLocation.unknown),
+      ...profiles.where((p) => p.location == null),
     ];
   }
 }
@@ -179,10 +173,11 @@ class VpnController extends ChangeNotifier {
   VpnProfile? get activeProfile => _activeProfile;
 
   /// Candidate currently being verified. Only its public country is exposed to the UI.
-  ServerLocation? get attemptingLocation => _attemptingProfile?.location;
+  /// ISO country code of the profile currently being attempted, or null.
+  ServerLocation get attemptingLocation => _attemptingProfile?.location;
 
-  /// Public, user-visible location of the connected server.
-  ServerLocation? get activeLocation {
+  /// Public, user-visible location of the connected server (ISO code or null).
+  ServerLocation get activeLocation {
     final profile = _activeProfile;
     if (profile != null) return profile.location;
     final remark = _native.profileRemark;
@@ -340,7 +335,7 @@ class VpnController extends ChangeNotifier {
                           x.id != pinned!.id && x.location == pinned.location,
                     )
                     .toList(),
-                LocationChoice.auto,
+                locationAuto,
                 maxAttempts: maxAttempts - 1,
               )
               .toList();

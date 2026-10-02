@@ -377,7 +377,7 @@ class SubscriptionParser {
       _nz(profile.cipher) ?? '',
       _nz(profile.plugin) ?? '',
       remark,
-      VpnProfile.locationFromRemark(remark).name,
+      VpnProfile.locationFromRemark(remark) ?? 'unknown',
       if (kal2Extras.any((e) => e.isNotEmpty)) ...kal2Extras,
     ]);
   }

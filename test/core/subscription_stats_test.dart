@@ -417,8 +417,8 @@ void main() {
               '\u0421\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u043d\u044b\u0435 \u0428\u0442\u0430\u0442\u044b',
         ),
       );
-      expect(finland?.location, ServerLocation.finland);
-      expect(usa?.location, ServerLocation.usa);
+      expect(finland?.location, 'fi');
+      expect(usa?.location, 'us');
     });
 
     test('diagnostic remark strips profile credential material', () {

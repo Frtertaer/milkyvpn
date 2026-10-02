@@ -60,11 +60,11 @@ void main() {
       final r = parser.parse(fixture('subscription_16_fake.txt'));
       expect(r.malformedLines, 0);
       expect(
-        r.profiles.where((p) => p.location == ServerLocation.finland).length,
+        r.profiles.where((p) => p.location == 'fi').length,
         9,
       );
       expect(
-        r.profiles.where((p) => p.location == ServerLocation.usa).length,
+        r.profiles.where((p) => p.location == 'us').length,
         7,
       );
       expect(
@@ -632,6 +632,11 @@ proxies:
         policy.validate('https://sub.milky.homes/s/AbCdEf123456')!.toString(),
         'https://sub.milky.homes/s/AbCdEf123456',
       );
+      // A trailing #name fragment is a client-side label — stripped, not rejected.
+      expect(
+        policy.validate('https://sub.example.com/s/tok#MilkyVPN-auto')!.toString(),
+        'https://sub.example.com/s/tok',
+      );
     });
     test(
       'rejects localhost, private ip, non-http schemes, userinfo, tricks',
@@ -653,7 +658,6 @@ proxies:
           'javascript:alert(1)',
           'ftp://host.example/feed',
           'https://user@sub.milky.homes/s/AbCdEf123456',
-          'https://sub.milky.homes/s/AbCdEf123456#f',
           'https://sub.milky.homes/s/a b c',
           '',
         ]) {
@@ -850,7 +854,7 @@ proxies:
     test('auto covers transport families, bounded, filters by location', () {
       final all = parser.parse(fixture('subscription_16_fake.txt')).profiles;
       const sel = ProfileSelector();
-      final auto = sel.candidates(all, LocationChoice.auto);
+      final auto = sel.candidates(all, locationAuto);
       expect(auto.length, 4);
       expect(auto.map((p) => p.kind), [
         ProfileKind.vlessXhttp,
@@ -859,22 +863,22 @@ proxies:
         ProfileKind.vlessRealityTcp,
       ]);
       expect(auto.map((p) => p.location), [
-        ServerLocation.finland,
-        ServerLocation.usa,
-        ServerLocation.finland,
-        ServerLocation.usa,
+        'fi',
+        'us',
+        'fi',
+        'us',
       ]);
-      final us = sel.candidates(all, LocationChoice.usa, maxAttempts: 10);
+      final us = sel.candidates(all, 'us', maxAttempts: 10);
       expect(us.length, 7);
-      expect(us.every((p) => p.location == ServerLocation.usa), isTrue);
+      expect(us.every((p) => p.location == 'us'), isTrue);
       expect(
-        sel.candidates(all, LocationChoice.finland, maxAttempts: 10).length,
+        sel.candidates(all, 'fi', maxAttempts: 10).length,
         9,
       );
       expect(
         sel.candidates(
           all.where((p) => p.kind == ProfileKind.other).toList(),
-          LocationChoice.auto,
+          locationAuto,
         ),
         isEmpty,
       );

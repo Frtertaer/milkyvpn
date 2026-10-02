@@ -8,12 +8,14 @@ void main() {
   VpnProfile profile(
     String id,
     ProfileKind kind, {
-    ServerLocation location = ServerLocation.finland,
+    ServerLocation location = 'fi',
   }) {
     final country = switch (location) {
-      ServerLocation.finland => 'Finland',
-      ServerLocation.usa => 'USA',
-      ServerLocation.unknown => 'Unknown',
+      'fi' => 'Finland',
+      'us' => 'USA',
+      null => 'Unknown',
+      // Any other code round-trips through the remark as an ISO token.
+      _ => location.toUpperCase(),
     };
     return VpnProfile(
       id: id,
@@ -91,7 +93,7 @@ void main() {
           reason: 'Control reproduces the previous four-attempt starvation.',
         );
 
-        final selected = selector.candidates(profiles, LocationChoice.auto);
+        final selected = selector.candidates(profiles, locationAuto);
         expect(selected.map((p) => p.kind), [
           ProfileKind.vlessXhttp,
           ProfileKind.hysteria2,
@@ -113,7 +115,7 @@ void main() {
 
       expect(
         selector
-            .candidates(profiles, LocationChoice.auto, maxAttempts: 6)
+            .candidates(profiles, locationAuto, maxAttempts: 6)
             .map((p) => p.id),
         ['xhttp-1', 'ws-1', 'reality-1', 'xhttp-2', 'ws-2', 'reality-2'],
       );
@@ -128,22 +130,22 @@ void main() {
         profile(
           'us-xhttp',
           ProfileKind.vlessXhttp,
-          location: ServerLocation.usa,
+          location: 'us',
         ),
         profile(
           'us-hy2',
           ProfileKind.hysteria2,
-          location: ServerLocation.usa,
+          location: 'us',
         ),
         profile(
           'us-ws',
           ProfileKind.vlessWsTls,
-          location: ServerLocation.usa,
+          location: 'us',
         ),
         profile(
           'us-reality',
           ProfileKind.vlessRealityTcp,
-          location: ServerLocation.usa,
+          location: 'us',
         ),
       ];
 
@@ -155,13 +157,13 @@ void main() {
       ];
       expect(
         priorFamilyRound.every(
-          (p) => p.location == ServerLocation.finland,
+          (p) => p.location == 'fi',
         ),
         isTrue,
         reason: 'Control reproduces the previous Auto location starvation.',
       );
 
-      final selected = selector.candidates(profiles, LocationChoice.auto);
+      final selected = selector.candidates(profiles, locationAuto);
       expect(
         selected.map((p) => p.id),
         ['fi-xhttp', 'us-hy2', 'fi-ws', 'us-reality'],
@@ -169,10 +171,10 @@ void main() {
       expect(
         selected.map((p) => p.location),
         [
-          ServerLocation.finland,
-          ServerLocation.usa,
-          ServerLocation.finland,
-          ServerLocation.usa,
+          'fi',
+          'us',
+          'fi',
+          'us',
         ],
       );
     });
@@ -188,7 +190,7 @@ void main() {
 
       final selected = selector.candidates(
         profiles,
-        LocationChoice.auto,
+        locationAuto,
         maxAttempts: 99,
       );
       expect(selected.map((p) => p.id).toSet(), {
@@ -209,7 +211,7 @@ void main() {
 
       expect(
         selector
-            .candidates(profiles, LocationChoice.auto, maxAttempts: 3)
+            .candidates(profiles, locationAuto, maxAttempts: 3)
             .map((p) => p.id),
         ['hy2-1', 'reality-1', 'hy2-2'],
       );
@@ -217,21 +219,21 @@ void main() {
 
     test('auto handles empty input, unknown locations, and missing families', () {
       expect(
-        selector.candidates(const [], LocationChoice.auto),
+        selector.candidates(const [], locationAuto),
         isEmpty,
       );
       final profiles = [
         profile(
           'unknown-xhttp',
           ProfileKind.vlessXhttp,
-          location: ServerLocation.unknown,
+          location: null,
         ),
         profile('fi-reality', ProfileKind.vlessRealityTcp),
       ];
 
       expect(
         selector
-            .candidates(profiles, LocationChoice.auto)
+            .candidates(profiles, locationAuto)
             .map((p) => p.id),
         ['unknown-xhttp', 'fi-reality'],
       );
@@ -243,12 +245,12 @@ void main() {
         profile(
           'us-xhttp',
           ProfileKind.vlessXhttp,
-          location: ServerLocation.usa,
+          location: 'us',
         ),
         profile(
           'unknown-ws',
           ProfileKind.vlessWsTls,
-          location: ServerLocation.unknown,
+          location: null,
         ),
       ];
 
@@ -257,19 +259,19 @@ void main() {
       // chosen) — strictness orders, it does not exclude them.
       expect(
         selector
-            .candidates(profiles, LocationChoice.finland, maxAttempts: 9)
+            .candidates(profiles, 'fi', maxAttempts: 9)
             .map((p) => p.id),
         ['fi-xhttp', 'unknown-ws'],
       );
       expect(
         selector
-            .candidates(profiles, LocationChoice.usa, maxAttempts: 9)
+            .candidates(profiles, 'us', maxAttempts: 9)
             .map((p) => p.id),
         ['us-xhttp', 'unknown-ws'],
       );
       expect(
         selector
-            .candidates(profiles, LocationChoice.auto, maxAttempts: 9)
+            .candidates(profiles, locationAuto, maxAttempts: 9)
             .map((p) => p.id)
             .toSet(),
         {'fi-xhttp', 'us-xhttp', 'unknown-ws'},
@@ -285,14 +287,14 @@ void main() {
       final originalIds = profiles.map((p) => p.id).toList();
 
       expect(
-        selector.candidates(profiles, LocationChoice.auto, maxAttempts: 0),
+        selector.candidates(profiles, locationAuto, maxAttempts: 0),
         isEmpty,
       );
       expect(
-        selector.candidates(profiles, LocationChoice.auto, maxAttempts: -1),
+        selector.candidates(profiles, locationAuto, maxAttempts: -1),
         isEmpty,
       );
-      selector.candidates(profiles, LocationChoice.auto, maxAttempts: 3);
+      selector.candidates(profiles, locationAuto, maxAttempts: 3);
       expect(profiles.map((p) => p.id), originalIds);
     });
   });

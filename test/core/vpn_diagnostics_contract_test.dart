@@ -57,7 +57,7 @@ void main() {
       final controller = VpnController(bridge: bridge, maxAttempts: 1);
 
       expect(
-        await controller.connect([p('fi')], LocationChoice.finland),
+        await controller.connect([p('fi')], 'fi'),
         isFalse,
       );
       expect(bridge.disconnectCalls, 1);

@@ -131,7 +131,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(vpn.isConnected, isTrue);
-      expect(vpn.activeLocation, ServerLocation.usa);
+      expect(vpn.activeLocation, 'us');
       expect(find.text('00:00:00'), findsOneWidget);
       vpn.dispose();
       await tester.pumpWidget(const SizedBox());

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import '../core/subscription/country_codes.dart';
 import '../core/subscription/vpn_profile.dart';
 
 /// Non-secret preferences only (theme, onboarding flag, location choice, auto-connect).
@@ -15,8 +16,21 @@ class AppSettings extends ChangeNotifier {
   bool get onboardingDone => _prefs.getBool('onboarding_done') ?? false;
   ThemeMode get themeMode =>
       _enumValue(ThemeMode.values, _prefs.get('theme_mode'));
-  LocationChoice get location =>
-      _enumValue(LocationChoice.values, _prefs.get('location'));
+  /// 'auto' or an ISO country code. The pre-country-code build stored the
+  /// picker enum index — map it once ({0:auto, 1:fi, 2:us}) then rewrite.
+  /// Junk strings (removed enum names etc.) fall back to auto.
+  LocationChoice get location {
+    final raw = _prefs.get('location');
+    if (raw is String && raw.isNotEmpty && isValidLocationCode(raw)) {
+      return raw;
+    }
+    if (raw is int) {
+      final legacy = switch (raw) { 1 => 'fi', 2 => 'us', _ => locationAuto };
+      _prefs.setString('location', legacy);
+      return legacy;
+    }
+    return locationAuto;
+  }
 
   static T _enumValue<T>(List<T> values, Object? index) =>
       index is int && index >= 0 && index < values.length
@@ -39,7 +53,7 @@ class AppSettings extends ChangeNotifier {
   }
 
   Future<void> setLocation(LocationChoice c) async {
-    await _prefs.setInt('location', c.index);
+    await _prefs.setString('location', c);
     notifyListeners();
   }
 

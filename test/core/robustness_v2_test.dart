@@ -47,7 +47,7 @@ void main() {
         });
         final settings = await AppSettings.load();
         expect(settings.themeMode, ThemeMode.system);
-        expect(settings.location, LocationChoice.auto);
+        expect(settings.location, locationAuto);
       }
     },
   );
@@ -79,7 +79,7 @@ void main() {
       bridge: bridge,
       attemptTimeout: const Duration(seconds: 2),
     );
-    final pending = controller.connect([p('a'), p('b')], LocationChoice.auto);
+    final pending = controller.connect([p('a'), p('b')], locationAuto);
     await Future<void>.delayed(const Duration(milliseconds: 10));
     bridge.emit(
       const VpnSnapshot(
@@ -93,7 +93,7 @@ void main() {
     bridge.emit(const VpnSnapshot(state: VpnState.connected, profileId: 'a'));
     await Future<void>.delayed(const Duration(milliseconds: 10));
     expect(controller.isConnected, isFalse);
-    expect(controller.attemptingLocation, ServerLocation.finland);
+    expect(controller.attemptingLocation, 'fi');
     bridge.emit(const VpnSnapshot(state: VpnState.connected, profileId: 'b'));
     expect(await pending, isTrue);
     expect(controller.activeProfile!.id, 'b');
@@ -108,7 +108,7 @@ void main() {
         bridge: bridge,
         attemptTimeout: const Duration(seconds: 2),
       );
-      final pending = controller.connect([p('a'), p('b')], LocationChoice.auto);
+      final pending = controller.connect([p('a'), p('b')], locationAuto);
       await Future<void>.delayed(const Duration(milliseconds: 10));
       await controller.disconnect();
       bridge.emit(const VpnSnapshot(state: VpnState.connected, profileId: 'a'));
