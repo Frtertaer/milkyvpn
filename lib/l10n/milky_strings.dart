@@ -121,6 +121,12 @@ class S {
   String get noExpiry => t('Бессрочно', 'No expiry');
   String get profiles => t('Профили', 'Profiles');
   String get profileDead => t('мёртв', 'dead');
+  String get autoPick =>
+      t('Авто (самый быстрый)', 'Auto (fastest)');
+  String get autoPickHint => t(
+        'Выбирает профиль с наименьшей задержкой',
+        'Picks the lowest-latency profile',
+      );
   String get pinnedFellBack => t(
     'Закреплённый профиль недоступен — подключили резервный.',
     'Pinned profile unreachable — connected via fallback.',

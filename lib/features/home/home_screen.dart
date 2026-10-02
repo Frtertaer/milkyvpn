@@ -622,6 +622,55 @@ class _ProfilePickListState extends State<_ProfilePickList> {
     return c.danger;
   }
 
+  /// "Авто" row at the top of the list: pins whichever profile currently
+  /// probes fastest — the GeoIP notion collapses to latency because every
+  /// entry sits behind the same egress country anyway.
+  Widget _autoPickRow(List<VpnProfile> items, MilkyColors c, S t) {
+    String? bestId;
+    var bestMs = 1 << 30;
+    var measured = false;
+    for (final p in items) {
+      final ms = _health[p.id]?.ms;
+      if (ms != null && ms < bestMs) {
+        bestMs = ms;
+        bestId = p.id;
+        measured = true;
+      }
+    }
+    final ready = _health.isNotEmpty;
+    final subtitle =
+        !ready ? '…' : (measured ? '${t.autoPickHint} · $bestMs ms' : t.autoPickHint);
+    return Material(
+      color: c.accent.withValues(alpha: 0.08),
+      borderRadius: BorderRadius.circular(MilkyRadius.control),
+      child: InkWell(
+        borderRadius: BorderRadius.circular(MilkyRadius.control),
+        onTap: bestId == null ? null : () => widget.onPick(bestId!),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
+          child: Row(
+            children: [
+              Icon(Icons.bolt_rounded, size: 18, color: c.accent),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(t.autoPick, style: MilkyType.body),
+                    Text(
+                      subtitle,
+                      style: MilkyType.label.copyWith(color: c.textMuted),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final c = context.milky;
@@ -639,10 +688,11 @@ class _ProfilePickListState extends State<_ProfilePickList> {
           constraints: const BoxConstraints(maxHeight: 280),
           child: ListView.separated(
             shrinkWrap: true,
-            itemCount: items.length,
+            itemCount: items.length + 1,
             separatorBuilder: (_, __) => const SizedBox(height: 6),
             itemBuilder: (ctx, i) {
-              final p = items[i];
+              if (i == 0) return _autoPickRow(items, c, t);
+              final p = items[i - 1];
               final sel = p.id == widget.selectedId;
               final label = p.redactedRemark.trim().isEmpty
                   ? '${p.address}:${p.port}'

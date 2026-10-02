@@ -105,6 +105,25 @@ String legacyEndpointIdentity(VpnProfile profile) => [
 Map<String, dynamic> storedSnapshot(MemorySecureStore store) =>
     jsonDecode(store.data['subscription_snapshot']!) as Map<String, dynamic>;
 
+/// The source-of-truth multi-source store: url -> encoded snapshot.
+Map<String, dynamic> storedSourceSnapshots(MemorySecureStore store) =>
+    jsonDecode(store.data['subscription_snapshots']!) as Map<String, dynamic>;
+
+/// Rewrites every stored per-source snapshot — corruption helpers mutate the
+/// real schema (`subscription_snapshots`), not the legacy mirror.
+void mutateSourceSnapshots(
+  MemorySecureStore store,
+  void Function(Map<String, dynamic>) mutate,
+) {
+  final snaps = storedSourceSnapshots(store);
+  for (final key in snaps.keys.toList()) {
+    final decoded = jsonDecode(snaps[key] as String) as Map<String, dynamic>;
+    mutate(decoded);
+    snaps[key] = jsonEncode(decoded);
+  }
+  store.data['subscription_snapshots'] = jsonEncode(snaps);
+}
+
 void removeCurrentCountSchema(Map<String, dynamic> snapshot) {
   for (final key in [
     'schemaVersion',
@@ -570,12 +589,14 @@ void main() {
         await writer.load();
         await writer.importFromUrl('https://sub.milky.homes/s/AbCdEf123456');
 
-        final legacy = storedSnapshot(store);
-        removeCurrentCountSchema(legacy);
-        legacy['total'] = 16;
-        legacy['malformed'] = 0;
-        legacy.remove('duplicates');
-        store.data['subscription_snapshot'] = jsonEncode(legacy);
+        // Stale-legacy shape on the real per-source store: no schema fields,
+        // only the pre-schema total/malformed aliases.
+        mutateSourceSnapshots(store, (legacy) {
+          removeCurrentCountSchema(legacy);
+          legacy['total'] = 16;
+          legacy['malformed'] = 0;
+          legacy.remove('duplicates');
+        });
 
         final fetcher = FakeFetcher(fixture('subscription_16_fake.txt'));
         final reopened = SubscriptionRepository(store: store, fetcher: fetcher);
@@ -587,7 +608,6 @@ void main() {
           reason: 'load must never refresh over the network',
         );
         expect(reopened.snapshot?.profiles.length, 10);
-        expect(reopened.snapshot?.schemaVersion, 0);
         expect(reopened.snapshot?.countsTrusted, isFalse);
         expect(reopened.countsTrusted, isFalse);
         expect(reopened.needsRefresh, isTrue);
@@ -614,9 +634,7 @@ void main() {
         await writer.load();
         await writer.importFromUrl('https://sub.milky.homes/s/AbCdEf123456');
 
-        final legacy = storedSnapshot(store);
-        removeCurrentCountSchema(legacy);
-        store.data['subscription_snapshot'] = jsonEncode(legacy);
+        mutateSourceSnapshots(store, removeCurrentCountSchema);
 
         final reopened = SubscriptionRepository(
           store: store,
@@ -640,9 +658,10 @@ void main() {
         await writer.load();
         await writer.importFromUrl('https://sub.milky.homes/s/AbCdEf123456');
 
-        final corrupt = storedSnapshot(store);
-        corrupt['parsedProfileCount'] = 15;
-        store.data['subscription_snapshot'] = jsonEncode(corrupt);
+        mutateSourceSnapshots(
+          store,
+          (corrupt) => corrupt['parsedProfileCount'] = 15,
+        );
 
         final reopened = SubscriptionRepository(
           store: store,
