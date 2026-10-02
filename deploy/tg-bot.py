@@ -114,7 +114,7 @@ def cmd_status():
     try:
         import ssl
         ctx = ssl.create_default_context()
-        req = urllib.request.Request(PANEL_URL, method="HEAD")
+        req = urllib.request.Request(PANEL_URL)
         code = urllib.request.urlopen(req, timeout=8, context=ctx).status
         lines.append("tunnel panel.mergescribe.dev: %d" % code)
     except Exception as e:
