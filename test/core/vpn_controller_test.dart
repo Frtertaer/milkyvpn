@@ -87,6 +87,18 @@ class FakeBridge implements VpnBridge {
   @override
   Future<bool> installUpdate(String localPath) async => false;
   @override
+  Future<List<InstalledApp>> listInstalledApps() async => const [];
+  @override
+  Future<SplitAppsConfig> splitApps() async => const SplitAppsConfig();
+
+  @override
+  Future<String> privateDnsMode() async => '';
+
+  @override
+  Future<String> privateDnsSpecifier() async => '';
+  @override
+  Future<void> setSplitApps(SplitAppsConfig config) async {}
+  @override
   Stream<String> get links => const Stream.empty();
 }
 
@@ -180,8 +192,10 @@ void main() {
     );
     expect(b.connectCalls, ['a', 'b']);
     expect(c.lastErrorClass, 'core_dead');
-    expect(MilkyError.fromCode(c.lastErrorClass).diagnosticsCode,
-        'CORE_UNRESPONSIVE');
+    expect(
+      MilkyError.fromCode(c.lastErrorClass).diagnosticsCode,
+      'CORE_UNRESPONSIVE',
+    );
   });
 
   test('failed sweep with silent teardown does not wedge UI busy', () async {
@@ -202,45 +216,52 @@ void main() {
     expect(c.lastErrorClass, isNotNull);
   });
 
-  test('pinned-but-unsupported profile fails loudly, no silent fallback',
-      () async {
-    // Regression: pinning an unsupported profile used to silently sweep
-    // another one — a VPN exiting through an unpicked country with no
-    // user-visible signal.
-    final b = FakeBridge()..unsupportedIds = {'rtc'};
-    final c = VpnController(
-      bridge: b,
-      attemptTimeout: const Duration(seconds: 1),
-    );
-    expect(
-      await c.connect([p('rtc'), p('b')], LocationChoice.auto,
-          profileId: 'rtc'),
-      isFalse,
-    );
-    expect(b.connectCalls, isEmpty);
-    expect(c.lastErrorClass, 'unsupported_profile');
-  });
+  test(
+    'pinned-but-unsupported profile fails loudly, no silent fallback',
+    () async {
+      // Regression: pinning an unsupported profile used to silently sweep
+      // another one — a VPN exiting through an unpicked country with no
+      // user-visible signal.
+      final b = FakeBridge()..unsupportedIds = {'rtc'};
+      final c = VpnController(
+        bridge: b,
+        attemptTimeout: const Duration(seconds: 1),
+      );
+      expect(
+        await c.connect(
+          [p('rtc'), p('b')],
+          LocationChoice.auto,
+          profileId: 'rtc',
+        ),
+        isFalse,
+      );
+      expect(b.connectCalls, isEmpty);
+      expect(c.lastErrorClass, 'unsupported_profile');
+    },
+  );
 
-  test('dead pin falls back within same location, sets pinnedFellBack',
-      () async {
-    final b = FakeBridge()..failIds = {'a'};
-    final c = VpnController(
-      bridge: b,
-      attemptTimeout: const Duration(seconds: 1),
-    );
-    expect(
-      await c.connect(
-        [p('a'), p('b'), p('c', remark: 'USA-1')],
-        LocationChoice.auto,
-        profileId: 'a',
-      ),
-      isTrue,
-    );
-    // a failed -> same-location b served; usa profile c never tried.
-    expect(b.connectCalls, ['a', 'b']);
-    expect(c.pinnedFellBack, isTrue);
-    expect(c.isConnected, isTrue);
-  });
+  test(
+    'dead pin falls back within same location, sets pinnedFellBack',
+    () async {
+      final b = FakeBridge()..failIds = {'a'};
+      final c = VpnController(
+        bridge: b,
+        attemptTimeout: const Duration(seconds: 1),
+      );
+      expect(
+        await c.connect(
+          [p('a'), p('b'), p('c', remark: 'USA-1')],
+          LocationChoice.auto,
+          profileId: 'a',
+        ),
+        isTrue,
+      );
+      // a failed -> same-location b served; usa profile c never tried.
+      expect(b.connectCalls, ['a', 'b']);
+      expect(c.pinnedFellBack, isTrue);
+      expect(c.isConnected, isTrue);
+    },
+  );
 
   test('live pin connects directly, pinnedFellBack stays false', () async {
     final b = FakeBridge();
@@ -249,37 +270,35 @@ void main() {
       attemptTimeout: const Duration(seconds: 1),
     );
     expect(
-      await c.connect(
-        [p('a'), p('b')],
-        LocationChoice.auto,
-        profileId: 'a',
-      ),
+      await c.connect([p('a'), p('b')], LocationChoice.auto, profileId: 'a'),
       isTrue,
     );
     expect(b.connectCalls, ['a']);
     expect(c.pinnedFellBack, isFalse);
   });
 
-  test('dead pin with no same-location candidate fails, pin not crossed',
-      () async {
-    final b = FakeBridge()..failIds = {'a'};
-    final c = VpnController(
-      bridge: b,
-      attemptTimeout: const Duration(seconds: 1),
-    );
-    expect(
-      await c.connect(
-        [p('a'), p('c', remark: 'USA-1')],
-        LocationChoice.auto,
-        profileId: 'a',
-      ),
-      isFalse,
-    );
-    // a retried once; the usa profile was never dialed behind the pin.
-    expect(b.connectCalls, ['a']);
-    expect(c.pinnedFellBack, isFalse);
-    expect(c.lastErrorClass, isNotNull);
-  });
+  test(
+    'dead pin with no same-location candidate fails, pin not crossed',
+    () async {
+      final b = FakeBridge()..failIds = {'a'};
+      final c = VpnController(
+        bridge: b,
+        attemptTimeout: const Duration(seconds: 1),
+      );
+      expect(
+        await c.connect(
+          [p('a'), p('c', remark: 'USA-1')],
+          LocationChoice.auto,
+          profileId: 'a',
+        ),
+        isFalse,
+      );
+      // a retried once; the usa profile was never dialed behind the pin.
+      expect(b.connectCalls, ['a']);
+      expect(c.pinnedFellBack, isFalse);
+      expect(c.lastErrorClass, isNotNull);
+    },
+  );
 
   test('VPN permission denied stops before connecting', () async {
     final b = FakeBridge()..permission = false;

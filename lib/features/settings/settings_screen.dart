@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,8 @@ import '../../app/app_info.dart';
 import '../../app/app_settings.dart';
 import '../../core/errors/milky_error.dart';
 import '../../core/subscription/subscription_repository.dart';
+import '../../core/vpn/dns_check.dart';
+import '../../core/vpn/speed_test.dart';
 import '../../core/vpn/vpn_bridge.dart';
 import '../../design/milky_buttons.dart';
 import '../../design/milky_brand.dart';
@@ -20,6 +23,7 @@ import '../../design/milky_theme.dart';
 import '../../design/milky_tokens.dart';
 import '../../l10n/milky_strings.dart';
 import '../update/update_flow.dart';
+import 'apps_screen.dart';
 import 'diagnostics_screen.dart';
 
 /// Settings as grouped glass cards with custom rows — not a Material preference list.
@@ -94,6 +98,37 @@ class _SettingsScreenState extends State<SettingsScreen> {
                       showChevron: true,
                       onTap: () => bridge.openVpnSettings(),
                     ),
+                  if (Platform.isAndroid)
+                    const MilkyHairline(indent: MilkySpace.lg),
+                  // Per-app split tunneling — Android VpnService only.
+                  if (Platform.isAndroid)
+                    MilkySettingRow(
+                      icon: Icons.apps_rounded,
+                      title: t.splitApps,
+                      subtitle: t.splitAppsHint,
+                      showChevron: true,
+                      onTap: () => Navigator.of(context).push(
+                        MaterialPageRoute<void>(
+                          builder: (_) => const AppsScreen(),
+                        ),
+                      ),
+                    ),
+                  const MilkyHairline(indent: MilkySpace.lg),
+                  MilkySettingRow(
+                    icon: Icons.speed_rounded,
+                    title: t.speedtest,
+                    subtitle: t.speedtestHint,
+                    showChevron: true,
+                    onTap: _runSpeedTest,
+                  ),
+                  const MilkyHairline(indent: MilkySpace.lg),
+                  MilkySettingRow(
+                    icon: Icons.dns_rounded,
+                    title: t.dnsCheck,
+                    subtitle: t.dnsCheckHint,
+                    showChevron: true,
+                    onTap: () => _runDnsCheck(bridge),
+                  ),
                 ],
               ),
             ),
@@ -311,6 +346,64 @@ class _SettingsScreenState extends State<SettingsScreen> {
     }
   }
 
+  /// DNS posture: Private DNS mode + DoH through the tunnel and directly.
+  void _runDnsCheck(VpnBridge bridge) {
+    final c = context.milky;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: c.scrim,
+      builder: (ctx) => SafeArea(
+        top: false,
+        child: MilkyColumn(
+          maxWidth: MilkyLayout.maxReadingWidth,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              MilkySpace.md,
+              0,
+              MilkySpace.md,
+              MilkySpace.md,
+            ),
+            child: MilkyGlassCard(
+              radius: MilkyRadius.sheet,
+              padding: const EdgeInsets.all(MilkySpace.xxl),
+              child: _DnsCheckBody(future: checkDns(bridge)),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Throughput probe through the tunnel's loopback SOCKS inbound.
+  void _runSpeedTest() {
+    final c = context.milky;
+    showModalBottomSheet<void>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      barrierColor: c.scrim,
+      builder: (ctx) => SafeArea(
+        top: false,
+        child: MilkyColumn(
+          maxWidth: MilkyLayout.maxReadingWidth,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(
+              MilkySpace.md,
+              0,
+              MilkySpace.md,
+              MilkySpace.md,
+            ),
+            child: MilkyGlassCard(
+              radius: MilkyRadius.sheet,
+              padding: const EdgeInsets.all(MilkySpace.xxl),
+              child: _SpeedtestBody(future: runSpeedTest()),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   void _showInfo(BuildContext context, String title, String body) {
     final c = context.milky;
     showModalBottomSheet<void>(
@@ -357,6 +450,185 @@ class _SettingsScreenState extends State<SettingsScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Speedtest sheet body: spinner while measuring, then ping + Mbps or a
+/// failure note (VPN off / proxy unreachable).
+class _SpeedtestBody extends StatelessWidget {
+  const _SpeedtestBody({required this.future});
+
+  final Future<SpeedResult> future;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = S.of(context);
+    final c = context.milky;
+    return FutureBuilder<SpeedResult>(
+      future: future,
+      builder: (ctx, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(t.speedtest, style: MilkyType.headline),
+              const SizedBox(height: MilkySpace.xl),
+              const SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+              const SizedBox(height: MilkySpace.md),
+              Text(
+                t.speedtestRunning,
+                style: MilkyType.bodySmall.copyWith(color: c.textMuted),
+              ),
+            ],
+          );
+        }
+        final r = snap.data;
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(t.speedtest, style: MilkyType.headline),
+            const SizedBox(height: MilkySpace.lg),
+            if (r != null) ...[
+              Text(
+                t.speedtestResult(r.pingMs, r.downMbps),
+                style: MilkyType.subtitle,
+              ),
+              const SizedBox(height: MilkySpace.xs),
+              Text(
+                t.speedtestNote,
+                style: MilkyType.bodySmall.copyWith(color: c.textMuted),
+              ),
+            ] else
+              Text(
+                t.speedtestFail,
+                style: MilkyType.body.copyWith(color: c.textMuted),
+              ),
+            const SizedBox(height: MilkySpace.xl),
+            MilkyGhostButton(
+              label: t.close,
+              onPressed: () => Navigator.of(ctx).pop(),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+/// DNS-check sheet body: spinner, then Private-DNS mode, tunnel-DoH verdict
+/// and a direct-path note.
+class _DnsCheckBody extends StatelessWidget {
+  const _DnsCheckBody({required this.future});
+
+  final Future<DnsCheckResult> future;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = S.of(context);
+    final c = context.milky;
+    return FutureBuilder<DnsCheckResult>(
+      future: future,
+      builder: (ctx, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(t.dnsCheck, style: MilkyType.headline),
+              const SizedBox(height: MilkySpace.xl),
+              const SizedBox(
+                width: 28,
+                height: 28,
+                child: CircularProgressIndicator(strokeWidth: 2.5),
+              ),
+              const SizedBox(height: MilkySpace.md),
+              Text(
+                t.dnsChecking,
+                style: MilkyType.bodySmall.copyWith(color: c.textMuted),
+              ),
+            ],
+          );
+        }
+        final r = snap.data;
+        if (r == null) {
+          return Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(t.dnsCheck, style: MilkyType.headline),
+              const SizedBox(height: MilkySpace.lg),
+              Text(
+                t.dnsCheckFail,
+                style: MilkyType.body.copyWith(color: c.textMuted),
+              ),
+              const SizedBox(height: MilkySpace.xl),
+              MilkyGhostButton(
+                label: t.close,
+                onPressed: () => Navigator.of(ctx).pop(),
+              ),
+            ],
+          );
+        }
+        final pdns = switch (r.privateDnsMode) {
+          'hostname' => t.dnsPrivateHostname(r.privateDnsSpecifier),
+          'opportunistic' => t.dnsPrivateAuto,
+          'off' => t.dnsPrivateOff,
+          _ => t.dnsPrivateUnknown,
+        };
+        return Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(t.dnsCheck, style: MilkyType.headline),
+            const SizedBox(height: MilkySpace.lg),
+            _DnsLine(
+              ok: r.dohViaTunnel,
+              text: r.dohViaTunnel ? t.dnsTunnelOk : t.dnsTunnelFail,
+            ),
+            const SizedBox(height: MilkySpace.sm),
+            _DnsLine(ok: !r.privateDnsOff, text: pdns),
+            const SizedBox(height: MilkySpace.sm),
+            _DnsLine(
+              ok: !r.leakSuspected,
+              text: r.dohDirect ? t.dnsDirectOpen : t.dnsDirectClosed,
+            ),
+            const SizedBox(height: MilkySpace.xl),
+            MilkyGhostButton(
+              label: t.close,
+              onPressed: () => Navigator.of(ctx).pop(),
+            ),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _DnsLine extends StatelessWidget {
+  const _DnsLine({required this.ok, required this.text});
+
+  final bool ok;
+  final String text;
+
+  @override
+  Widget build(BuildContext context) {
+    final c = context.milky;
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(
+          ok ? Icons.check_circle_outline_rounded : Icons.error_outline_rounded,
+          size: 18,
+          color: ok ? c.accent : c.danger,
+        ),
+        const SizedBox(width: MilkySpace.sm),
+        Expanded(child: Text(text, style: MilkyType.bodySmall)),
+      ],
     );
   }
 }

@@ -3,6 +3,7 @@ package homes.milky.vpn
 import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.content.pm.PackageManager
 import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
@@ -16,6 +17,7 @@ import homes.milky.vpn.vpn.DeviceProfile
 import homes.milky.vpn.vpn.KeystoreSealedStore
 import homes.milky.vpn.vpn.MilkyVpnService
 import homes.milky.vpn.vpn.SafeLog
+import homes.milky.vpn.vpn.SplitTunnelStore
 import homes.milky.vpn.vpn.VpnStateStore
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -229,6 +231,64 @@ class MainActivity : FlutterActivity() {
                             "isEmulator" to DeviceProfile.currentIsEmulator(),
                         )
                     )
+
+                    // Per-app split tunneling: launchable apps for the picker,
+                    // current selection, and applying a new selection (the
+                    // running tunnel is restarted so the filter takes effect).
+                    "listApps" -> {
+                        val intent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
+                        val flags = PackageManager.GET_META_DATA.toLong()
+                        val apps = packageManager.queryIntentActivities(
+                            intent,
+                            PackageManager.ResolveInfoFlags.of(flags),
+                        ).mapNotNull { ri ->
+                            val pkg = ri.activityInfo?.packageName ?: return@mapNotNull null
+                            mapOf(
+                                "package" to pkg,
+                                "label" to (ri.loadLabel(packageManager)?.toString() ?: pkg),
+                            )
+                        }.distinctBy { it["package"] }
+                         .sortedBy { (it["label"] as String).lowercase() }
+                        result.success(apps)
+                    }
+
+                    "privateDns" -> {
+                        // Settings.Global reads need no permission.
+                        result.success(
+                            mapOf(
+                                "mode" to (Settings.Global.getString(
+                                    contentResolver,
+                                    "private_dns_mode",
+                                ) ?: ""),
+                                "specifier" to (Settings.Global.getString(
+                                    contentResolver,
+                                    "private_dns_specifier",
+                                ) ?: ""),
+                            ),
+                        )
+                    }
+                    "getSplitApps" -> {
+                        val cfg = SplitTunnelStore.read(this)
+                        result.success(mapOf("mode" to cfg.mode, "packages" to cfg.packages.toList()))
+                    }
+
+                    "setSplitApps" -> {
+                        val map = call.arguments as? Map<*, *> ?: emptyMap<String, Any>()
+                        val mode = map["mode"] as? String ?: SplitTunnelStore.MODE_ALL
+                        val pkgs = (map["packages"] as? List<*>)?.filterIsInstance<String>() ?: emptyList()
+                        SplitTunnelStore.write(this, mode, pkgs)
+                        // Filter changes need a fresh Builder: restart the
+                        // session if one is live (the sealed profile survives).
+                        val running = MilkyVpnService.instance
+                        if (running != null) {
+                            running.requestDisconnect().invokeOnCompletion {
+                                val svc = Intent(this, MilkyVpnService::class.java)
+                                    .setAction(MilkyVpnService.ACTION_CONNECT)
+                                startService(svc)
+                            }
+                        }
+                        result.success(true)
+                    }
 
                     else -> result.notImplemented()
                 }
