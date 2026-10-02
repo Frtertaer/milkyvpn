@@ -69,6 +69,7 @@ func main() {
 	churn := flag.Duration("churn", 0, "rotate the session's transport onto the next carrier every ~this long (streams survive via ticketed resume)")
 	carrierState := flag.String("carrier-state", "", "carrier-memory file: remember last-good carrier per -netclass")
 	netClass := flag.String("netclass", "", "network class for carrier memory (e.g. wifi/mobile); supplied by the app")
+	sniBlock := flag.String("sniblock", "", "comma list of decoy SNIs to skip in the sweep (domains the censor already lists); handshake-dead pool SNIs are also remembered in the -carrier-state file")
 	qlanes := flag.Int("qlanes", 1, "quasar parallel sessions; streams round-robin across lanes")
 	qwnd := flag.Int("qwnd", 0, "quasar receive window in segments; paces the server's offered rate to ~wnd*mtu/RTT (0 = 16384)")
 	flag.Parse()
@@ -149,6 +150,7 @@ func main() {
 		Churn:              *churn,
 		CarrierStatePath:   *carrierState,
 		NetClass:           *netClass,
+		BlockedSNI:         frontURLs(*sniBlock),
 	}
 	for _, p := range strings.Split(*pin, ",") {
 		if p = strings.TrimSpace(p); p == "" {

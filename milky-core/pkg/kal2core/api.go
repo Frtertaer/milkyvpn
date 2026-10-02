@@ -216,6 +216,13 @@ type ClientConfig struct {
 	// dial order — internal, populated from CarrierStatePath at Dial.
 	PreferCarrier string
 	PreferSNI     string
+	// BlockedSNI lists decoy SNIs the sweep should skip (a domain the
+	// censor already lists). Handshake-stage failures during a multi-SNI
+	// sweep are also remembered here when CarrierStatePath is set, so a
+	// filtered decoy stops costing dial time on every reconnect. If every
+	// SNI ends up blocked the blocklist is ignored — a stale list must
+	// never brick the link.
+	BlockedSNI []string
 }
 
 // Client is an established kal2 tunnel end. When EnableReconnect is running,
@@ -600,11 +607,14 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 		logf = func(string, ...any) {}
 	}
 	// Carrier memory: on this network class the last-good carrier/SNI goes
-	// first in the hedge instead of another blind sweep.
+	// first in the hedge instead of another blind sweep; remembered dead
+	// decoy SNIs join the blocklist.
 	if cfg.CarrierStatePath != "" {
-		if prefC, prefS := carrierMemRead(cfg.CarrierStatePath, cfg.NetClass); prefC != "" {
+		prefC, prefS, blocked := carrierMemRead(cfg.CarrierStatePath, cfg.NetClass)
+		if prefC != "" {
 			cfg.PreferCarrier, cfg.PreferSNI = prefC, prefS
 		}
+		cfg.BlockedSNI = append(cfg.BlockedSNI, blocked...)
 	}
 	cli := &Client{cfg: cfg, logf: logf, stop: make(chan struct{}), scores: scores}
 	n := cfg.Lanes
@@ -674,29 +684,93 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 }
 
 // carrierMemFile is the on-disk carrier memory: per netclass the last
-// carrier+SNI that completed a dial.
+// carrier+SNI that completed a dial, plus decoy SNIs whose dials kept
+// dying at the handshake stage (the shape of SNI filtering — the TCP/UDP
+// connect works, the TLS flight gets cut).
 type carrierMemFile struct {
 	ByNet map[string]struct {
 		Carrier string `json:"carrier"`
 		SNI     string `json:"sni"`
 		T       int64  `json:"t"`
 	} `json:"by_net"`
+	Blocked map[string][]string `json:"blocked,omitempty"`
 }
 
-func carrierMemRead(path, netClass string) (string, string) {
+func carrierMemRead(path, netClass string) (string, string, []string) {
 	b, err := os.ReadFile(path)
 	if err != nil {
-		return "", ""
+		return "", "", nil
 	}
 	var m carrierMemFile
 	if json.Unmarshal(b, &m) != nil {
-		return "", ""
+		return "", "", nil
 	}
 	r, ok := m.ByNet[netClass]
 	if !ok {
-		return "", ""
+		return "", "", m.Blocked[netClass]
 	}
-	return r.Carrier, r.SNI
+	return r.Carrier, r.SNI, m.Blocked[netClass]
+}
+
+// carrierMemBlock remembers a dead decoy SNI; the list is bounded so a
+// churn of filters cannot grow the file without limit.
+func carrierMemBlock(path, netClass, sni string) {
+	if path == "" || sni == "" {
+		return
+	}
+	carrierMemMutate(path, func(m *carrierMemFile) {
+		if m.Blocked == nil {
+			m.Blocked = map[string][]string{}
+		}
+		list := m.Blocked[netClass]
+		for _, s := range list {
+			if s == sni {
+				return
+			}
+		}
+		list = append(list, sni)
+		if len(list) > 16 {
+			list = list[len(list)-16:]
+		}
+		m.Blocked[netClass] = list
+	})
+}
+
+// carrierMemUnblock forgets a decoy SNI once it dials fine again.
+func carrierMemUnblock(path, netClass, sni string) {
+	if path == "" || sni == "" {
+		return
+	}
+	carrierMemMutate(path, func(m *carrierMemFile) {
+		list := m.Blocked[netClass]
+		if len(list) == 0 {
+			return
+		}
+		out := list[:0]
+		for _, s := range list {
+			if s != sni {
+				out = append(out, s)
+			}
+		}
+		m.Blocked[netClass] = out
+	})
+}
+
+func carrierMemMutate(path string, f func(*carrierMemFile)) {
+	var m carrierMemFile
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &m)
+	}
+	f(&m)
+	b, err := json.Marshal(&m)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		_ = os.Rename(tmp, path)
+	}
 }
 
 func carrierMemWrite(path, netClass, carrierName, sniName string) {
@@ -1012,6 +1086,9 @@ func frontableCarriers(cfg ClientConfig) []string {
 func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scorecard) (*kal2.Session, string, string, error) {
 	addrs := endpoints(cfg)
 	snis := splitCommaList(cfg.SNI)
+	if n := unblockedSNIs(snis, cfg.BlockedSNI); len(n) > 0 {
+		snis = n
+	}
 	if p := cfg.PreferSNI; p != "" && len(snis) > 1 {
 		for i, s := range snis {
 			if s == p {
@@ -1046,10 +1123,16 @@ func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scor
 		}
 		s, name, err := dialHedged(ctx, c2, scores)
 		if err == nil {
+			carrierMemUnblock(cfg.CarrierStatePath, cfg.NetClass, c2.SNI)
 			return s, name, c2.SNI, nil
 		}
 		if carrier.IsHandshakeStage(err) {
 			sawInner = true
+			if len(splitCommaList(cfg.SNI)) > 1 {
+				// Every carrier failed mid-handshake on this cover name —
+				// the fingerprint of SNI filtering, not a dead host.
+				carrierMemBlock(cfg.CarrierStatePath, cfg.NetClass, c2.SNI)
+			}
 		}
 		lastErr = err
 		if ctx.Err() != nil {
@@ -1073,6 +1156,29 @@ func btoi(b bool) int {
 		return 1
 	}
 	return 0
+}
+
+// unblockedSNIs returns the pool with blocked entries dropped; when the
+// blocklist covers the whole pool it yields nil (caller falls back to the
+// full pool — the list may be stale, never brick the dial).
+func unblockedSNIs(snis, blocked []string) []string {
+	if len(blocked) == 0 {
+		return snis
+	}
+	out := make([]string, 0, len(snis))
+	for _, s := range snis {
+		dead := false
+		for _, b := range blocked {
+			if s == b {
+				dead = true
+				break
+			}
+		}
+		if !dead {
+			out = append(out, s)
+		}
+	}
+	return out
 }
 
 // fronts returns the deduped front list: Front first (legacy single-front

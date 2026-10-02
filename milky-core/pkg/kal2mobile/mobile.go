@@ -12,7 +12,7 @@
 //	 "pin":"<b64 or hex sha256(SPKI)>[,...]", "insecure":false,
 //	 "front":"https://relay.example[/base]", "tun":false, "tun_fd":0,
 //	 "lanes":0, "churn_sec":0, "carrier_state":"/path/mem.json",
-//	 "netclass":"wifi"}
+//	 "netclass":"wifi", "sniblock":"dead.com,gone.com"}
 //
 // The outer TLS certificate is verified against the system roots unless
 // "pin" is given (SPKI pin replaces CA verification) or "insecure" is true
@@ -71,6 +71,9 @@ type mobileConfig struct {
 	CarrierState string `json:"carrier_state"`
 	// NetClass: network kind the app reports (wifi/mobile) — memory key.
 	NetClass string `json:"netclass"`
+	// SNIBlock: comma list of dead decoy SNIs to skip in the sweep; the
+	// carrier-state file also remembers handshake-dead pool SNIs itself.
+	SNIBlock string `json:"sniblock"`
 }
 
 var (
@@ -184,6 +187,7 @@ func Start(configJSON string) (int, error) {
 		Churn:              time.Duration(mc.ChurnSec) * time.Second,
 		CarrierStatePath:   mc.CarrierState,
 		NetClass:           mc.NetClass,
+		BlockedSNI:         splitComma(mc.SNIBlock),
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
