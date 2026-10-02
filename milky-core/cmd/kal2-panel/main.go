@@ -123,6 +123,7 @@ func main() {
 	quasar := flag.String("unit-quasar", "kal2-quasar.service", "quasar UDP unit (toggled by the udp-listen switch)")
 	pubOrigin := flag.String("pub-origin", "", "public base URL for the subscription link, e.g. https://kal.example:9443 (empty = request Host)")
 	ops := flag.String("ops-listen", "", "loopback-only ops API addr, e.g. 127.0.0.1:9449 — no auth, never expose externally (used by the tg-bot helper)")
+	releasesDir := flag.String("releases-dir", "", "directory served publicly at /releases/ — release mirror filled by deploy/release-mirror.sh so app updates work when github.com is throttled")
 	flag.Parse()
 
 	if *token == "" {
@@ -173,6 +174,10 @@ func main() {
 	mux.HandleFunc("/api/audit", p.auth(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"events": auditTail(auditPath, auditLimit)})
 	}))
+	if *releasesDir != "" {
+		mux.Handle("/releases/", http.StripPrefix("/releases/",
+			http.FileServer(http.Dir(*releasesDir))))
+	}
 	mux.HandleFunc("/api/totp/status", p.auth(p.totpStatus))
 	mux.HandleFunc("/api/totp/begin", p.auth(p.totpBegin))
 	mux.HandleFunc("/api/totp/enable", p.auth(p.totpEnable))

@@ -22,9 +22,18 @@ class AppUpdate {
   static const repo = 'Frtertaer/milkyvpn';
   static const _api = 'https://api.github.com/repos/$repo/releases?per_page=10';
 
+  /// Release mirror on the panel box — a cron-synced copy of the latest
+  /// release reachable even when github.com is throttled for the user.
+  static const _mirror = 'https://panel.mergescribe.dev/releases';
+
   /// Latest semver release, or null when the API is unreachable / nothing
-  /// semver-tagged has been published yet. Never throws.
+  /// semver-tagged has been published yet. Never throws. GitHub first, then
+  /// the panel mirror as fallback.
   static Future<AppRelease?> latest() async {
+    return await _latestGithub() ?? await _latestMirror();
+  }
+
+  static Future<AppRelease?> _latestGithub() async {
     try {
       final http = HttpClient()..connectionTimeout = const Duration(seconds: 8);
       try {
@@ -52,6 +61,37 @@ class AppUpdate {
           return AppRelease(tag: tag, assets: assets);
         }
         return null;
+      } finally {
+        http.close(force: true);
+      }
+    } on Object {
+      return null;
+    }
+  }
+
+  /// Mirror manifest written by deploy/release-mirror.sh:
+  /// {"tag":"vX.Y.Z","assets":[{"name":..,"url":"/releases/<tag>/<name>"}]}.
+  static Future<AppRelease?> _latestMirror() async {
+    try {
+      final http = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+      try {
+        final req = await http.getUrl(Uri.parse('$_mirror/latest.json'));
+        req.headers.set(HttpHeaders.userAgentHeader, 'milkyvpn-app');
+        final res = await req.close().timeout(const Duration(seconds: 10));
+        if (res.statusCode != 200) return null;
+        final m = jsonDecode(await res.transform(utf8.decoder).join());
+        if (m is! Map) return null;
+        final tag = (m['tag'] ?? '').toString();
+        if (!isSemverTag(tag)) return null;
+        final assets = <ReleaseAsset>[
+          for (final a in (m['assets'] as List? ?? const []))
+            if (a is Map)
+              ReleaseAsset(
+                name: (a['name'] ?? '').toString(),
+                url: '$_mirror/${Uri.encodeComponent(tag)}/${a['name']}',
+              ),
+        ];
+        return AppRelease(tag: tag, assets: assets);
       } finally {
         http.close(force: true);
       }
