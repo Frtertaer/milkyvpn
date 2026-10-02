@@ -116,9 +116,9 @@ def cmd_status():
         ctx = ssl.create_default_context()
         req = urllib.request.Request(PANEL_URL)
         code = urllib.request.urlopen(req, timeout=8, context=ctx).status
-        lines.append("tunnel panel.mergescribe.dev: %d" % code)
-    except Exception as e:
-        lines.append("tunnel: %s" % str(e)[:60])
+        lines.append("туннель (panel.mergescribe.dev): %s" % ("живой" if code == 200 else "код %d" % code))
+    except Exception:
+        lines.append("туннель: недоступен")
     try:
         with open(os.path.join(BASE, "canary-ru.jsonl")) as f:
             last = [json.loads(x) for x in f.readlines()[-5:] if x.strip()]
@@ -130,9 +130,15 @@ def cmd_status():
 
 
 def user_stats():
-    """Per-user aggregates from stats.jsonl: month bytes, sessions, open count."""
+    """Per-user aggregates from stats.jsonl: month bytes, sessions, open count.
+
+    UDP-carrier sessions can die without a close event, so 'open' counts only
+    sessions opened within the last STALE_SEC — an online estimate, not exact.
+    """
     per = {}
     month = time.strftime("%Y-%m", time.gmtime())
+    now = time.time()
+    STALE_SEC = 1800
     try:
         with open(STATS) as f:
             for line in f:
@@ -146,10 +152,12 @@ def user_stats():
                 a = per.setdefault(uid, {"sess": 0, "month": 0, "open": 0, "last": 0})
                 if e.get("ev") == "open":
                     a["sess"] += 1
-                    a["open"] += 1
+                    if now - e.get("t", 0) <= STALE_SEC:
+                        a["open"] += 1
                     a["last"] = max(a["last"], e.get("t", 0))
                 elif e.get("ev") == "close":
-                    a["open"] -= 1
+                    if now - e.get("t", 0) <= STALE_SEC:
+                        a["open"] -= 1
                     a["last"] = max(a["last"], e.get("t", 0))
                     if time.strftime("%Y-%m", time.gmtime(e.get("t", 0))) == month:
                         a["month"] += e.get("up", 0) + e.get("down", 0)
