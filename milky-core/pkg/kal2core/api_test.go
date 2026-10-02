@@ -471,11 +471,11 @@ func TestDialAnySingleFrontStaysFrontOnly(t *testing.T) {
 func TestCarrierMemRoundTripAndPrefer(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cmem.json")
 	carrierMemWrite(path, "wifi", "mosaic", "decoy.example")
-	c, s := carrierMemRead(path, "wifi")
+	c, s, _ := carrierMemRead(path, "wifi")
 	if c != "mosaic" || s != "decoy.example" {
 		t.Fatalf("read = %q,%q", c, s)
 	}
-	if c, _ := carrierMemRead(path, "mobile"); c != "" {
+	if c, _, _ := carrierMemRead(path, "mobile"); c != "" {
 		t.Fatalf("unknown netclass = %q", c)
 	}
 	cs := carriers(ClientConfig{PreferCarrier: "mosaic"})
@@ -486,6 +486,35 @@ func TestCarrierMemRoundTripAndPrefer(t *testing.T) {
 	cs = carriers(ClientConfig{Carrier: "veil,drift", PreferCarrier: "drift"})
 	if cs[0] != "veil" {
 		t.Fatalf("explicit list reordered: %v", cs)
+	}
+}
+
+func TestCarrierMemBlocklist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cmem.json")
+	carrierMemBlock(path, "wifi", "dead.example")
+	carrierMemBlock(path, "wifi", "dead.example") // dedupe
+	carrierMemBlock(path, "wifi", "gone.example")
+	_, _, blocked := carrierMemRead(path, "wifi")
+	if len(blocked) != 2 {
+		t.Fatalf("blocked = %v", blocked)
+	}
+	if got := unblockedSNIs([]string{"dead.example", "live.example", "gone.example"}, blocked); len(got) != 1 || got[0] != "live.example" {
+		t.Fatalf("filtered = %v", got)
+	}
+	// All blocked → empty so the caller falls back to the full pool.
+	if got := unblockedSNIs([]string{"dead.example", "gone.example"}, blocked); len(got) != 0 {
+		t.Fatalf("all-blocked should yield empty, got %v", got)
+	}
+	carrierMemUnblock(path, "wifi", "dead.example")
+	_, _, blocked = carrierMemRead(path, "wifi")
+	if len(blocked) != 1 || blocked[0] != "gone.example" {
+		t.Fatalf("after unblock = %v", blocked)
+	}
+	// Blocklist must not clobber the carrier memory record.
+	carrierMemWrite(path, "wifi", "quic2", "live.example")
+	c, _, blocked := carrierMemRead(path, "wifi")
+	if c != "quic2" || len(blocked) != 1 {
+		t.Fatalf("mem+block lost: %q %v", c, blocked)
 	}
 }
 
