@@ -417,7 +417,9 @@ class _StatusBlock extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            '$searchText  ${t.attemptOf(attempt, vpn.attemptTotal)}',
+            vpn.attemptTotal > 0
+                ? '$searchText  ${t.attemptOf(attempt, vpn.attemptTotal)}'
+                : searchText,
             textAlign: TextAlign.center,
             maxLines: 2,
             style: MilkyType.bodySmall.copyWith(color: c.textMuted),

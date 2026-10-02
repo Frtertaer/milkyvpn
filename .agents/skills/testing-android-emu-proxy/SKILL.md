@@ -28,6 +28,20 @@ description: End-to-end test the MilkyVPN Android app on the test35 emulator rou
 - AVDs: `test24` (API 24, emulator-5556) and `test25` (API 25, emulator-5554); launch with `-port 5556` for a second emulator on the same host. Target them with `adb -s emulator-XXXX`.
 - minSdk floor is **24**: libflutter.so references `__fwrite_chk` (API 24+) — any lower floor crashes at load with UnsatisfiedLinkError. Do not lower it.
 - Known old-Android traps already fixed: NotificationChannel needs `SDK_INT >= O` guard in `MilkyVpnService.createChannel()`; veil TLS needs `InsecureSkipVerify` (stale CA stores lack ISRG Root X1/X2) — both live in the code, keep them.
+
+## libcore.so staleness trap (verified 2026-10)
+- milky-core changes are NOT in the APK unless `android/app/src/main/jniLibs/<abi>/libcore.so` is rebuilt — checked-in .so files go stale whenever api.go changes. Before testing a core change, grep the .so for a new string from the diff: `strings libcore.so | grep <new-literal>` (e.g. `kal2-dial-probe`). Absent = stale = you'd test nothing.
+- Rebuild recipe (release.yml): `cd milky-core && CGO_ENABLED=1 GOOS=android GOARCH=amd64 CC=$HOME/android-sdk/ndk/<ver>/toolchains/llvm/prebuilt/linux-x86_64/bin/x86_64-linux-android24-clang go build -buildmode=c-shared -o ../android/app/src/main/jniLibs/x86_64/libcore.so ./cmd/kal2native` (emulator needs only x86_64; also drops a libcore.h).
+
+## Simulating "handshake ok, data dead" (TSPU/dial-verify testing)
+- `adb root; adb shell 'iptables -I OUTPUT 1 -p tcp -d <ip> -m connbytes --connbytes 10000: --connbytes-dir both --connbytes-mode bytes -j REJECT --reject-with tcp-reset'` — the conn exceeds ~N bytes then dies: handshake completes, post-handshake Ping/data dies → dialHedged rejects with `<carrier>: handshake ok but session dead: session: pong timeout` → `entries_blocked`. Threshold needs care: 10KB let a TLS-resumed session squeak under budget (that's legitimately "healthy"); iterate 6-10KB.
+- Organic alternative: under `-http-proxy` RU underlay, fronted streams MAY die on their own (exit-dependent — one exit killed them, another passed fully). Check what your exit does before assuming.
+
+## Profile pinning via UI (in-memory vs prefs)
+- Profile sheet also opens from the HOME screen: globe icon right of the country selector row (`MilkyIconButton` public/🌐, ≈955,1540) — no error sheet needed. Rows show `name + carrier·front + latency`, ✓ on the pinned row.
+- Rows RE-LAYOUT ~1-2s after open (latency probe finishes + the "Авто (самый быстрый)" row materializes on top) — wait ~4s then dump bounds before tapping, or you'll pin the wrong profile.
+- `sed` on shared_prefs `flutter.selected_profile` does NOT reach a RUNNING app (Flutter shared_preferences is in-memory cached) — only UI taps update in-memory state. sed-pins work only after force-stop+relaunch.
+- Profile ids are deterministic per link content (same link re-imports to the same id — e.g. direct=834a8a6dcdef1f97, yandex=e34f975adc41d916, multifront=5a14f3167e223aea, rtc=512d002b70ee0ca1).
 - Screenshot pixels vs device pixels differ (~1.45x): `screencap`/`uiautomator dump` coordinates in this guide are device px; scale screenshot coords before `input tap`.
 
 ## Typing the kal2 link via adb (two traps)
