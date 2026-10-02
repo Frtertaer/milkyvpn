@@ -452,8 +452,10 @@ function renderLinks(){
   $('autoUpdState').className = 'pill '+(LINKS.auto_update?'on':'off');
   $('genEntries').innerHTML = LINKS.entries.map((e,i)=>
     `<div class="tog"><input type="checkbox" class="ge" value="${e.addr}" ${i===0?'checked':''}> ${e.label} <span class="pill">${e.addr}</span></div>`).join('');
-  $('genFronts').innerHTML = LINKS.fronts.map(f=>
-    `<div class="tog"><input type="checkbox" class="gf" value="${f.url}"> ${f.label} <span class="pill">${f.url}</span></div>`).join('');
+  const deadFronts=new Set(LINKS.fronts_dead||[]);
+  $('genFronts').innerHTML = LINKS.fronts.map(f=>deadFronts.has(f.url)
+    ?`<div class="tog"><input type="checkbox" class="gf" value="${f.url}" disabled> ${f.label} <span class="pill">${f.url}</span> <span class="pill off">мёртв по канарейке</span></div>`
+    :`<div class="tog"><input type="checkbox" class="gf" value="${f.url}"> ${f.label} <span class="pill">${f.url}</span></div>`).join('');
   $('linkList').innerHTML = LINKS.links.map(l=>`<div class="link">${l}</div>`).join('')||'<span class="pill">пусто</span>';
 }
 async function genLink(){
