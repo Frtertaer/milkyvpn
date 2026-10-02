@@ -953,6 +953,22 @@ func carriers(cfg ClientConfig) []string {
 	return out
 }
 
+// dialVerifyTimeout bounds the post-handshake data probe (Ping/Pong). Fronted
+// carriers add real RTT (measured 3-10s behind relays), so this is generous —
+// the enclosing dial ctx still caps the total.
+var dialVerifyTimeout = 8 * time.Second
+
+var dialProbe = []byte("kal2-dial-probe")
+
+// verifySession proves the session carries data in both directions. A carrier
+// that completes the handshake but drops payloads (TSPU throttling signature:
+// handshake small enough to pass, bulk data killed) must lose the race —
+// without this check it wins, the app routes all traffic into a dead tunnel,
+// and every retry races the same data-dead carrier again.
+func verifySession(s *kal2.Session, timeout time.Duration) error {
+	return s.Ping(dialProbe, timeout)
+}
+
 // dialHedged races the candidate carriers for one endpoint and returns the
 // first successful session; losing sessions are closed when they finish.
 // Candidate order comes from the scorecard (failover ordering); the race
@@ -967,10 +983,21 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 		c2.Carrier = cs[0]
 		t0 := time.Now()
 		s, err := dialOneFn.Load().(dialFunc)(ctx, c2)
-		if scores != nil {
-			scores.ReportDial(cs[0], err == nil, time.Since(t0).Seconds())
+		ok := err == nil
+		if ok {
+			if verr := verifySession(s, dialVerifyTimeout); verr != nil {
+				_ = s.Close()
+				ok = false
+				err = fmt.Errorf("%s: handshake ok but session dead: %w", cs[0], verr)
+			}
 		}
-		return s, cs[0], err
+		if scores != nil {
+			scores.ReportDial(cs[0], ok, time.Since(t0).Seconds())
+		}
+		if !ok {
+			return nil, "", err
+		}
+		return s, cs[0], nil
 	}
 	type result struct {
 		name string
@@ -1003,25 +1030,41 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 		select {
 		case r := <-ch:
 			pending--
-			if scores != nil && r.err != context.Canceled {
-				scores.ReportDial(r.name, r.err == nil, r.secs)
+			if r.err != nil {
+				if scores != nil && r.err != context.Canceled {
+					scores.ReportDial(r.name, false, r.secs)
+				}
+				if carrier.IsHandshakeStage(r.err) {
+					stageErr = r.err
+				}
+				lastErr = r.err
+				continue
 			}
-			if r.err == nil {
-				cancel()
-				// Drain late completions so a slow winner's session is closed.
-				go func() {
-					for i := 0; i < pending; i++ {
-						if r := <-ch; r.s != nil {
-							_ = r.s.Close()
-						}
+			// The handshake won — prove the session carries data before
+			// crowning it: a throttled carrier connects fast then blackholes
+			// payloads, and must lose the race to a slower live sibling.
+			if verr := verifySession(r.s, dialVerifyTimeout); verr != nil {
+				_ = r.s.Close()
+				if scores != nil {
+					scores.ReportDial(r.name, false, r.secs)
+				}
+				stageErr = fmt.Errorf("%s: handshake ok but session dead: %w", r.name, verr)
+				lastErr = stageErr
+				continue
+			}
+			if scores != nil {
+				scores.ReportDial(r.name, true, r.secs)
+			}
+			cancel()
+			// Drain late completions so a slow winner's session is closed.
+			go func() {
+				for i := 0; i < pending; i++ {
+					if r := <-ch; r.s != nil {
+						_ = r.s.Close()
 					}
-				}()
-				return r.s, r.name, nil
-			}
-			if carrier.IsHandshakeStage(r.err) {
-				stageErr = r.err
-			}
-			lastErr = r.err
+				}
+			}()
+			return r.s, r.name, nil
 		case <-ctx.Done():
 			cancel()
 			return nil, "", ctx.Err()

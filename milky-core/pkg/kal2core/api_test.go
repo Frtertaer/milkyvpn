@@ -9,6 +9,7 @@ import (
 	"net"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -59,7 +60,8 @@ func TestDialHedgedPicksWinner(t *testing.T) {
 				return nil, errors.New("veil dead")
 			}
 		}
-		return &kal2.Session{}, nil // drift wins quickly
+		cs, _, _ := pipeSessionsT(t, []byte("test-psk"))
+		return cs, nil // drift wins quickly
 	}))
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -98,6 +100,63 @@ func TestDialHedgedAllFail(t *testing.T) {
 	s, _, err := dialHedged(ctx, ClientConfig{Carrier: "auto"}, nil)
 	if err == nil || s != nil {
 		t.Fatalf("want failure, got s=%v err=%v", s, err)
+	}
+}
+
+// A carrier that completes the handshake but drops all payload (the TSPU
+// throttling signature seen live: session up, POST_CONNECT_PROBE dead) must
+// lose the dial race — otherwise it wins every retry and the tunnel carries
+// no traffic forever.
+func TestDialHedgedRejectsDataDeadWinner(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	defer func() { dialVerifyTimeout = 8 * time.Second }()
+	dialVerifyTimeout = 400 * time.Millisecond
+
+	psk := []byte("test-psk")
+	var driftSession *kal2.Session
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		cs, _, drop := pipeSessionsT(t, psk)
+		if cfg.Carrier == "veil" {
+			// Handshake completes but the link never delivers payload.
+			drop.blackhole.Store(true)
+			return cs, nil
+		}
+		driftSession = cs
+		return cs, nil
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	s, name, err := dialHedged(ctx, ClientConfig{Carrier: "veil,drift"}, nil)
+	if err != nil {
+		t.Fatalf("hedged dial: %v", err)
+	}
+	if s != driftSession || name != "drift" {
+		t.Fatalf("the data-dead carrier won: session=%v name=%q", s != driftSession, name)
+	}
+}
+
+// The same check must hold when a single carrier is configured: a session
+// that handshakes but cannot carry data is a dial failure, not a success.
+func TestDialSingleRejectsDataDeadSession(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	defer func() { dialVerifyTimeout = 8 * time.Second }()
+	dialVerifyTimeout = 400 * time.Millisecond
+
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		cs, _, drop := pipeSessionsT(t, []byte("test-psk"))
+		drop.blackhole.Store(true)
+		return cs, nil
+	}))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	s, _, err := dialHedged(ctx, ClientConfig{Carrier: "veil"}, nil)
+	if err == nil || s != nil {
+		t.Fatalf("want data-dead failure, got s=%v err=%v", s, err)
+	}
+	if !strings.Contains(err.Error(), "session dead") {
+		t.Fatalf("want session-dead error, got %v", err)
 	}
 }
 
@@ -274,7 +333,8 @@ func TestDialAnyRotatesSNIAcrossAttempts(t *testing.T) {
 		if n < 2 {
 			return nil, errors.New("dead")
 		}
-		return &kal2.Session{}, nil
+		cs, _, _ := pipeSessionsT(t, []byte("test-psk"))
+		return cs, nil
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -388,7 +448,8 @@ func TestDialAnyUniversalFrontSweep(t *testing.T) {
 		mu.Unlock()
 		_ = n
 		if cfg.Front == "https://f2.example" {
-			return &kal2.Session{}, nil
+			cs, _, _ := pipeSessionsT(t, []byte("test-psk"))
+			return cs, nil
 		}
 		return nil, errors.New("dead")
 	}))
@@ -527,7 +588,8 @@ func TestDialHedgedReportsWinner(t *testing.T) {
 		if cfg.Carrier == "veil" {
 			return nil, errors.New("veil dead")
 		}
-		return &kal2.Session{}, nil
+		cs, _, _ := pipeSessionsT(t, []byte("test-psk"))
+		return cs, nil
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
