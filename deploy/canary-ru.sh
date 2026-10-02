@@ -67,35 +67,3 @@ if [ "${CANARY_HISTORY:-1}" = "1" ]; then
     "cat >> '$HIST'; tail -n 20000 '$HIST' > '$HIST.tmp' && mv '$HIST.tmp' '$HIST'" \
     2>/dev/null || true
 fi
-
-# Telegram alerts: on a state *transition* per entry|carrier (alive→dead or
-# dead→alive), notify via a BotFather bot. Silent when the token/chat id are
-# unset, so the script stays a no-op until credentials are provisioned.
-#   CANARY_TG_TOKEN   bot token from @BotFather       (or /opt/kal2/tg.token)
-#   CANARY_TG_CHAT    chat id to notify               (or /opt/kal2/tg.chat)
-TG_TOKEN=${CANARY_TG_TOKEN:-$(cat /opt/kal2/tg.token 2>/dev/null)}
-TG_CHAT=${CANARY_TG_CHAT:-$(cat /opt/kal2/tg.chat 2>/dev/null)}
-if [ -n "$TG_TOKEN" ] && [ -n "$TG_CHAT" ]; then
-  STATE=/opt/kal2/canary-state
-  mkdir -p "$STATE"
-  while IFS= read -r line; do
-    key=$(printf '%s' "$line" | sed -n 's/.*"entry":"\([^"]*\)".*"carrier":"\([^"]*\)".*/\1|\2/p')
-    ok=$(printf '%s' "$line" | sed -n 's/.*"ok":\([a-z]*\).*/\1/p')
-    [ -z "$key" ] && continue
-    prev=$(cat "$STATE/$key" 2>/dev/null)
-    if [ "$prev" != "$ok" ]; then
-      printf '%s' "$ok" > "$STATE/$key"
-      if [ -n "$prev" ]; then
-        if [ "$ok" = "true" ]; then
-          msg="✅ MilkyVPN вход поднялся из РФ: $key"
-        else
-          msg="🔴 MilkyVPN вход УПАЛ из РФ: $key"
-        fi
-        curl -s -m 10 -X POST \
-          "https://api.telegram.org/bot${TG_TOKEN}/sendMessage" \
-          -d "chat_id=${TG_CHAT}" --data-urlencode "text=${msg}" \
-          >/dev/null 2>&1 || true
-      fi
-    fi
-  done < "$OUT"
-fi
