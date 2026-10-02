@@ -10,7 +10,9 @@
 //	 "pub":"<hex>", "psk":"<hex>", "socks":"127.0.0.1:10808",
 //	 "ech":"<base64 ECHConfigList>", "cover":true,
 //	 "pin":"<b64 or hex sha256(SPKI)>[,...]", "insecure":false,
-//	 "front":"https://relay.example[/base]", "tun":false, "tun_fd":0}
+//	 "front":"https://relay.example[/base]", "tun":false, "tun_fd":0,
+//	 "lanes":0, "churn_sec":0, "carrier_state":"/path/mem.json",
+//	 "netclass":"wifi"}
 //
 // The outer TLS certificate is verified against the system roots unless
 // "pin" is given (SPKI pin replaces CA verification) or "insecure" is true
@@ -58,6 +60,17 @@ type mobileConfig struct {
 	Tun       bool   `json:"tun"`    // platform TUN adapter (root/admin)
 	TunFd     int    `json:"tun_fd"` // Android: adopt a VpnService fd
 	TunAddr   string `json:"tun_addr"`
+	// Lanes: parallel carrier sessions; >1 + multi-carrier list pins each
+	// lane to its own carrier (true multipath across transports).
+	Lanes int `json:"lanes"`
+	// ChurnSec: rotate the session's transport onto the next carrier every
+	// ~this many seconds — short-lived flows on one transport dodge the
+	// behavioral fingerprinting window (streams survive via resume).
+	ChurnSec int `json:"churn_sec"`
+	// CarrierState: file for last-good carrier per NetClass.
+	CarrierState string `json:"carrier_state"`
+	// NetClass: network kind the app reports (wifi/mobile) — memory key.
+	NetClass string `json:"netclass"`
 }
 
 var (
@@ -128,7 +141,15 @@ func Start(configJSON string) (int, error) {
 	stopLocked()
 
 	var echList []byte
-	if mc.ECH != "" {
+	if dom, ok := strings.CutPrefix(mc.ECH, "fetch:"); ok {
+		ectx, ecancel := context.WithTimeout(context.Background(), 10*time.Second)
+		echList, err = kal2core.FetchECHConfigList(ectx, dom)
+		ecancel()
+		if err != nil {
+			logf("kal2: ech fetch %s: %v (dialing without ECH)", dom, err)
+			echList = nil
+		}
+	} else if mc.ECH != "" {
 		echList, err = kal2core.DecodeBase64(mc.ECH)
 		if err != nil {
 			return 0, fmt.Errorf("bad ech param: %w", err)
@@ -159,6 +180,10 @@ func Start(configJSON string) (int, error) {
 		Cover:              cover,
 		Front:              mc.Front,
 		Fronts:             mc.Fronts,
+		Lanes:              mc.Lanes,
+		Churn:              time.Duration(mc.ChurnSec) * time.Second,
+		CarrierStatePath:   mc.CarrierState,
+		NetClass:           mc.NetClass,
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()

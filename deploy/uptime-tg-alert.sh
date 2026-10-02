@@ -16,7 +16,7 @@ set -u
 TOKEN=${UPTIME_TG_TOKEN:-$(cat /etc/kal2/tg.token 2>/dev/null)}
 CHAT=${UPTIME_TG_CHAT:-$(cat /etc/kal2/tg.chat 2>/dev/null)}
 STATE=${UPTIME_TG_STATE:-/etc/kal2/uptime-tg-state}
-UNITS=${UPTIME_UNITS:-"kal2.service kal2-quasar.service kal2-panel.service"}
+UNITS=${UPTIME_UNITS:-"kal2.service kal2-quasar.service kal2-panel.service kal2-udpmux.service"}
 # udp443 sing-box and tcp443 haproxy are the public edge — watch them too.
 PORTS=${UPTIME_PORTS:-"udp:443 tcp:443 udp:20443 udp:20444 udp:20445 tcp:9443"}
 [ -n "$TOKEN" ] && [ -n "$CHAT" ] || exit 0

@@ -1,0 +1,25 @@
+# kal2-udpmux — UDP/443 demuxer in front of sing-box (hy2) and kal2 UDP
+# carriers. Install on the US box after moving sing-box's hysteria2 inbound
+# off :443:
+#
+#   1. /etc/sing-box/config.json: "listen_port": 443 -> 23443
+#   2. systemctl restart sing-box
+#   3. install this unit, `systemctl enable --now kal2-udpmux`
+#   4. verify: ss -ulnp | grep :443 -> kal2-udpmux
+#   rollback: sing-box listen_port back to 443 + systemctl stop kal2-udpmux
+[Unit]
+Description=KAL/2 UDP/443 demuxer (quic2/quasar/hy2)
+After=network-online.target sing-box.service
+Wants=network-online.target
+
+[Service]
+ExecStart=/opt/kal2/kal2-udpmux -listen :443 -hy2 127.0.0.1:23443 -quic2 127.0.0.1:20444 -quasar 127.0.0.1:20443
+Restart=always
+RestartSec=2
+# Public UDP socket, loopback backends only — no extra privileges needed
+# beyond binding :443.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

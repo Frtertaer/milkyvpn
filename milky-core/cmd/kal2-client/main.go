@@ -59,13 +59,16 @@ func main() {
 	fetchMax := flag.Int64("fetchmax", 32<<20, "max bytes to read for -fetch")
 	proxyURL := flag.String("proxy", "", "base-dial proxy (http://user:pass@host:port)")
 	insecure := flag.Bool("insecure", false, "skip carrier TLS chain verify (inner handshake still authenticates the server pubkey)")
-	ech := flag.String("ech", "", "base64 ECHConfigList — Encrypted Client Hello on veil (outer SNI shows only the cover name)")
+	ech := flag.String("ech", "", "base64 ECHConfigList, or fetch:<domain> to pull the real decoy domain's live ECH keys from DNS (Encrypted Client Hello on veil — outer SNI shows only the cover name)")
 	pin := flag.String("pin", "", "comma list of sha256(SPKI) pins (hex|b64) replacing CA verification")
 	cover := flag.Bool("cover", true, "jittered chaff traffic against timing/size DPI heuristics")
 	front := flag.String("front", "", "front relay URL(s), comma-separated (https://host[:port][/base]) — one = front-only; several = universal sweep: direct first, then each front in order")
 	qfec := flag.String("qfec", "0,0", "quasar carrier Reed-Solomon FEC shards data,parity (e.g. 10,3)")
 	qres := flag.Int("qresend", 0, "quasar client KCP dup-ack fast-retransmit threshold (0 = RTO only)")
-	lanes := flag.Int("lanes", 0, "number of parallel carrier sessions (multi-lane stream spreading)")
+	lanes := flag.Int("lanes", 0, "number of parallel carrier sessions (multi-lane stream spreading; >1 + multi-carrier list pins each lane to its own carrier — true multipath)")
+	churn := flag.Duration("churn", 0, "rotate the session's transport onto the next carrier every ~this long (streams survive via ticketed resume)")
+	carrierState := flag.String("carrier-state", "", "carrier-memory file: remember last-good carrier per -netclass")
+	netClass := flag.String("netclass", "", "network class for carrier memory (e.g. wifi/mobile); supplied by the app")
 	qlanes := flag.Int("qlanes", 1, "quasar parallel sessions; streams round-robin across lanes")
 	qwnd := flag.Int("qwnd", 0, "quasar receive window in segments; paces the server's offered rate to ~wnd*mtu/RTT (0 = 16384)")
 	flag.Parse()
@@ -143,6 +146,9 @@ func main() {
 		QuasarLanes:        *qlanes,
 		DialControl:        bindGuard.Control,
 		Fronts:             frontURLs(*front),
+		Churn:              *churn,
+		CarrierStatePath:   *carrierState,
+		NetClass:           *netClass,
 	}
 	for _, p := range strings.Split(*pin, ",") {
 		if p = strings.TrimSpace(p); p == "" {
@@ -154,7 +160,17 @@ func main() {
 		}
 		cfg.PinSHA256 = append(cfg.PinSHA256, b)
 	}
-	if *ech != "" {
+	if dom, ok := strings.CutPrefix(*ech, "fetch:"); ok {
+		ectx, ecancel := context.WithTimeout(context.Background(), 10*time.Second)
+		list, err := kal2core.FetchECHConfigList(ectx, dom)
+		ecancel()
+		if err != nil {
+			log.Printf("kal2: ech fetch %s: %v (dialing without ECH)", dom, err)
+		} else {
+			cfg.ECHConfigList = list
+			log.Printf("kal2: ech fetched from %s (%d bytes)", dom, len(list))
+		}
+	} else if *ech != "" {
 		list, err := kal2core.DecodeBase64(*ech)
 		if err != nil {
 			log.Fatalf("bad -ech: %v", err)
@@ -176,7 +192,7 @@ func main() {
 		log.Fatalf("dial: %v", err)
 	}
 	defer cli.Close()
-	log.Printf("kal2: session up via %s", *carrier)
+	log.Printf("kal2: session up via %s (%s)", *carrier, cli.ActiveCarrier())
 
 	if *fetch != "" {
 		st, err := openURL(cli, *fetch)
@@ -214,7 +230,7 @@ func main() {
 			outs = append(outs, failsoft{logFile})
 		}
 		log.SetOutput(io.MultiWriter(outs...))
-		ctl.echo("kal2: session up via " + *carrier)
+		ctl.echo("kal2: session up via " + cli.ActiveCarrier())
 	}
 
 	sigCtx, stopSig := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

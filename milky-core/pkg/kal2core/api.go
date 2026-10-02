@@ -8,11 +8,14 @@ import (
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -194,6 +197,25 @@ type ClientConfig struct {
 	// Resume, set internally by the migration path, makes dialers run a
 	// KLDO-rs- resumption flight on the fresh transport.
 	Resume *kal2.ResumeState
+	// Churn, when >0, periodically rotates the session's transport onto the
+	// next carrier in the configured list via a ticketed resume (streams
+	// survive — the session object is rebound, not redialed). Long-lived
+	// flows on one carrier give behavioral classifiers time to fingerprint
+	// the tunnel; a rotated flow reads as another ordinary browsing burst.
+	Churn time.Duration
+	// CarrierStatePath optionally points at a JSON file where the client
+	// remembers which carrier/SNI won per NetClass; the next Dial on the
+	// same network prefers that pair instead of re-hedging blind — on nets
+	// that police UDP/TLS the session comes up on the first attempt.
+	CarrierStatePath string
+	// NetClass names the current network ("wifi", "mobile", ...) supplied
+	// by the embedding app; the carrier memory keys on it. Empty = single
+	// default bucket.
+	NetClass string
+	// PreferCarrier/PreferSNI move a remembered winner first in the hedged
+	// dial order — internal, populated from CarrierStatePath at Dial.
+	PreferCarrier string
+	PreferSNI     string
 }
 
 // Client is an established kal2 tunnel end. When EnableReconnect is running,
@@ -205,7 +227,15 @@ type Client struct {
 	logf   func(string, ...any)
 	mu     sync.Mutex
 	lanes  []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
-	laneRR atomic.Uint32
+	// laneCfg is each lane's dial config: when the carrier list has >1
+	// entry each lane pins to carriers[i%len] — true multipath, not N
+	// copies of the same fastest carrier.
+	laneCfg []ClientConfig
+	laneRR  atomic.Uint32
+	// activeCarrier names the carrier the live single session came up on
+	// (or was last churned to); the churn loop rotates away from it.
+	activeCarrier atomic.Value // string
+	churnRR       atomic.Int32
 	// laneRTT records the last watchdog pong RTT per lane (ns; 0 = not yet
 	// measured). A lane whose pongs crawl is throttled rather than dead —
 	// the kill path would never fire on it, so it must be quarantined out of
@@ -569,26 +599,43 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 	if logf == nil {
 		logf = func(string, ...any) {}
 	}
+	// Carrier memory: on this network class the last-good carrier/SNI goes
+	// first in the hedge instead of another blind sweep.
+	if cfg.CarrierStatePath != "" {
+		if prefC, prefS := carrierMemRead(cfg.CarrierStatePath, cfg.NetClass); prefC != "" {
+			cfg.PreferCarrier, cfg.PreferSNI = prefC, prefS
+		}
+	}
 	cli := &Client{cfg: cfg, logf: logf, stop: make(chan struct{}), scores: scores}
 	n := cfg.Lanes
 	if n <= 0 {
 		n = cfg.QuasarLanes
 	}
 	if n > 1 {
+		cs := carriers(cfg)
 		cli.lanes = make([]atomic.Pointer[kal2.Session], n)
 		cli.laneRTT = make([]atomic.Int64, n)
+		cli.laneCfg = make([]ClientConfig, n)
 		errs := make([]error, n)
 		var wg sync.WaitGroup
 		for i := 0; i < n; i++ {
+			lc := cfg
+			if len(cs) > 1 {
+				// Pin each lane to its own carrier — real multipath:
+				// a transport being cut kills one lane while streams
+				// keep flowing on the survivors.
+				lc.Carrier = cs[i%len(cs)]
+			}
+			cli.laneCfg[i] = lc
 			wg.Add(1)
-			go func(i int) {
+			go func(i int, lc ClientConfig) {
 				defer wg.Done()
-				s, err := dialAny(ctx, cfg, i, scores)
+				s, _, _, err := dialAny(ctx, lc, i, scores)
 				if err == nil {
 					cli.lanes[i].Store(s)
 				}
 				errs[i] = err
-			}(i)
+			}(i, lc)
 		}
 		wg.Wait()
 		var firstErr error
@@ -607,16 +654,149 @@ func Dial(ctx context.Context, cfg ClientConfig) (*Client, error) {
 			logf("core: %d/%d carrier lanes up at dial", up, n)
 		}
 	} else {
-		sess, err := dialAny(ctx, cfg, 0, scores)
+		sess, carrierName, sniName, err := dialAny(ctx, cfg, 0, scores)
 		if err != nil {
 			return nil, err
 		}
 		cli.Sess = sess
+		cli.activeCarrier.Store(carrierName)
+		if carrierName != "" {
+			carrierMemWrite(cfg.CarrierStatePath, cfg.NetClass, carrierName, sniName)
+		}
 	}
 	if cfg.Cover {
 		go cli.coverLoop()
 	}
+	if cfg.Churn > 0 {
+		go cli.churnLoop(cfg.Churn)
+	}
 	return cli, nil
+}
+
+// carrierMemFile is the on-disk carrier memory: per netclass the last
+// carrier+SNI that completed a dial.
+type carrierMemFile struct {
+	ByNet map[string]struct {
+		Carrier string `json:"carrier"`
+		SNI     string `json:"sni"`
+		T       int64  `json:"t"`
+	} `json:"by_net"`
+}
+
+func carrierMemRead(path, netClass string) (string, string) {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return "", ""
+	}
+	var m carrierMemFile
+	if json.Unmarshal(b, &m) != nil {
+		return "", ""
+	}
+	r, ok := m.ByNet[netClass]
+	if !ok {
+		return "", ""
+	}
+	return r.Carrier, r.SNI
+}
+
+func carrierMemWrite(path, netClass, carrierName, sniName string) {
+	if path == "" || carrierName == "" {
+		return
+	}
+	var m carrierMemFile
+	if b, err := os.ReadFile(path); err == nil {
+		_ = json.Unmarshal(b, &m)
+	}
+	if m.ByNet == nil {
+		m.ByNet = map[string]struct {
+			Carrier string `json:"carrier"`
+			SNI     string `json:"sni"`
+			T       int64  `json:"t"`
+		}{}
+	}
+	m.ByNet[netClass] = struct {
+		Carrier string `json:"carrier"`
+		SNI     string `json:"sni"`
+		T       int64  `json:"t"`
+	}{Carrier: carrierName, SNI: sniName, T: time.Now().Unix()}
+	b, err := json.Marshal(&m)
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(filepath.Dir(path), 0o755)
+	tmp := path + ".tmp"
+	if os.WriteFile(tmp, b, 0o600) == nil {
+		_ = os.Rename(tmp, path)
+	}
+}
+
+// churnLoop rotates the live session's transport onto the next carrier in
+// the configured list every ~every interval — a ticketed resume keeps the
+// same session (and streams) alive on the fresh transport. Lane mode is
+// already spread across carriers, so churn only runs for a single session.
+func (c *Client) churnLoop(every time.Duration) {
+	for {
+		d := every/2 + time.Duration(rand.Int64N(int64(every)))
+		select {
+		case <-c.stop:
+			return
+		case <-time.After(d):
+		}
+		if len(c.lanes) > 0 {
+			continue
+		}
+		sess := c.Session()
+		if sess == nil {
+			continue
+		}
+		rs, ok := sess.TicketState()
+		if !ok {
+			continue
+		}
+		cs := carriers(c.cfg)
+		if len(cs) < 2 {
+			continue
+		}
+		cur, _ := c.activeCarrier.Load().(string)
+		next := ""
+		for i := 0; i < len(cs); i++ {
+			cand := cs[int(c.churnRR.Add(1))%len(cs)]
+			if cand != cur {
+				next = cand
+				break
+			}
+		}
+		if next == "" {
+			continue
+		}
+		c2 := c.cfg
+		c2.Carrier = next
+		c2.Resume = rs
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		s, _, _, err := dialAny(ctx, c2, int(c.rrIdx.Add(1)), c.scores)
+		cancel()
+		if err == nil && s == sess {
+			c.activeCarrier.Store(next)
+			carrierMemWrite(c.cfg.CarrierStatePath, c.cfg.NetClass, next, c2.SNI)
+			c.logf("core: churn: transport rotated to %s", next)
+			continue
+		}
+		if s != nil && s != sess {
+			_ = s.Close()
+		}
+		c.logf("core: churn: rotate to %s failed: %v", next, err)
+	}
+}
+
+// ActiveCarrier names the carrier the live session is currently bound to
+// (the dial winner, or the latest churn target). Empty in lane mode until
+// a lane pins it — mostly for logging/UI.
+func (c *Client) ActiveCarrier() string {
+	v := c.activeCarrier.Load()
+	if v == nil {
+		return ""
+	}
+	return v.(string)
 }
 
 // coverLoop emits jittered random-payload PINGs while the session is up so an
@@ -670,18 +850,31 @@ func splitCommaList(v string) []string {
 // wins exactly when the connection-shaped carriers are being cut.
 func carriers(cfg ClientConfig) []string {
 	c := strings.TrimSpace(cfg.Carrier)
+	var out []string
 	if c == "" || c == "auto" {
-		return []string{"veil", "drift", "cdn", "mosaic"}
-	}
-	parts := strings.Split(c, ",")
-	out := parts[:0]
-	for _, p := range parts {
-		if t := strings.TrimSpace(p); t != "" {
-			out = append(out, t)
+		out = []string{"veil", "drift", "cdn", "mosaic"}
+	} else {
+		parts := strings.Split(c, ",")
+		out = parts[:0]
+		for _, p := range parts {
+			if t := strings.TrimSpace(p); t != "" {
+				out = append(out, t)
+			}
+		}
+		if len(out) == 0 {
+			out = []string{"veil"}
 		}
 	}
-	if len(out) == 0 {
-		return []string{"veil"}
+	// A remembered last-good carrier goes first in the hedge order so it
+	// usually wins without the sweep. Pinned carriers (explicit list) are
+	// never reordered.
+	if p := cfg.PreferCarrier; p != "" && len(out) > 1 && (c == "" || c == "auto") {
+		for i, x := range out {
+			if x == p {
+				out[0], out[i] = out[i], out[0]
+				break
+			}
+		}
 	}
 	return out
 }
@@ -690,7 +883,7 @@ func carriers(cfg ClientConfig) []string {
 // first successful session; losing sessions are closed when they finish.
 // Candidate order comes from the scorecard (failover ordering); the race
 // starts staggered so the healthiest carrier usually wins.
-func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (*kal2.Session, error) {
+func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (*kal2.Session, string, error) {
 	cs := carriers(cfg)
 	if scores != nil {
 		cs = scores.Order(cs)
@@ -703,7 +896,7 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 		if scores != nil {
 			scores.ReportDial(cs[0], err == nil, time.Since(t0).Seconds())
 		}
-		return s, err
+		return s, cs[0], err
 	}
 	type result struct {
 		name string
@@ -749,7 +942,7 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 						}
 					}
 				}()
-				return r.s, nil
+				return r.s, r.name, nil
 			}
 			if carrier.IsHandshakeStage(r.err) {
 				stageErr = r.err
@@ -757,7 +950,7 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 			lastErr = r.err
 		case <-ctx.Done():
 			cancel()
-			return nil, ctx.Err()
+			return nil, "", ctx.Err()
 		}
 	}
 	cancel()
@@ -765,9 +958,9 @@ func dialHedged(ctx context.Context, cfg ClientConfig, scores *core.Scorecard) (
 	// surface that error over a sibling lane's transport failure so the
 	// entry-block canary never fires on a reachable server.
 	if stageErr != nil {
-		return nil, stageErr
+		return nil, "", stageErr
 	}
-	return nil, lastErr
+	return nil, "", lastErr
 }
 
 // EntriesBlockedError reports that every entry point (addr x sni, all
@@ -816,9 +1009,17 @@ func frontableCarriers(cfg ClientConfig) []string {
 // through it. With several fronts the sweep is universal: the direct entry
 // is tried first, then each front in order — the same link survives open
 // networks, IP blocks and whitelist mode.
-func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scorecard) (*kal2.Session, error) {
+func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scorecard) (*kal2.Session, string, string, error) {
 	addrs := endpoints(cfg)
 	snis := splitCommaList(cfg.SNI)
+	if p := cfg.PreferSNI; p != "" && len(snis) > 1 {
+		for i, s := range snis {
+			if s == p {
+				snis[0], snis[i] = snis[i], snis[0]
+				break
+			}
+		}
+	}
 	fronts := cfg.fronts()
 	universal := len(fronts) > 1
 	var lastErr error
@@ -843,16 +1044,16 @@ func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scor
 			c2.Front = fronts[i-len(addrs)]
 			c2.Fronts = nil
 		}
-		s, err := dialHedged(ctx, c2, scores)
+		s, name, err := dialHedged(ctx, c2, scores)
 		if err == nil {
-			return s, nil
+			return s, name, c2.SNI, nil
 		}
 		if carrier.IsHandshakeStage(err) {
 			sawInner = true
 		}
 		lastErr = err
 		if ctx.Err() != nil {
-			return nil, ctx.Err()
+			return nil, "", "", ctx.Err()
 		}
 	}
 	if !sawInner {
@@ -862,9 +1063,9 @@ func dialAny(ctx context.Context, cfg ClientConfig, start int, scores *core.Scor
 		if len(snis) > 1 {
 			sweep *= len(snis)
 		}
-		return nil, &EntriesBlockedError{Attempts: sweep + len(fronts) - btoi(len(fronts) == 1), Err: lastErr}
+		return nil, "", "", &EntriesBlockedError{Attempts: sweep + len(fronts) - btoi(len(fronts) == 1), Err: lastErr}
 	}
-	return nil, lastErr
+	return nil, "", "", lastErr
 }
 
 func btoi(b bool) int {
@@ -1011,7 +1212,7 @@ func (c *Client) reconnectLoop() {
 			case <-time.After(backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))):
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)), c.scores)
+			s, name, sni, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)), c.scores)
 			cancel()
 			if err == nil {
 				c.mu.Lock()
@@ -1021,6 +1222,10 @@ func (c *Client) reconnectLoop() {
 					_ = s.Close() // concurrent swap won; keep it
 				}
 				c.mu.Unlock()
+				if name != "" {
+					c.activeCarrier.Store(name)
+					carrierMemWrite(c.cfg.CarrierStatePath, c.cfg.NetClass, name, sni)
+				}
 				c.logf("core: session restored")
 				break
 			}
@@ -1139,7 +1344,7 @@ func (c *Client) tryMigrate(sess *kal2.Session) bool {
 	}
 	ch := make(chan migRes, 1)
 	go func() {
-		s, err := dialAny(ctx, cfg, int(c.rrIdx.Add(1)), c.scores)
+		s, _, _, err := dialAny(ctx, cfg, int(c.rrIdx.Add(1)), c.scores)
 		ch <- migRes{s, err}
 	}()
 	select {
@@ -1208,7 +1413,11 @@ func (c *Client) reconnectLane(i int) {
 			case <-time.After(backoff + time.Duration(rand.Int64N(int64(backoff/4)+1))):
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
-			s, err := dialAny(ctx, c.cfg, int(c.rrIdx.Add(1)), c.scores)
+			lc := c.cfg
+			if i < len(c.laneCfg) {
+				lc = c.laneCfg[i] // lanes pinned to a carrier redial that carrier
+			}
+			s, _, _, err := dialAny(ctx, lc, int(c.rrIdx.Add(1)), c.scores)
 			cancel()
 			if err == nil {
 				c.laneRTT[i].Store(0) // fresh session, unmeasured = healthy
@@ -1281,3 +1490,97 @@ func toCarrierUsers(in []User) []carrier.User {
 var _ = http2.ErrCodeNo // keep http2 linked for drift
 
 const defaultDecoyPage = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Welcome</title></head><body><h1>It works</h1></body></html>`
+
+// FetchECHConfigList resolves the ECHConfigList a live decoy domain publishes
+// in its DNS HTTPS/SVCB record (svcbparam key 5) via Google DoH — passing the
+// real domain's keys makes the veil handshake bit-identical to a browser
+// actually talking to that decoy, including ECH. Returns nil when the domain
+// publishes no ech parameter (caller falls back to plain outer SNI).
+func FetchECHConfigList(ctx context.Context, domain string) ([]byte, error) {
+	u := "https://dns.google/resolve?name=" + domain + "&type=HTTPS"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, u, nil)
+	if err != nil {
+		return nil, err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var j struct {
+		Answer []struct {
+			Data string `json:"data"`
+		} `json:"Answer"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&j); err != nil {
+		return nil, err
+	}
+	for _, a := range j.Answer {
+		// dns.google pretty-prints known SVCB params; the ech value is
+		// base64 right in the presentation form.
+		for _, f := range strings.Fields(a.Data) {
+			if v, ok := strings.CutPrefix(f, "ech="); ok {
+				if b, err := base64.StdEncoding.DecodeString(v); err == nil && len(b) > 0 {
+					return b, nil
+				}
+			}
+		}
+		// Unknown/generic answers come through as RFC 3597 "\# len hex".
+		rdata, err := parseDoHGenericRR(a.Data)
+		if err != nil || len(rdata) < 3 {
+			continue
+		}
+		if ech := svcbParam(rdata, 5); ech != nil {
+			return ech, nil
+		}
+	}
+	return nil, fmt.Errorf("no ech= in HTTPS record of %s", domain)
+}
+
+// parseDoHGenericRR decodes the RFC 3597 "\# <len> <hex>" presentation the
+// DoH JSON API uses for records it doesn't know how to pretty-print.
+func parseDoHGenericRR(data string) ([]byte, error) {
+	f := strings.Fields(data)
+	if len(f) < 3 || f[0] != "\\#" {
+		return nil, errors.New("not generic RR form")
+	}
+	return hex.DecodeString(strings.Join(f[2:], ""))
+}
+
+// svcbParam walks SVCB/HTTPS rdata: SvcPriority(2) + TargetName + params
+// (key2,len2,value sorted by key). Returns param `want`'s value or nil.
+func svcbParam(rdata []byte, want uint16) []byte {
+	off := 2 // SvcPriority
+	// TargetName — skip a DNS name (uncompressed labels to the root dot).
+	for {
+		if off >= len(rdata) {
+			return nil
+		}
+		l := int(rdata[off])
+		if l == 0 {
+			off++
+			break
+		}
+		if l&0xC0 == 0xC0 { // compression pointer: ends the name
+			off += 2
+			break
+		}
+		off += 1 + l
+	}
+	for off+4 <= len(rdata) {
+		k := uint16(rdata[off])<<8 | uint16(rdata[off+1])
+		l := int(rdata[off+2])<<8 | int(rdata[off+3])
+		off += 4
+		if off+l > len(rdata) {
+			return nil
+		}
+		if k == want {
+			return rdata[off : off+l]
+		}
+		if k > want { // params are sorted by key
+			return nil
+		}
+		off += l
+	}
+	return nil
+}

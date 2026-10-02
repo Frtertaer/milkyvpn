@@ -217,7 +217,16 @@ class MilkyVpnService : VpnService() {
             var kal2SocksPort: Int? = null
             if (Kal2Config.isKal2(spec)) {
                 trace.begin("KAL2_SESSION_STARTING")
-                kal2SocksPort = Kal2Service.startSession(this, Kal2Config.toJson(spec).toString())
+                val kcfg = Kal2Config.toJson(spec)
+                // Carrier memory: last-good carrier per net class (wifi vs
+                // mobile get policed differently) — the next connect starts
+                // from the remembered winner instead of a blind hedge.
+                kcfg.put("netclass", currentNetClass())
+                kcfg.put("carrier_state", java.io.File(filesDir, "kal2-carrier.json").absolutePath)
+                // Churn: rotate the transport every ~5min so long flows
+                // don't linger in the behavioral-fingerprint window.
+                kcfg.put("churn_sec", 300)
+                kal2SocksPort = Kal2Service.startSession(this, kcfg.toString())
                 trace.success("KAL2_SESSION_STARTED", "carrier=${spec.network.lowercase()}")
             }
 
@@ -543,6 +552,21 @@ class MilkyVpnService : VpnService() {
         } catch (t: Throwable) {
             SafeLog.w("registerNetworkCallback", t)
         }
+    }
+
+    /** "wifi"/"mobile"/"other" — key for the core's per-network carrier memory. */
+    private fun currentNetClass(): String {
+        for (n in connectivity.allNetworks) {
+            val c = connectivity.getNetworkCapabilities(n) ?: continue
+            if (!c.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) ||
+                c.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) continue
+            return when {
+                c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> "wifi"
+                c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> "mobile"
+                else -> "other"
+            }
+        }
+        return "other"
     }
 
     /** True when some non-VPN network currently offers Internet. */

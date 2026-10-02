@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"net"
+	"path/filepath"
 	"reflect"
 	"sync"
 	"sync/atomic"
@@ -63,7 +64,7 @@ func TestDialHedgedPicksWinner(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	s, err := dialHedged(ctx, ClientConfig{Carrier: "auto"}, nil)
+	s, _, err := dialHedged(ctx, ClientConfig{Carrier: "auto"}, nil)
 	if err != nil {
 		t.Fatalf("hedged dial: %v", err)
 	}
@@ -94,7 +95,7 @@ func TestDialHedgedAllFail(t *testing.T) {
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	s, err := dialHedged(ctx, ClientConfig{Carrier: "auto"}, nil)
+	s, _, err := dialHedged(ctx, ClientConfig{Carrier: "auto"}, nil)
 	if err == nil || s != nil {
 		t.Fatalf("want failure, got s=%v err=%v", s, err)
 	}
@@ -277,7 +278,7 @@ func TestDialAnyRotatesSNIAcrossAttempts(t *testing.T) {
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := dialAny(ctx, ClientConfig{
+	_, _, _, err := dialAny(ctx, ClientConfig{
 		Addrs:   []string{"a1:443", "a2:443"},
 		SNI:     "s1.test, s2.test",
 		Carrier: "veil",
@@ -308,7 +309,7 @@ func TestDialAnyEntriesBlocked(t *testing.T) {
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := dialAny(ctx, ClientConfig{
+	_, _, _, err := dialAny(ctx, ClientConfig{
 		Addrs:   []string{"10.255.255.1:443", "10.255.255.2:443"},
 		SNI:     "a.example,b.example",
 		Carrier: "veil",
@@ -336,7 +337,7 @@ func TestDialAnyInnerStageNotBlocked(t *testing.T) {
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := dialAny(ctx, ClientConfig{
+	_, _, _, err := dialAny(ctx, ClientConfig{
 		Addrs:   []string{"10.255.255.1:443"},
 		SNI:     "a.example",
 		Carrier: "veil",
@@ -363,7 +364,7 @@ func TestDialHedgedStageErrorBeatsTransport(t *testing.T) {
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := dialHedged(ctx, ClientConfig{Carrier: "veil,drift", SNI: "a.example"}, nil)
+	_, _, err := dialHedged(ctx, ClientConfig{Carrier: "veil,drift", SNI: "a.example"}, nil)
 	if err == nil {
 		t.Fatal("want error")
 	}
@@ -393,7 +394,7 @@ func TestDialAnyUniversalFrontSweep(t *testing.T) {
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, err := dialAny(ctx, ClientConfig{
+	_, _, _, err := dialAny(ctx, ClientConfig{
 		Addrs:  []string{"a1:443"},
 		SNI:    "s1.test",
 		Carrier: "auto",
@@ -449,7 +450,7 @@ func TestDialAnySingleFrontStaysFrontOnly(t *testing.T) {
 	}))
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	_, _ = dialAny(ctx, ClientConfig{
+	_, _, _, _ = dialAny(ctx, ClientConfig{
 		Addrs:  []string{"a1:443", "a2:443"},
 		SNI:    "s1.test",
 		Carrier: "veil",
@@ -464,5 +465,45 @@ func TestDialAnySingleFrontStaysFrontOnly(t *testing.T) {
 		if f != "https://f1.example" {
 			t.Fatalf("attempt dialed without front: %v", got)
 		}
+	}
+}
+
+func TestCarrierMemRoundTripAndPrefer(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cmem.json")
+	carrierMemWrite(path, "wifi", "mosaic", "decoy.example")
+	c, s := carrierMemRead(path, "wifi")
+	if c != "mosaic" || s != "decoy.example" {
+		t.Fatalf("read = %q,%q", c, s)
+	}
+	if c, _ := carrierMemRead(path, "mobile"); c != "" {
+		t.Fatalf("unknown netclass = %q", c)
+	}
+	cs := carriers(ClientConfig{PreferCarrier: "mosaic"})
+	if cs[0] != "mosaic" {
+		t.Fatalf("prefer not first: %v", cs)
+	}
+	// Explicit carrier lists are not reordered by memory.
+	cs = carriers(ClientConfig{Carrier: "veil,drift", PreferCarrier: "drift"})
+	if cs[0] != "veil" {
+		t.Fatalf("explicit list reordered: %v", cs)
+	}
+}
+
+func TestDialHedgedReportsWinner(t *testing.T) {
+	defer dialOneFn.Store(dialFunc(dialOne))
+	dialOneFn.Store(dialFunc(func(ctx context.Context, cfg ClientConfig) (*kal2.Session, error) {
+		if cfg.Carrier == "veil" {
+			return nil, errors.New("veil dead")
+		}
+		return &kal2.Session{}, nil
+	}))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, name, err := dialHedged(ctx, ClientConfig{Carrier: "veil,drift"}, nil)
+	if err != nil {
+		t.Fatalf("hedged: %v", err)
+	}
+	if name != "drift" {
+		t.Fatalf("winner = %q, want drift", name)
 	}
 }

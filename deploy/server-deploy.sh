@@ -12,6 +12,7 @@ HOST=${DEPLOY_HOST:-root@23.133.88.167}
 KEY=${SSH_KEY:-$HOME/.ssh/milky_ops_plain}
 SERVER_BIN=${1:-/tmp/kal2-server}
 PANEL_BIN=${2:-/tmp/kal2-panel}
+MUX_BIN=${3:-/tmp/kal2-udpmux}
 SSH="ssh -i $KEY -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new $HOST"
 SCP="scp -i $KEY -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new"
 
@@ -20,6 +21,7 @@ SCP="scp -i $KEY -o ConnectTimeout=15 -o StrictHostKeyChecking=accept-new"
 echo "== upload"
 $SCP "$SERVER_BIN" "$HOST:/opt/kal2/kal2-server.new"
 $SCP "$PANEL_BIN" "$HOST:/opt/kal2/kal2-panel.new"
+[ -f "$MUX_BIN" ] && $SCP "$MUX_BIN" "$HOST:/opt/kal2/kal2-udpmux.new" || true
 
 echo "== stage panel on :9444 + smoke before prod"
 $SSH 'bash -s' <<'EOF'
@@ -58,6 +60,12 @@ for b in kal2-server kal2-panel; do
 done
 mv kal2-server.new kal2-server; chmod 755 kal2-server
 mv kal2-panel.stg kal2-panel; chmod 755 kal2-panel
+# udp:443 demuxer: swap in place when present; try-restart is a no-op on
+# boxes where the unit isn't installed yet (first cutover is manual).
+if [ -f kal2-udpmux.new ]; then
+  [ -f kal2-udpmux ] && cp -a kal2-udpmux kal2-udpmux.prev
+  mv kal2-udpmux.new kal2-udpmux; chmod 755 kal2-udpmux
+fi
 # rewrite any ExecStart that points at a versioned binary to the stable path
 for u in kal2.service kal2-quasar.service kal2-panel.service; do
   for f in /etc/systemd/system/$u /etc/systemd/system/$u.d/*.conf; do
@@ -67,8 +75,10 @@ for u in kal2.service kal2-quasar.service kal2-panel.service; do
 done
 systemctl daemon-reload
 systemctl restart kal2 kal2-quasar kal2-panel
+systemctl try-restart kal2-udpmux 2>/dev/null || true
 sleep 2
-for u in kal2 kal2-quasar kal2-panel; do
+for u in kal2 kal2-quasar kal2-panel kal2-udpmux; do
+  systemctl cat $u >/dev/null 2>&1 || continue # unit may not exist yet
   systemctl is-active --quiet $u || { echo "FAIL: $u not active"; systemctl status $u --no-pager | tail -8; exit 1; }
   echo "OK: $u active"
 done
