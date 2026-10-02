@@ -81,6 +81,10 @@
   <h2>MilkyVPN — вход в панель</h2>
   <label>Токен администратора</label>
   <input type="password" id="tok" autofocus>
+  <div id="totpRow" style="display:none">
+    <label style="margin-top:10px">Код 2FA</label>
+    <input type="text" id="totpCode" inputmode="numeric" autocomplete="one-time-code" placeholder="6 цифр">
+  </div>
   <div class="row" style="margin-top:14px"><button onclick="login()">Войти</button></div>
 </div>
 <div id="app" style="display:none">
@@ -177,6 +181,24 @@
       <a class="mini ghost" style="padding:4px 10px;border-radius:8px" href="/api/backup" download="kal2-backup.json">Скачать бэкап</a>
     </div>
     <div class="sub" style="margin-top:8px">После смены придётся войти заново — все сессии слетают.</div>
+    <label style="margin-top:14px">Двухфакторная аутентификация <span class="pill" id="totpState">…</span></label>
+    <div id="totpOff">
+      <button class="mini" onclick="totpBegin()">Включить 2FA</button>
+    </div>
+    <div id="totpSetup" style="display:none">
+      <div class="sub">Отсканируй в Google Authenticator/Aegis и введи код:</div>
+      <img id="totpQr" style="width:160px;height:160px;margin-top:8px;border-radius:10px">
+      <div class="kv" style="margin-top:6px"><b>Секрет</b><span class="link" id="totpSec"></span></div>
+      <input type="text" id="totpEnCode" inputmode="numeric" placeholder="код из приложения" style="margin-top:8px">
+      <div class="row" style="margin-top:8px">
+        <button class="mini" onclick="totpEnable()">Подтвердить</button>
+        <button class="mini ghost" onclick="$('totpSetup').style.display='none'">Отмена</button>
+      </div>
+    </div>
+    <div id="totpOn" style="display:none">
+      <input type="text" id="totpDisCode" inputmode="numeric" placeholder="код для выключения">
+      <button class="mini" style="margin-top:8px" onclick="totpDisable()">Выключить 2FA</button>
+    </div>
   </div>
   <div class="card wide">
     <h2>Настройки сервера <span class="pill" id="dirtyPill" style="display:none">есть изменения</span></h2>
@@ -202,14 +224,43 @@ async function api(p,body){
   return r.json();
 }
 function showLogin(){ $('login').style.display='block'; $('app').style.display='none'; $('tok').focus(); }
-async function login(){ try{ await api('/api/login',{token:$('tok').value});
+async function login(){ try{ await api('/api/login',{token:$('tok').value,code:$('totpCode').value||undefined});
   $('login').style.display='none'; $('app').style.display='block'; loadAll();
-}catch(e){ toast('Неверный токен или ошибка',false);} }
+}catch(e){ if(String(e).includes('totp')){ $('totpRow').style.display='block'; $('totpCode').focus(); toast('Введи код 2FA',false);} else toast('Неверный токен или ошибка',false);} }
 async function logout(){ await api('/api/logout',{}); showLogin(); }
 $('tok').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+$('totpCode').addEventListener('keydown',e=>{if(e.key==='Enter')login();});
+
+async function totpLoad(){
+  try{ const s=await api('/api/totp/status');
+    $('totpState').textContent=s.enabled?'включена':'выключена';
+    $('totpState').className='pill '+(s.enabled?'on':'');
+    $('totpOff').style.display=s.enabled?'none':'block';
+    $('totpOn').style.display=s.enabled?'block':'none';
+    $('totpSetup').style.display='none';
+  }catch(e){}
+}
+async function totpBegin(){
+  try{ const r=await api('/api/totp/begin',{});
+    $('totpQr').src='/api/qr?text='+encodeURIComponent(r.uri);
+    $('totpSec').textContent=r.secret;
+    $('totpSetup').style.display='block';
+  }catch(e){ toast(e.message,false); }
+}
+async function totpEnable(){
+  try{ await api('/api/totp/enable',{code:$('totpEnCode').value});
+    toast('2FA включена'); totpLoad();
+  }catch(e){ toast('Неверный код — проверь и повтори',false); }
+}
+async function totpDisable(){
+  try{ await api('/api/totp/disable',{code:$('totpDisCode').value});
+    toast('2FA выключена'); totpLoad();
+  }catch(e){ toast('Неверный код',false); }
+}
 
 async function loadAll(){
   try{
+    totpLoad();
     const st=await api('/api/status');
     $('unitPill').textContent = st.unit_active?'сервер активен':'сервер ОСТАНОВЛЕН';
     $('unitPill').className='pill '+(st.unit_active?'on':'off');

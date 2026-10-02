@@ -15,6 +15,7 @@ import (
 	"crypto/subtle"
 	_ "embed"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -90,6 +91,9 @@ type panelStore struct {
 	// keep their last fetched links and the refresh silently no-ops (the app
 	// treats 404 as subscription_not_found and retains the snapshot).
 	SubDisabled bool `json:"sub_disabled"`
+	// TOTPSecret (hex) enables 2FA on panel login: the admin token AND a
+	// current authenticator code are both required. Empty = disabled.
+	TOTPSecret string `json:"totp_secret,omitempty"`
 }
 
 type entry struct {
@@ -99,13 +103,14 @@ type entry struct {
 }
 
 type panel struct {
-	mu        sync.Mutex
-	store     panelStore
-	path      string
-	token     []byte
-	unit      string
-	quasar    string
-	pubOrigin string
+	mu         sync.Mutex
+	store      panelStore
+	path       string
+	token      []byte
+	unit       string
+	quasar     string
+	pubOrigin  string
+	totpPending []byte // secret awaiting confirmation via /api/totp/enable
 }
 
 func main() {
@@ -153,6 +158,10 @@ func main() {
 	mux.HandleFunc("/api/audit", p.auth(func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"events": auditTail(auditPath, auditLimit)})
 	}))
+	mux.HandleFunc("/api/totp/status", p.auth(p.totpStatus))
+	mux.HandleFunc("/api/totp/begin", p.auth(p.totpBegin))
+	mux.HandleFunc("/api/totp/enable", p.auth(p.totpEnable))
+	mux.HandleFunc("/api/totp/disable", p.auth(p.totpDisable))
 	mux.HandleFunc("/sub/", p.sub)
 
 	go p.enforceWatch()
@@ -230,12 +239,26 @@ func randHex(n int) string {
 // ------------------------------------------------------------------ auth
 
 func (p *panel) login(w http.ResponseWriter, r *http.Request) {
-	var in struct{ Token string }
+	var in struct {
+		Token string `json:"token"`
+		Code  string `json:"code"`
+	}
 	_ = json.NewDecoder(r.Body).Decode(&in)
 	if subtle.ConstantTimeCompare([]byte(in.Token), p.token) != 1 {
 		p.audit(r, "login_fail", "")
 		http.Error(w, "bad token", 401)
 		return
+	}
+	p.mu.Lock()
+	totpHex := p.store.TOTPSecret
+	p.mu.Unlock()
+	if totpHex != "" {
+		secret, err := hex.DecodeString(totpHex)
+		if err != nil || !totpVerify(secret, in.Code) {
+			p.audit(r, "login_fail", "totp")
+			http.Error(w, "bad totp code", 401)
+		return
+		}
 	}
 	p.audit(r, "login", "")
 	exp := time.Now().Add(cookieTTL).Unix()
@@ -1098,6 +1121,78 @@ func (p *panel) password(w http.ResponseWriter, r *http.Request) {
 	}
 	p.token = []byte(in.New)
 	p.audit(r, "password_change", "")
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+// ------------------------------------------------------------------ 2FA (TOTP)
+
+func (p *panel) totpStatus(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	writeJSON(w, map[string]any{"enabled": p.store.TOTPSecret != ""})
+}
+
+// totpBegin generates a pending secret and returns its otpauth URI — the
+// caller renders it as a QR via /api/qr?text=. Nothing is persisted until
+// enable confirms a valid code, so an interrupted setup can't lock the
+// admin out.
+func (p *panel) totpBegin(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.store.TOTPSecret != "" {
+		http.Error(w, "totp already enabled", 400)
+		return
+	}
+	secret, b32 := totpNewSecret()
+	p.totpPending = secret
+	host := r.Host
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	writeJSON(w, map[string]any{"secret": b32, "uri": totpURI(b32, "MilkyVPN", host)})
+}
+
+func (p *panel) totpEnable(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Code string `json:"code"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.totpPending == nil {
+		http.Error(w, "call /api/totp/begin first", 400)
+		return
+	}
+	if !totpVerify(p.totpPending, in.Code) {
+		http.Error(w, "bad code", 403)
+		return
+	}
+	p.store.TOTPSecret = hex.EncodeToString(p.totpPending)
+	p.totpPending = nil
+	p.save()
+	p.audit(r, "totp_enable", "")
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (p *panel) totpDisable(w http.ResponseWriter, r *http.Request) {
+	var in struct {
+		Code string `json:"code"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&in)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.store.TOTPSecret == "" {
+		http.Error(w, "totp not enabled", 400)
+		return
+	}
+	secret, err := hex.DecodeString(p.store.TOTPSecret)
+	if err != nil || !totpVerify(secret, in.Code) {
+		http.Error(w, "bad code", 403)
+		return
+	}
+	p.store.TOTPSecret = ""
+	p.save()
+	p.audit(r, "totp_disable", "")
 	writeJSON(w, map[string]any{"ok": true})
 }
 

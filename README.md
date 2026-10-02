@@ -83,6 +83,8 @@ iOS и macOS — в активной доводке (см. `BUGS.md`); сбор�
 2. Вставить ссылку профиля `pandora://…` (или подписку Milky; старые ссылки `kal2://` тоже принимаются) в поле импорта.
 3. Нажать «Подключить». Всё.
 
+Частые вопросы — в [FAQ_RU.md](FAQ_RU.md).
+
 ## Честное состояние подключения
 
 `CONNECTING → (prepare → resolve → establish TUN → engine start → measureDelay через туннель) → CONNECTED`. Любой сбой ⇒ teardown + `ERROR(code)` — без вечного «Подключение…».

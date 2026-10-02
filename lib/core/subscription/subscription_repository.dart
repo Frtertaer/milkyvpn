@@ -214,6 +214,7 @@ class SubscriptionRepository extends ChangeNotifier {
     DateTime? updatedAt;
     DateTime? expiresAt;
     var any = false;
+    var profilesIn = 0;
     for (final s in [
       ..._urls.map((u) => _snaps[u.toString()]),
       _textSnapshot,
@@ -224,6 +225,7 @@ class SubscriptionRepository extends ChangeNotifier {
       received += s.receivedEntryCount;
       malformed += s.malformedEntryCount;
       dropped += s.droppedDuplicateCount;
+      profilesIn += s.profiles.length;
       for (final p in s.profiles) {
         if (seen.add(p.id)) all.add(p);
       }
@@ -236,6 +238,10 @@ class SubscriptionRepository extends ChangeNotifier {
       }
     }
     if (!any) return null;
+    // Cross-source dedupe: profiles dropped by the union count toward
+    // `dropped` so the merged counters still satisfy the count invariant
+    // (received == parsed + malformed, parsed == postDedupe + dropped).
+    dropped += profilesIn - all.length;
     return SubscriptionSnapshot(
       profiles: all,
       updatedAt: updatedAt ?? DateTime.now().toUtc(),
@@ -329,6 +335,7 @@ class SubscriptionRepository extends ChangeNotifier {
     _textSnapshot = snap;
     _lastError = null;
     await _store.write(_kTextSnap, _encodeSnapshot(snap));
+    await _persistLegacyView();
     notifyListeners();
     return snap;
   }
@@ -388,6 +395,25 @@ class SubscriptionRepository extends ChangeNotifier {
         for (final e in _snaps.entries) e.key: _encodeSnapshot(e.value),
       }),
     );
+    await _persistLegacyView();
+  }
+
+  /// Legacy single-subscription view: older app builds and external readers
+  /// know only `subscription_url`/`subscription_snapshot` — keep them in sync
+  /// with the merged multi-source state so a downgrade sees consistent data.
+  Future<void> _persistLegacyView() async {
+    final merged = _merged();
+    if (merged == null) {
+      await _store.delete(_kUrl);
+      await _store.delete(_kSnapshot);
+      return;
+    }
+    if (_urls.isNotEmpty) {
+      await _store.write(_kUrl, _urls.first.toString());
+    } else {
+      await _store.delete(_kUrl);
+    }
+    await _store.write(_kSnapshot, _encodeSnapshot(merged));
   }
 
   Future<SubscriptionSnapshot> _fetchAndParse(Uri url) async {

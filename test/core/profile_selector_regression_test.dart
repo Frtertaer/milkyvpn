@@ -252,17 +252,20 @@ void main() {
         ),
       ];
 
+      // Unknown-located profiles stay eligible under a strict country pick
+      // (6d3fa0c: an unlabelled link must not vanish when a country is
+      // chosen) — strictness orders, it does not exclude them.
       expect(
         selector
             .candidates(profiles, LocationChoice.finland, maxAttempts: 9)
             .map((p) => p.id),
-        ['fi-xhttp'],
+        ['fi-xhttp', 'unknown-ws'],
       );
       expect(
         selector
             .candidates(profiles, LocationChoice.usa, maxAttempts: 9)
             .map((p) => p.id),
-        ['us-xhttp'],
+        ['us-xhttp', 'unknown-ws'],
       );
       expect(
         selector
