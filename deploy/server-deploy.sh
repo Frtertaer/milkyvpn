@@ -31,11 +31,15 @@ cd /opt/kal2
 # catches a broken build before it replaces the live panel.
 mv kal2-panel.new kal2-panel.stg; chmod 755 kal2-panel.stg
 cp /etc/kal2/panel.json /etc/kal2/panel-staging.json
-cat > /etc/systemd/system/kal2-panel-staging.service <<'UNIT'
+# staging shares the production admin token (its data file is a copy of
+# panel.json) — read it from the live unit so a rotated token follows.
+STG_TOKEN=$(systemctl cat kal2-panel.service | grep -oE 'PANEL_TOKEN=[^"]+' | head -1)
+cat > /etc/systemd/system/kal2-panel-staging.service <<UNIT
 [Unit]
 Description=kal2 panel (staging)
 After=network.target
 [Service]
+${STG_TOKEN:+Environment=$STG_TOKEN}
 ExecStart=/opt/kal2/kal2-panel.stg -listen 127.0.0.1:9444 -data /etc/kal2/panel-staging.json -ops-listen 127.0.0.1:9459
 Restart=on-failure
 [Install]
