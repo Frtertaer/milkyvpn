@@ -1,0 +1,31 @@
+name: deploy-server
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'milky-core/**'
+      - 'deploy/**'
+      - '.github/workflows/deploy-server.yml'
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: 'milky-core/go.mod'
+      - name: Build server + panel (linux/amd64, static)
+        working-directory: milky-core
+        run: |
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/kal2-server ./cmd/kal2-server
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/kal2-panel ./cmd/kal2-panel
+      - name: Deploy to US box
+        env:
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          mkdir -p ~/.ssh && chmod 700 ~/.ssh
+          printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/milky_deploy
+          chmod 600 ~/.ssh/milky_deploy
+          SSH_KEY=~/.ssh/milky_deploy bash deploy/server-deploy.sh /tmp/kal2-server /tmp/kal2-panel
