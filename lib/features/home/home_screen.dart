@@ -6,6 +6,7 @@ import 'package:provider/provider.dart';
 
 import '../../app/app_settings.dart';
 import '../../app/milky_device.dart';
+import '../../core/subscription/country_codes.dart';
 import '../../core/subscription/profile_health.dart';
 import '../../core/subscription/subscription_repository.dart';
 import '../../core/subscription/vpn_profile.dart';
@@ -486,16 +487,9 @@ class _StatusBlock extends StatelessWidget {
     );
   }
 
-  static String _locationLabel(S t, ServerLocation? loc) {
-    switch (loc) {
-      case ServerLocation.finland:
-        return t.finland;
-      case ServerLocation.usa:
-        return t.usa;
-      case ServerLocation.unknown:
-      case null:
-        return t.connected;
-    }
+  static String _locationLabel(S t, ServerLocation loc) {
+    if (loc == null) return t.connected;
+    return '${flagEmoji(loc)} ${countryName(loc, ru: t.ru)}';
   }
 }
 

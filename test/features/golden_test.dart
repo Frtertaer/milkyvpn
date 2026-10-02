@@ -198,7 +198,7 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const Key('connect_orb')));
     await tester.pumpAndSettle();
-    expect(vpn.activeLocation, ServerLocation.usa);
+    expect(vpn.activeLocation, 'us');
     await record(tester, 'home_connected_usa');
     await tester.pumpWidget(const SizedBox());
     vpn.dispose();

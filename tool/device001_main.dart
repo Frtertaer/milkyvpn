@@ -67,7 +67,7 @@ Future<void> main() async {
   );
   final groups = <String, int>{};
   for (final p in repo.snapshot?.profiles ?? <VpnProfile>[]) {
-    final group = '${p.location.name}/${p.kind.name}';
+    final group = '${p.location ?? 'unknown'}/${p.kind.name}';
     groups.update(group, (n) => n + 1, ifAbsent: () => 1);
   }
   debugPrint('DEVICE001_TRANSPORT_COUNTS $groups');
@@ -140,7 +140,7 @@ Future<void> endpointPreflight(List<VpnProfile> profiles) async {
       }
       debugPrint(
         'DEVICE001_UPLINK endpoint=${index + 1} '
-        'country=${profile.location.name} kind=${profile.kind.name} '
+        'country=${profile.location ?? 'unknown'} kind=${profile.kind.name} '
         'dns=$resolved ipv4Count=$ipv4 ipv6Count=$ipv6 tcp=$tcp '
         'elapsedMs=${watch.elapsedMilliseconds} code=$failure',
       );

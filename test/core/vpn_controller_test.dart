@@ -120,7 +120,7 @@ void main() {
       bridge: b,
       attemptTimeout: const Duration(seconds: 1),
     );
-    final ok = await c.connect([p('a'), p('b')], LocationChoice.auto);
+    final ok = await c.connect([p('a'), p('b')], locationAuto);
     expect(ok, isTrue);
     expect(c.isConnected, isTrue);
     expect(c.state, VpnState.connected);
@@ -137,7 +137,7 @@ void main() {
         bridge: b,
         attemptTimeout: const Duration(seconds: 1),
       );
-      expect(await c.connect([p('a'), p('b')], LocationChoice.auto), isTrue);
+      expect(await c.connect([p('a'), p('b')], locationAuto), isTrue);
       expect(b.connectCalls, ['a', 'b']);
       expect(b.disconnectCalls, 1);
       expect(c.attemptsMade, 2);
@@ -154,7 +154,7 @@ void main() {
     expect(
       await c.connect(
         List.generate(6, (i) => p('abcdef'[i])),
-        LocationChoice.auto,
+        locationAuto,
       ),
       isFalse,
     );
@@ -171,7 +171,7 @@ void main() {
       attemptTimeout: const Duration(milliseconds: 50),
       maxAttempts: 2,
     );
-    expect(await c.connect([p('a'), p('b')], LocationChoice.auto), isFalse);
+    expect(await c.connect([p('a'), p('b')], locationAuto), isFalse);
     expect(b.connectCalls, ['a', 'b']);
     expect(c.lastErrorClass, 'timeout');
   });
@@ -187,7 +187,7 @@ void main() {
       maxAttempts: 4,
     );
     expect(
-      await c.connect([p('a'), p('b'), p('c'), p('d')], LocationChoice.auto),
+      await c.connect([p('a'), p('b'), p('c'), p('d')], locationAuto),
       isFalse,
     );
     expect(b.connectCalls, ['a', 'b']);
@@ -210,7 +210,7 @@ void main() {
       attemptTimeout: const Duration(seconds: 1),
       maxAttempts: 2,
     );
-    expect(await c.connect([p('a'), p('b')], LocationChoice.auto), isFalse);
+    expect(await c.connect([p('a'), p('b')], locationAuto), isFalse);
     expect(c.state, VpnState.disconnected);
     expect(c.isBusy, isFalse);
     expect(c.lastErrorClass, isNotNull);
@@ -230,7 +230,7 @@ void main() {
       expect(
         await c.connect(
           [p('rtc'), p('b')],
-          LocationChoice.auto,
+          locationAuto,
           profileId: 'rtc',
         ),
         isFalse,
@@ -251,7 +251,7 @@ void main() {
       expect(
         await c.connect(
           [p('a'), p('b'), p('c', remark: 'USA-1')],
-          LocationChoice.auto,
+          locationAuto,
           profileId: 'a',
         ),
         isTrue,
@@ -270,7 +270,7 @@ void main() {
       attemptTimeout: const Duration(seconds: 1),
     );
     expect(
-      await c.connect([p('a'), p('b')], LocationChoice.auto, profileId: 'a'),
+      await c.connect([p('a'), p('b')], locationAuto, profileId: 'a'),
       isTrue,
     );
     expect(b.connectCalls, ['a']);
@@ -288,7 +288,7 @@ void main() {
       expect(
         await c.connect(
           [p('a'), p('c', remark: 'USA-1')],
-          LocationChoice.auto,
+          locationAuto,
           profileId: 'a',
         ),
         isFalse,
@@ -303,7 +303,7 @@ void main() {
   test('VPN permission denied stops before connecting', () async {
     final b = FakeBridge()..permission = false;
     final c = VpnController(bridge: b);
-    expect(await c.connect([p('a')], LocationChoice.auto), isFalse);
+    expect(await c.connect([p('a')], locationAuto), isFalse);
     expect(c.lastErrorClass, 'vpn_permission_denied');
     expect(b.connectCalls, isEmpty);
   });
@@ -311,7 +311,7 @@ void main() {
   test('VPN permission granted proceeds', () async {
     final b = FakeBridge()..permission = true;
     final c = VpnController(bridge: b);
-    expect(await c.connect([p('a')], LocationChoice.auto), isTrue);
+    expect(await c.connect([p('a')], locationAuto), isTrue);
   });
 
   test('unsupported profiles are skipped; location filter applied', () async {
@@ -321,12 +321,12 @@ void main() {
       await c.connect([
         p('a'),
         p('b', remark: 'USA-1'),
-      ], LocationChoice.finland),
+      ], 'fi'),
       isFalse,
     );
     expect(c.lastErrorClass, 'no_compatible_profiles');
     expect(
-      await c.connect([p('a'), p('b', remark: 'USA-1')], LocationChoice.usa),
+      await c.connect([p('a'), p('b', remark: 'USA-1')], 'us'),
       isTrue,
     );
     expect(b.connectCalls, ['b']);
@@ -337,12 +337,12 @@ void main() {
     () async {
       final b = FakeBridge();
       final c = VpnController(bridge: b);
-      await c.connect([p('a')], LocationChoice.auto);
+      await c.connect([p('a')], locationAuto);
       await c.disconnect();
       await Future<void>.delayed(Duration.zero);
       expect(c.state, VpnState.disconnected);
       // network change / revoke reported by native
-      await c.connect([p('a')], LocationChoice.auto);
+      await c.connect([p('a')], locationAuto);
       b.emit(
         const VpnSnapshot(
           state: VpnState.disconnected,

@@ -1,11 +1,17 @@
 import 'package:flutter/foundation.dart';
 import '../security/redactor.dart';
+import 'country_codes.dart';
 
-/// Server location exposed to the user (never protocol details).
-enum ServerLocation { finland, usa, unknown }
+/// A profile's server country: an ISO-3166 alpha-2 code ('fi','us','ng'...),
+/// or null when the remark carries none. Open-ended — a subscription may hold
+/// servers in any country and the picker must surface them all.
+typedef ServerLocation = String?;
 
-/// Public, user-visible location selector.
-enum LocationChoice { auto, finland, usa }
+/// Public, user-visible location selector: 'auto' or an ISO country code.
+typedef LocationChoice = String;
+
+/// The "let the app pick" selector value.
+const String locationAuto = 'auto';
 
 /// Transport family of a parsed profile.
 enum ProfileKind {
@@ -137,35 +143,13 @@ class VpnProfile {
     return ProfileKind.other;
   }
 
+  /// ISO country code detected from the remark, or null.
   ServerLocation get location => locationFromRemark(remark);
 
-  /// Derives the public country selector value from a user-visible profile remark.
-  ///
-  /// Unicode escapes keep this source encoding-independent. This also recognizes Russian
-  /// country/city names so selection does not depend on English-only profile remarks.
-  static ServerLocation locationFromRemark(String remark) {
-    final r = remark.toLowerCase().replaceAll('\u0451', '\u0435');
-    if (r.contains('finland') ||
-        r.contains('\u0444\u0438\u043d\u043b\u044f\u043d\u0434') ||
-        r.contains('helsinki') ||
-        r.contains('\u0445\u0435\u043b\u044c\u0441\u0438\u043d\u043a') ||
-        r.contains('\u{1f1eb}\u{1f1ee}') ||
-        RegExp(r'(^|[^a-z])fi([^a-z]|$)').hasMatch(r)) {
-      return ServerLocation.finland;
-    }
-    if (r.contains('usa') ||
-        r.contains('\u0441\u0448\u0430') ||
-        r.contains('united states') ||
-        r.contains('america') ||
-        r.contains(
-          '\u0441\u043e\u0435\u0434\u0438\u043d\u0435\u043d\u043d\u044b\u0435 \u0448\u0442\u0430\u0442\u044b',
-        ) ||
-        r.contains('\u{1f1fa}\u{1f1f8}') ||
-        RegExp(r'(^|[^a-z])us([^a-z]|$)').hasMatch(r)) {
-      return ServerLocation.usa;
-    }
-    return ServerLocation.unknown;
-  }
+  /// Derives the public country selector value from a user-visible profile
+  /// remark (flag emoji, EN/RU names, or a 2-letter ISO token).
+  static ServerLocation locationFromRemark(String remark) =>
+      locationCodeFromRemark(remark);
 
   /// Payload sent to the native bridge. Contains credentials by design (in-process only).
   Map<String, Object?> toBridgeMap() => {
@@ -220,7 +204,7 @@ class VpnProfile {
 
   /// Safe for the diagnostics screen: no host, no credentials.
   String toDiagnosticString() =>
-      '$redactedRemark [${kind.name}, ${location.name}]';
+      '$redactedRemark [${kind.name}, ${location ?? 'unknown'}]';
 
   /// Whether the current Dart selection pipeline can execute this profile.
   ///

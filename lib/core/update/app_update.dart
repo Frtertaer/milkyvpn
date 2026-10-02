@@ -1,11 +1,13 @@
 import 'dart:convert';
 import 'dart:io';
 
-/// One GitHub release asset the app can self-update with.
+/// One release asset the app can self-update with. [altUrl] is the mirror
+/// fallback used when the primary download itself is blocked/throttled.
 class ReleaseAsset {
-  const ReleaseAsset({required this.name, required this.url});
+  const ReleaseAsset({required this.name, required this.url, this.altUrl});
   final String name;
   final String url;
+  final String? altUrl;
 }
 
 /// A semver-tagged GitHub release (test/manual tags are skipped — only
@@ -56,6 +58,7 @@ class AppUpdate {
                 ReleaseAsset(
                   name: (a['name'] ?? '').toString(),
                   url: (a['browser_download_url'] ?? '').toString(),
+                  altUrl: '$_mirror/${Uri.encodeComponent(tag)}/${a['name']}',
                 ),
           ];
           return AppRelease(tag: tag, assets: assets);
@@ -165,19 +168,34 @@ class AppUpdate {
     return null;
   }
 
-  /// Downloads [asset] to [destPath], reporting 0..1 progress.
+  /// Downloads [asset] to [destPath], reporting 0..1 progress. Falls back
+  /// to [ReleaseAsset.altUrl] (mirror) once the primary URL fails.
   static Future<void> download(
     ReleaseAsset asset,
     String destPath, {
     void Function(double progress)? onProgress,
   }) async {
+    try {
+      await _fetch(asset.url, destPath, onProgress: onProgress);
+      return;
+    } on Object {
+      if (asset.altUrl == null) rethrow;
+    }
+    await _fetch(asset.altUrl!, destPath, onProgress: onProgress);
+  }
+
+  static Future<void> _fetch(
+    String url,
+    String destPath, {
+    void Function(double progress)? onProgress,
+  }) async {
     final http = HttpClient()..connectionTimeout = const Duration(seconds: 10);
     try {
-      final req = await http.getUrl(Uri.parse(asset.url));
+      final req = await http.getUrl(Uri.parse(url));
       req.headers.set(HttpHeaders.userAgentHeader, 'milkyvpn-app');
       final res = await req.close();
       if (res.statusCode != 200) {
-        throw HttpException('download ${res.statusCode}', uri: Uri.parse(asset.url));
+        throw HttpException('download ${res.statusCode}', uri: Uri.parse(url));
       }
       final total = res.contentLength;
       final sink = File(destPath).openWrite();

@@ -1,9 +1,11 @@
 /// URL policy for subscription URLs and deep links.
 ///
 /// Any `http(s)` subscription URL is accepted so users can import third-party feeds.
-/// The SSRF guard stays: no userinfo, no fragments, no localhost/private/link-local/
+/// The SSRF guard stays: no userinfo, no localhost/private/link-local/
 /// reserved IP literals, no non-http schemes (file:, javascript:, etc.). Redirects are
 /// still not followed by the fetcher, so the validated origin is the only one fetched.
+/// `#name` fragments (a remark convention in share/subscription links) are stripped,
+/// never sent on the wire.
 ///
 /// Caveat: the guard inspects the URL literal only. A public hostname that resolves to a
 /// private address cannot be detected here; the fetcher only issues a plain GET and
@@ -30,7 +32,6 @@ class SubscriptionUrlPolicy {
     final scheme = u.scheme.toLowerCase();
     if (scheme != 'https' && scheme != 'http') return null;
     if (u.userInfo.isNotEmpty) return null;
-    if (u.hasFragment) return null;
     final host = u.host.toLowerCase();
     if (host.isEmpty) return null;
     if (_isBlockedHost(host)) return null;
