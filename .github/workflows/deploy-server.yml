@@ -21,6 +21,7 @@ jobs:
         run: |
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/kal2-server ./cmd/kal2-server
           CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/kal2-panel ./cmd/kal2-panel
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o /tmp/kal2-udpmux ./cmd/kal2-udpmux
       - name: Deploy to US box
         env:
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
@@ -28,4 +29,4 @@ jobs:
           mkdir -p ~/.ssh && chmod 700 ~/.ssh
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/milky_deploy
           chmod 600 ~/.ssh/milky_deploy
-          SSH_KEY=~/.ssh/milky_deploy bash deploy/server-deploy.sh /tmp/kal2-server /tmp/kal2-panel
+          SSH_KEY=~/.ssh/milky_deploy bash deploy/server-deploy.sh /tmp/kal2-server /tmp/kal2-panel /tmp/kal2-udpmux

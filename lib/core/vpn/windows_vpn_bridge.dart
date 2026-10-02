@@ -54,6 +54,12 @@ class WindowsProcessVpnBridge implements VpnBridge {
     return '$appData\\homes.milky\\milkyvpn\\logs\\kal2-client.log';
   }
 
+  /// Per-net-class carrier memory for the last-good carrier heuristic.
+  static String get _carrierStatePath {
+    final appData = Platform.environment['APPDATA'] ?? '%USERPROFILE%\\AppData\\Roaming';
+    return '$appData\\homes.milky\\milkyvpn\\kal2-carrier.json';
+  }
+
   void _set(VpnSnapshot s) {
     _snap = s;
     if (!_states.isClosed) _states.add(s);
@@ -175,6 +181,15 @@ class WindowsProcessVpnBridge implements VpnBridge {
       ...kv('-pin', p.pin ?? ''),
       ...kv('-front', p.fronts?.join(',') ?? p.front ?? ''),
       if (p.cover == '0' || p.cover == 'false') '-cover=false',
+      // Carrier churn + memory: rotate the transport ~every 5min so long
+      // flows don't sit in the DPI fingerprint window, and start the next
+      // session from the carrier that won last time on this net class.
+      '-churn',
+      '5m',
+      '-carrier-state',
+      _carrierStatePath,
+      '-netclass',
+      'desktop',
     ];
   }
 
