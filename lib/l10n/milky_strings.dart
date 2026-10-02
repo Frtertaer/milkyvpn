@@ -376,19 +376,19 @@ class S {
   String get sourceRemoved => t('Источник удалён', 'Source removed');
   String get dnsCheck => t('DNS и утечки', 'DNS & leaks');
   String get dnsCheckHint => t(
-    'DoH через туннель и проверка утечки DNS',
-    'DoH via the tunnel and a DNS-leak check',
+    'DNS через туннель и проверка утечки',
+    'DNS via the tunnel and a leak check',
   );
   String get dnsChecking => t('Проверяем…', 'Checking…');
   String get dnsCheckFail =>
       t('Проверка не завершилась', 'Check did not complete');
   String get dnsTunnelOk => t(
-    'DNS-over-HTTPS через туннель работает',
-    'DNS-over-HTTPS works via the tunnel',
+    'DNS через туннель работает',
+    'DNS via the tunnel works',
   );
   String get dnsTunnelFail => t(
-    'DoH через туннель не отвечает (VPN выключен или прокси не поднялся)',
-    'DoH via the tunnel is not answering (VPN off or proxy down)',
+    'DNS через туннель не отвечает (VPN выключен или прокси не поднялся)',
+    'DNS via the tunnel is not answering (VPN off or proxy down)',
   );
   String dnsPrivateHostname(String h) =>
       t('Private DNS: $h — DNS шифрован', 'Private DNS: $h — DNS encrypted');

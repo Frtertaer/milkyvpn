@@ -50,3 +50,9 @@ description: End-to-end test the MilkyVPN Android app on the test35 emulator rou
 
 ## Devin Secrets Needed
 - none — DataImpulse creds are embedded in `~/auth_proxy.py` on the box.
+
+## Speedtest/DNS probe diagnostics (added 2026-10)
+- `Socket` is single-subscription in Dart: `_read`-style `s.listen()` → cancel → `listen()` again throws `Bad state: Stream has already been listened to`. When app-side socket diagnostics fail while `curl --socks5`/adb-forward probes succeed, suspect this pattern.
+- Isolate app-vs-path: `adb forward tcp:10808 tcp:10808` then `curl --socks5 127.0.0.1:10808 -w 'connect=%{time_connect} ttfb=%{time_starttransfer} total=%{time_total}\n' http://cachefly.cachefly.net/10mb.test -o /dev/null`. If curl succeeds but slowly (<550KB/s, TTFB ~3s), it's the exit path, not the app.
+- Signature: **DNS green + speedtest fail on the same engine = congested-exit performance, not an app bug** (DNS probe = 2 packets; speedtest needs TTFB+download inside 25s cap).
+- Engine SOCKS ports: xray binds :10808 under BOTH engines; native kal2 binds :11808 (both present under kal2). Probes try 10808→11808 on Android.
