@@ -78,6 +78,37 @@ abstract class VpnBridge {
   /// via FileProvider; Windows: launches the Inno Setup exe). Platforms with
   /// no self-update path throw VpnBridgeException('unsupported_platform').
   Future<bool> installUpdate(String localPath);
+
+  /// Per-app split tunneling (Android VpnService only).
+  /// [listInstalledApps] returns launchable apps as {package,label} maps for
+  /// the picker; [splitApps] reads the stored {mode,packages}; [setSplitApps]
+  /// writes 'all'|'allow'|'block' + package list and restarts a live session.
+  /// Other platforms throw VpnBridgeException('unsupported_platform').
+  Future<List<InstalledApp>> listInstalledApps();
+  Future<SplitAppsConfig> splitApps();
+  Future<void> setSplitApps(SplitAppsConfig config);
+
+  /// Android Private DNS (encrypted DNS) mode: 'hostname' | 'opportunistic' |
+  /// 'off' | '' when unset or unsupported on the platform.
+  Future<String> privateDnsMode();
+
+  /// Private DNS hostname when mode is 'hostname', else ''.
+  Future<String> privateDnsSpecifier();
+}
+
+/// One launchable app row for the split-tunneling picker.
+class InstalledApp {
+  const InstalledApp({required this.packageName, required this.label});
+  final String packageName;
+  final String label;
+}
+
+/// Stored split-tunneling selection: 'all' (default), 'allow' (only listed
+/// apps through the VPN) or 'block' (listed apps bypass the VPN).
+class SplitAppsConfig {
+  const SplitAppsConfig({this.mode = 'all', this.packages = const []});
+  final String mode;
+  final List<String> packages;
 }
 
 class MethodChannelVpnBridge implements VpnBridge {
@@ -190,4 +221,46 @@ class MethodChannelVpnBridge implements VpnBridge {
   @override
   Future<bool> installUpdate(String localPath) =>
       _call<bool>('installApk', {'path': localPath});
+
+  @override
+  Future<List<InstalledApp>> listInstalledApps() async =>
+      (await _call<List<dynamic>>('listApps'))
+          .whereType<Map>()
+          .map(
+            (m) => InstalledApp(
+              packageName: m['package']?.toString() ?? '',
+              label: m['label']?.toString() ?? '',
+            ),
+          )
+          .where((a) => a.packageName.isNotEmpty)
+          .toList();
+
+  @override
+  Future<SplitAppsConfig> splitApps() async {
+    final m = await _call<Map<dynamic, dynamic>>('getSplitApps');
+    return SplitAppsConfig(
+      mode: m['mode']?.toString() ?? 'all',
+      packages:
+          (m['packages'] as List?)?.map((e) => e.toString()).toList() ??
+          const [],
+    );
+  }
+
+  @override
+  Future<void> setSplitApps(SplitAppsConfig config) => _call<bool>(
+    'setSplitApps',
+    {'mode': config.mode, 'packages': config.packages},
+  );
+
+  @override
+  Future<String> privateDnsMode() async {
+    final m = await _call<Map<dynamic, dynamic>>('privateDns');
+    return m['mode']?.toString() ?? '';
+  }
+
+  @override
+  Future<String> privateDnsSpecifier() async {
+    final m = await _call<Map<dynamic, dynamic>>('privateDns');
+    return m['specifier']?.toString() ?? '';
+  }
 }

@@ -155,8 +155,13 @@ class SubscriptionRepository extends ChangeNotifier {
        _parser = parser,
        _policy = policy;
 
+  // Legacy single-source keys are read once for migration, then deleted.
   static const _kUrl = 'subscription_url';
   static const _kSnapshot = 'subscription_snapshot';
+  // Multi-source: ordered URL list + per-source parsed snapshots keyed by URL.
+  static const _kUrls = 'subscription_urls';
+  static const _kSnaps = 'subscription_snapshots';
+  static const _kTextSnap = 'subscription_text_snapshot';
 
   final SecureStore _store;
   final SubscriptionFetcher _fetcher;
@@ -164,68 +169,152 @@ class SubscriptionRepository extends ChangeNotifier {
   final SubscriptionUrlPolicy _policy;
 
   bool _loaded = false;
-  Uri? _url;
-  SubscriptionSnapshot? _snapshot;
+  List<Uri> _urls = const [];
+  Map<String, SubscriptionSnapshot> _snaps = const {};
+  SubscriptionSnapshot? _textSnapshot;
   String? _lastError;
 
   bool get isLoaded => _loaded;
-  /// Either a fetched subscription (has a URL) or a text-imported profile set
+
+  /// Either fetched subscriptions (has URLs) or a text-imported profile set
   /// (snapshot only, nothing to refresh).
   bool get hasSubscription =>
-      _url != null || (_snapshot?.profiles.isNotEmpty ?? false);
-  SubscriptionSnapshot? get snapshot => _snapshot;
+      _urls.isNotEmpty || (_merged()?.profiles.isNotEmpty ?? false);
+  SubscriptionSnapshot? get snapshot => _merged();
   String? get lastErrorClass => _lastError;
 
   /// Whether the currently loaded count snapshot passed schema and invariant checks.
-  bool get countsTrusted => _snapshot?.countsTrusted ?? false;
+  bool get countsTrusted => _merged()?.countsTrusted ?? false;
 
   /// A refresh is useful only when a subscription credential exists and counts are absent
   /// or untrusted. Loading never performs network I/O implicitly.
-  bool get needsRefresh => _url != null && !countsTrusted;
+  bool get needsRefresh => _urls.isNotEmpty && !countsTrusted;
 
-  /// Redacted for UI. Never exposes the token.
+  /// Redacted source URLs for UI. Never exposes tokens.
+  List<String> get redactedUrls =>
+      _urls.map(SubscriptionUrlPolicy.redact).toList();
+
+  /// Redacted for UI — the first source. Never exposes the token.
   String? get redactedUrl =>
-      _url == null ? null : SubscriptionUrlPolicy.redact(_url!);
+      _urls.isEmpty ? null : SubscriptionUrlPolicy.redact(_urls.first);
 
   /// Full subscription URL, exposed ONLY for the explicit "copy link" advanced action.
   /// Never render this on normal screens.
-  String? get urlForCopy => _url?.toString();
+  String? get urlForCopy => _urls.isEmpty ? null : _urls.first.toString();
+
+  /// Full URLs for the per-source management rows (remove/copy by the user only).
+  List<Uri> get sourceUrls => List.unmodifiable(_urls);
+
+  /// Union of per-source profiles, deduped by profile id, counts summed.
+  SubscriptionSnapshot? _merged() {
+    final all = <VpnProfile>[];
+    final seen = <String>{};
+    var received = 0, malformed = 0, dropped = 0;
+    var trusted = true;
+    DateTime? updatedAt;
+    DateTime? expiresAt;
+    var any = false;
+    for (final s in [
+      ..._urls.map((u) => _snaps[u.toString()]),
+      _textSnapshot,
+    ]) {
+      if (s == null) continue;
+      any = true;
+      trusted = trusted && s.countsTrusted;
+      received += s.receivedEntryCount;
+      malformed += s.malformedEntryCount;
+      dropped += s.droppedDuplicateCount;
+      for (final p in s.profiles) {
+        if (seen.add(p.id)) all.add(p);
+      }
+      if (updatedAt == null || s.updatedAt.isBefore(updatedAt)) {
+        updatedAt = s.updatedAt;
+      }
+      if (s.expiresAt != null &&
+          (expiresAt == null || s.expiresAt!.isBefore(expiresAt))) {
+        expiresAt = s.expiresAt;
+      }
+    }
+    if (!any) return null;
+    return SubscriptionSnapshot(
+      profiles: all,
+      updatedAt: updatedAt ?? DateTime.now().toUtc(),
+      totalEntries: received,
+      malformedEntries: malformed,
+      duplicateEntries: dropped,
+      expiresAt: expiresAt,
+      countsTrusted: trusted,
+    );
+  }
 
   Future<void> load() async {
     try {
-      final u = await _store.read(_kUrl);
-      if (u != null) _url = _policy.validate(u);
+      final raw = await _store.read(_kUrls);
+      if (raw != null) {
+        _urls = (jsonDecode(raw) as List<dynamic>)
+            .whereType<String>()
+            .map(_policy.validate)
+            .whereType<Uri>()
+            .toList();
+      } else {
+        // Migration: a single legacy URL becomes the first source.
+        final u = await _store.read(_kUrl);
+        if (u != null) {
+          final url = _policy.validate(u);
+          if (url != null) _urls = [url];
+          await _store.delete(_kUrl);
+        }
+      }
     } catch (_) {
-      _url = null;
+      _urls = const [];
     }
     try {
-      final s = await _store.read(_kSnapshot);
-      if (s != null) _snapshot = _decodeSnapshot(s);
+      final raw = await _store.read(_kSnaps);
+      if (raw != null) {
+        _snaps = {
+          for (final e in (jsonDecode(raw) as Map<String, dynamic>).entries)
+            e.key: _decodeSnapshot(e.value as String),
+        };
+      } else {
+        final s = await _store.read(_kSnapshot);
+        if (s != null && _urls.isNotEmpty) {
+          _snaps = {_urls.first.toString(): _decodeSnapshot(s)};
+        }
+        await _store.delete(_kSnapshot);
+      }
     } catch (_) {
-      // A damaged cache must not discard the independently validated credential.
-      _snapshot = null;
+      // A damaged cache must not discard the independently validated credentials.
+      _snaps = const {};
+    }
+    try {
+      final t = await _store.read(_kTextSnap);
+      if (t != null) _textSnapshot = _decodeSnapshot(t);
+    } catch (_) {
+      _textSnapshot = null;
     }
     _loaded = true;
     notifyListeners();
   }
 
-  /// Validates, fetches, parses and stores a new subscription. Returns the parse result.
+  /// Adds a new subscription source (or re-imports an existing one), fetches
+  /// and parses it, and stores its snapshot. Other sources are untouched.
   Future<SubscriptionSnapshot> importFromUrl(String rawUrl) async {
     final url = _policy.validate(rawUrl);
     if (url == null) throw SubscriptionFetchException('url_not_allowed');
     final snap = await _fetchAndParse(url);
     if (snap.profiles.isEmpty) throw SubscriptionFetchException('no_profiles');
-    _url = url;
-    _snapshot = snap;
+    if (!_urls.contains(url)) _urls = [..._urls, url];
+    _snaps = {..._snaps, url.toString(): snap};
+    _textSnapshot = null;
     _lastError = null;
-    await _store.write(_kUrl, url.toString());
-    await _store.write(_kSnapshot, _encodeSnapshot(snap));
+    await _persistSources();
     notifyListeners();
     return snap;
   }
 
   /// Imports share links pasted directly (kal2://, vless://, ss://…): the text is
-  /// parsed in place without a fetch, so there is no source URL to refresh against.
+  /// parsed in place without a fetch, so there is no source URL to refresh
+  /// against. Replaces any previous text-imported set; URL sources are kept.
   Future<SubscriptionSnapshot> importFromText(String rawText) async {
     final result = _parser.parse(rawText);
     final snap = SubscriptionSnapshot(
@@ -237,41 +326,68 @@ class SubscriptionRepository extends ChangeNotifier {
       expiresAt: result.expiresAt,
     );
     if (snap.profiles.isEmpty) throw SubscriptionFetchException('no_profiles');
-    _url = null;
-    _snapshot = snap;
+    _textSnapshot = snap;
     _lastError = null;
-    await _store.delete(_kUrl);
-    await _store.write(_kSnapshot, _encodeSnapshot(snap));
+    await _store.write(_kTextSnap, _encodeSnapshot(snap));
     notifyListeners();
     return snap;
   }
 
+  /// Removes one subscription source and its cached profiles.
+  Future<void> removeUrl(String url) async {
+    _urls = _urls.where((u) => u.toString() != url).toList();
+    _snaps = {..._snaps}..remove(url);
+    await _persistSources();
+    notifyListeners();
+  }
+
+  /// Re-fetches every source; a source that fails keeps its last good snapshot.
   Future<SubscriptionSnapshot?> refresh() async {
-    final url = _url;
-    if (url == null) return null;
-    try {
-      final snap = await _fetchAndParse(url);
-      if (snap.profiles.isNotEmpty) {
-        _snapshot = snap;
-        await _store.write(_kSnapshot, _encodeSnapshot(snap));
+    if (_urls.isEmpty) return null;
+    Object? firstError;
+    for (final url in List<Uri>.of(_urls)) {
+      try {
+        final snap = await _fetchAndParse(url);
+        if (snap.profiles.isNotEmpty) {
+          _snaps = {..._snaps, url.toString(): snap};
+        }
+      } on SubscriptionFetchException catch (e) {
+        firstError ??= e;
       }
-      _lastError = null;
-      notifyListeners();
-      return snap;
-    } on SubscriptionFetchException catch (e) {
-      _lastError = e.errorClass;
-      notifyListeners();
-      rethrow;
     }
+    await _persistSources();
+    _lastError = firstError is SubscriptionFetchException
+        ? firstError.errorClass
+        : null;
+    notifyListeners();
+    if (firstError is SubscriptionFetchException) throw firstError;
+    return _merged();
   }
 
   Future<void> remove() async {
-    _url = null;
-    _snapshot = null;
+    _urls = const [];
+    _snaps = const {};
+    _textSnapshot = null;
     _lastError = null;
+    await _store.delete(_kUrls);
+    await _store.delete(_kSnaps);
+    await _store.delete(_kTextSnap);
     await _store.delete(_kUrl);
     await _store.delete(_kSnapshot);
     notifyListeners();
+  }
+
+  Future<void> _persistSources() async {
+    await _store.write(
+      _kUrls,
+      jsonEncode(_urls.map((u) => u.toString()).toList()),
+    );
+    await _store.write(
+      _kSnaps,
+      jsonEncode({
+        for (final e in _snaps.entries) e.key: _encodeSnapshot(e.value),
+      }),
+    );
   }
 
   Future<SubscriptionSnapshot> _fetchAndParse(Uri url) async {

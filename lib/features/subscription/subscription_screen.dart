@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../../core/errors/milky_error.dart';
+import '../../core/security/subscription_url_policy.dart';
 import '../../core/subscription/subscription_exporter.dart';
 import '../../core/subscription/subscription_repository.dart';
 import '../../core/vpn/vpn_bridge.dart';
@@ -93,6 +94,8 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
               )
             else ...[
               MilkySubscriptionCard(snapshot: snap, compact: false),
+              const SizedBox(height: MilkySpace.lg),
+              _SourcesCard(onRemove: _removeUrl, onAdd: _addSource),
               const SizedBox(height: MilkySpace.lg),
               MilkyPrimaryButton(
                 label: _busy ? t.importing : t.refresh,
@@ -219,9 +222,7 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     final messenger = ScaffoldMessenger.of(context);
     final snap = context.read<SubscriptionRepository>().snapshot;
     if (snap == null || snap.profiles.isEmpty) return;
-    final body = const SubscriptionExporter().exportSubscription(
-      snap.profiles,
-    );
+    final body = const SubscriptionExporter().exportSubscription(snap.profiles);
     if (body.isEmpty) return;
     await MilkyClipboard.copy(body);
     messenger.showSnackBar(SnackBar(content: Text(t.profilesExported)));
@@ -231,6 +232,87 @@ class _SubscriptionScreenState extends State<SubscriptionScreen> {
     Navigator.of(
       context,
     ).push(MaterialPageRoute<void>(builder: (_) => const DiagnosticsScreen()));
+  }
+
+  /// Removes one subscription source; profiles from the remaining sources stay.
+  Future<void> _removeUrl(Uri url) async {
+    final t = S.of(context);
+    final repo = context.read<SubscriptionRepository>();
+    final ok = await showMilkyConfirmSheet(
+      context,
+      title: t.removeSource,
+      body: SubscriptionUrlPolicy.redact(url),
+      confirmLabel: t.remove,
+      cancelLabel: t.cancel,
+    );
+    if (!ok || !mounted) return;
+    await repo.removeUrl(url.toString());
+    if (!mounted) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(t.sourceRemoved)));
+  }
+
+  void _addSource() {
+    Navigator.of(
+      context,
+    ).push(MaterialPageRoute<bool>(builder: (_) => const ImportScreen()));
+  }
+}
+
+/// Lists the subscription sources (redacted) with per-source removal and an
+/// "add another" entry — multi-subscription management.
+class _SourcesCard extends StatelessWidget {
+  const _SourcesCard({required this.onRemove, required this.onAdd});
+
+  final void Function(Uri url) onRemove;
+  final VoidCallback onAdd;
+
+  @override
+  Widget build(BuildContext context) {
+    final t = S.of(context);
+    final c = context.milky;
+    final repo = context.watch<SubscriptionRepository>();
+    final urls = repo.sourceUrls;
+    if (urls.isEmpty) return const SizedBox.shrink();
+    return MilkyGlassCard(
+      elevated: false,
+      padding: const EdgeInsets.symmetric(
+        horizontal: MilkySpace.lg,
+        vertical: MilkySpace.md,
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(t.sources, style: MilkyType.label.copyWith(color: c.textMuted)),
+          const SizedBox(height: MilkySpace.sm),
+          for (final url in urls) ...[
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    SubscriptionUrlPolicy.redact(url),
+                    style: MilkyType.bodySmall,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                MilkyIconButton(
+                  icon: Icons.delete_outline_rounded,
+                  color: c.danger,
+                  onPressed: () => onRemove(url),
+                ),
+              ],
+            ),
+          ],
+          const SizedBox(height: MilkySpace.xs),
+          MilkyLinkButton(
+            label: t.addSubscription,
+            icon: Icons.add_rounded,
+            onPressed: onAdd,
+          ),
+        ],
+      ),
+    );
   }
 }
 

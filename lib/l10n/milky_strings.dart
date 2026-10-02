@@ -330,6 +330,84 @@ class S {
   String get alwaysOn => t('Always-on VPN', 'Always-on VPN');
   String get alwaysOnHint =>
       t('Системные настройки Android', 'Android system settings');
+  String get splitApps => t('Приложения через VPN', 'Apps via VPN');
+  String get splitAppsHint =>
+      t('Какие приложения ходят через туннель', 'Which apps use the tunnel');
+  String get splitModeAll => t('Все приложения', 'All apps');
+  String get splitModeAllow => t('Только выбранные', 'Only selected');
+  String get splitModeBlock => t('Кроме выбранных', 'All except selected');
+  String get splitAllHint => t(
+    'Весь трафик устройства идёт через VPN',
+    'All device traffic goes through the VPN',
+  );
+  String get splitAllowHint => t(
+    'Только отмеченные приложения через VPN',
+    'Only checked apps use the VPN',
+  );
+  String get splitBlockHint =>
+      t('Отмеченные приложения мимо VPN', 'Checked apps bypass the VPN');
+  String get searchApps => t('Поиск приложений', 'Search apps');
+  String get splitApplied => t(
+    'Применено — при активном VPN сессия перезапущена',
+    'Applied — a live session was restarted',
+  );
+  String get save => t('Сохранить', 'Save');
+  String get close => t('Закрыть', 'Close');
+  String get speedtest => t('Скорость', 'Speedtest');
+  String get speedtestHint =>
+      t('Замер скорости через туннель', 'Measure throughput via the tunnel');
+  String get speedtestRunning => t('Измеряем…', 'Measuring…');
+  String speedtestResult(int pingMs, double mbps) => t(
+    '$pingMs мс · ${mbps.toStringAsFixed(1)} Мбит/с',
+    '$pingMs ms · ${mbps.toStringAsFixed(1)} Mbps',
+  );
+  String get speedtestNote => t(
+    'Пинг и скорость замерены через VPN-туннель',
+    'Ping and throughput measured through the VPN tunnel',
+  );
+  String get sources => t('Источники', 'Sources');
+  String get removeSource => t('Удалить источник?', 'Remove this source?');
+  String get sourceRemoved => t('Источник удалён', 'Source removed');
+  String get dnsCheck => t('DNS и утечки', 'DNS & leaks');
+  String get dnsCheckHint => t(
+    'DoH через туннель и проверка утечки DNS',
+    'DoH via the tunnel and a DNS-leak check',
+  );
+  String get dnsChecking => t('Проверяем…', 'Checking…');
+  String get dnsCheckFail =>
+      t('Проверка не завершилась', 'Check did not complete');
+  String get dnsTunnelOk => t(
+    'DNS-over-HTTPS через туннель работает',
+    'DNS-over-HTTPS works via the tunnel',
+  );
+  String get dnsTunnelFail => t(
+    'DoH через туннель не отвечает (VPN выключен или прокси не поднялся)',
+    'DoH via the tunnel is not answering (VPN off or proxy down)',
+  );
+  String dnsPrivateHostname(String h) =>
+      t('Private DNS: $h — DNS шифрован', 'Private DNS: $h — DNS encrypted');
+  String get dnsPrivateAuto => t(
+    'Private DNS: автоматический (DNS over TLS если сеть позволяет)',
+    'Private DNS: automatic (DNS over TLS when the network allows)',
+  );
+  String get dnsPrivateOff => t(
+    'Private DNS выключен — системные DNS-запросы открыты',
+    'Private DNS off — system DNS queries are plaintext',
+  );
+  String get dnsPrivateUnknown =>
+      t('Private DNS: режим не определён', 'Private DNS: mode undetermined');
+  String get dnsDirectOpen => t(
+    'Прямой путь к DNS открыт — запросы могут идти мимо VPN',
+    'A direct DNS path is open — queries may bypass the VPN',
+  );
+  String get dnsDirectClosed => t(
+    'Прямой путь к DNS закрыт — запросы только внутри туннеля',
+    'The direct DNS path is closed — queries stay inside the tunnel',
+  );
+  String get speedtestFail => t(
+    'Не вышло: VPN не подключён или туннель недоступен',
+    'Failed: VPN disconnected or tunnel unreachable',
+  );
   String get fullTunnel => t('Полный туннель', 'Full tunnel');
   String get fullTunnelHint => t(
     'Весь трафик ПК через VPN (запросит права администратора)',
@@ -347,12 +425,15 @@ class S {
     'Вышла версия $next (у вас $cur). Скачать и установить?',
     'Version $next is available (you have $cur). Download and install?',
   );
-  String get updateAvailableTitle => t('Доступно обновление', 'Update available');
+  String get updateAvailableTitle =>
+      t('Доступно обновление', 'Update available');
   String get updateNow => t('Обновить', 'Update');
   String get updateLater => t('Позже', 'Later');
-  String get updateDownloading => t('Скачиваем обновление…', 'Downloading update…');
+  String get updateDownloading =>
+      t('Скачиваем обновление…', 'Downloading update…');
   String get updateLatest => t('У вас последняя версия', 'You are up to date');
-  String get updateFailed => t('Не удалось установить обновление', 'Update failed');
+  String get updateFailed =>
+      t('Не удалось установить обновление', 'Update failed');
   String get updateCheckFailed =>
       t('Не удалось проверить обновление', 'Update check failed');
   String get updateNeedPerm => t(

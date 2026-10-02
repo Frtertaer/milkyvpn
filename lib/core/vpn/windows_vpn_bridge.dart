@@ -162,7 +162,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
       ...kv(
         '-addr',
         '${p.address}:${p.port}'
-        '${p.altAddrs == null || p.altAddrs!.isEmpty ? '' : ',${p.altAddrs}'}',
+            '${p.altAddrs == null || p.altAddrs!.isEmpty ? '' : ',${p.altAddrs}'}',
       ),
       ...kv('-sni', p.sni ?? ''),
       ...kv('-pub', p.publicKey ?? ''),
@@ -273,9 +273,7 @@ class WindowsProcessVpnBridge implements VpnBridge {
     // a dead listener. Re-check and undo synchronously.
     if (_proc == null) {
       await _restoreProxy();
-      _set(
-        const VpnSnapshot(state: VpnState.error, errorCode: 'core_exit'),
-      );
+      _set(const VpnSnapshot(state: VpnState.error, errorCode: 'core_exit'));
       throw VpnBridgeException('core_exit');
     }
     _set(
@@ -533,7 +531,17 @@ class WindowsProcessVpnBridge implements VpnBridge {
       if (prevProxyServer == null || leaked)
         ['delete', key, '/v', 'ProxyServer', '/f']
       else
-        ['add', key, '/v', 'ProxyServer', '/t', 'REG_SZ', '/d', prevProxyServer, '/f'],
+        [
+          'add',
+          key,
+          '/v',
+          'ProxyServer',
+          '/t',
+          'REG_SZ',
+          '/d',
+          prevProxyServer,
+          '/f',
+        ],
       [
         'add',
         key,
@@ -574,7 +582,10 @@ class WindowsProcessVpnBridge implements VpnBridge {
   Future<int?> _queryRegDword(String name) async {
     final raw = await _queryRegValue(name);
     if (raw == null) return null;
-    return int.tryParse(raw.startsWith('0x') ? raw.substring(2) : raw, radix: 16) ??
+    return int.tryParse(
+          raw.startsWith('0x') ? raw.substring(2) : raw,
+          radix: 16,
+        ) ??
         int.tryParse(raw);
   }
 
@@ -615,4 +626,23 @@ $t=Add-Type -MemberDefinition $sig -Name W -Namespace I -PassThru
     await Process.start(localPath, const [], mode: ProcessStartMode.detached);
     return true;
   }
+
+  // Per-app split tunneling is an Android VpnService concept; on Windows the
+  // full-tunnel/SOCKS split is the routing surface, not per-app rules.
+  @override
+  Future<List<InstalledApp>> listInstalledApps() async => const [];
+
+  @override
+  Future<SplitAppsConfig> splitApps() async => const SplitAppsConfig();
+
+  @override
+  Future<void> setSplitApps(SplitAppsConfig config) async {
+    throw VpnBridgeException('unsupported_platform');
+  }
+
+  @override
+  Future<String> privateDnsMode() async => '';
+
+  @override
+  Future<String> privateDnsSpecifier() async => '';
 }

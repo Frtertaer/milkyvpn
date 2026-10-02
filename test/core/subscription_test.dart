@@ -748,7 +748,7 @@ proxies:
         expect(snap.profiles.length, 16);
         expect(
           store.data.keys,
-          containsAll(['subscription_url', 'subscription_snapshot']),
+          containsAll(['subscription_urls', 'subscription_snapshots']),
         );
         expect(repo.redactedUrl, isNot(contains('AbCdEf')));
         final repo2 = SubscriptionRepository(

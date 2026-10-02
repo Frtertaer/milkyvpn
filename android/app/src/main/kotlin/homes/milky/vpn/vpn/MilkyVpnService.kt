@@ -362,12 +362,25 @@ class MilkyVpnService : VpnService() {
             .addRoute("0.0.0.0", 0)
             .addDnsServer(XrayConfigBuilder.TUN_DNS)
             .addDnsServer(XrayConfigBuilder.TUN_DNS_2)
-        // Loop avoidance: never route our own (core) sockets into the TUN.
+        // Per-app split tunneling. In allow-mode the own-package exclusion is
+        // implicit (not listed = not routed); in all/block modes it is the
+        // explicit disallowed entry that prevents the core-uplink loop.
+        val split = SplitTunnelStore.read(this)
         try {
-            b.addDisallowedApplication(packageName)
+            when (split.mode) {
+                SplitTunnelStore.MODE_ALLOW -> {
+                    for (pkg in split.packages) b.addAllowedApplication(pkg)
+                }
+                else -> {
+                    b.addDisallowedApplication(packageName)
+                    if (split.mode == SplitTunnelStore.MODE_BLOCK) {
+                        for (pkg in split.packages) b.addDisallowedApplication(pkg)
+                    }
+                }
+            }
         } catch (t: Throwable) {
-            SafeLog.w("addDisallowedApplication", t)
-            throw IllegalStateException("establish: uplink exclusion failed", t)
+            SafeLog.w("split tunnel apply", t)
+            throw IllegalStateException("establish: app filter failed", t)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             b.setMetered(false)
