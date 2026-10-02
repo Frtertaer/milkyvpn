@@ -989,6 +989,7 @@ func (c *Client) reconnectLoop() {
 			c.logf("core: transport lost; migrating session")
 			if c.tryMigrate(sess) {
 				c.scores.ReportMigrate(true)
+				c.logf("core: session migrated onto fresh transport")
 				continue // same session object, new transport — re-watch
 			}
 			c.scores.ReportMigrate(false)
@@ -1127,8 +1128,26 @@ func (c *Client) tryMigrate(sess *kal2.Session) bool {
 	defer cancel()
 	cfg := c.cfg
 	cfg.Resume = rs
-	s, err := dialAny(ctx, cfg, int(c.rrIdx.Add(1)), c.scores)
-	return err == nil && s == sess
+	// dialAny runs on its own goroutine under an outer watchdog: a carrier
+	// dial that wedges past ctx cancellation (blocking handshake, DNS)
+	// would otherwise stall the reconnect loop forever — the session is
+	// already lost, so forward progress matters more than the stray
+	// goroutine, which exits when its dial eventually returns.
+	type migRes struct {
+		s   *kal2.Session
+		err error
+	}
+	ch := make(chan migRes, 1)
+	go func() {
+		s, err := dialAny(ctx, cfg, int(c.rrIdx.Add(1)), c.scores)
+		ch <- migRes{s, err}
+	}()
+	select {
+	case r := <-ch:
+		return r.err == nil && r.s == sess
+	case <-time.After(35 * time.Second):
+		return false
+	}
 }
 
 // Scores exposes the live carrier scorecard for reporting.
