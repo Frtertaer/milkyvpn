@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -131,5 +132,58 @@ func TestCanaryLatest(t *testing.T) {
 	}
 	if got[1].Carrier != "veil" || got[1].OK {
 		t.Fatalf("latest veil rec should be the fail: %+v", got[1])
+	}
+}
+
+// Dead-SNI watchdog: >=3 consecutive failed direct probes marks a cover
+// name dead; a passing probe resets its streak; fronted rows carry no sni
+// and are ignored.
+func TestDeadSNIs(t *testing.T) {
+	f := filepath.Join(t.TempDir(), "canary.jsonl")
+	data := `{"entry":"us:443","carrier":"veil","sni":"gone.example","ok":false}
+{"entry":"us:443","carrier":"veil","sni":"gone.example","ok":false}
+{"entry":"us:443","carrier":"veil","sni":"gone.example","ok":false}
+{"entry":"us:443","carrier":"veil","sni":"alive.example","ok":true}
+{"entry":"cf","carrier":"mosaic","front":"https://w.dev","ok":false}
+{"entry":"flap","carrier":"veil","sni":"flap.example","ok":false}
+{"entry":"flap","carrier":"veil","sni":"flap.example","ok":true}
+{"entry":"flap","carrier":"veil","sni":"flap.example","ok":false}
+{"entry":"flap","carrier":"veil","sni":"flap.example","ok":false}
+`
+	if err := os.WriteFile(f, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+	dead := deadSNIs(f)
+	if !dead["gone.example"] {
+		t.Fatal("3-streak dead SNI not flagged")
+	}
+	if dead["alive.example"] || dead["flap.example"] {
+		t.Fatalf("false positives: %+v", dead)
+	}
+	if _, err := os.Stat(f); err == nil && deadSNIs("/nonexistent") != nil {
+		t.Fatal("missing file must yield nil, not an empty-but-falsey map")
+	}
+}
+
+// dropDeadSNIs prunes dead members of an sni= comma list; an all-dead list
+// or a single-SNI link comes back unchanged (never bricks).
+func TestDropDeadSNIs(t *testing.T) {
+	link := "kal2://psk@h:443?sni=good.example,dead.example,also.good&pub=x"
+	dead := map[string]bool{"dead.example": true}
+	got := dropDeadSNIs(link, dead)
+	if !strings.Contains(got, "sni=good.example%2Calso.good") &&
+		!strings.Contains(got, "sni=good.example,also.good") {
+		t.Fatalf("dead SNI not pruned: %s", got)
+	}
+	if strings.Contains(got, "dead.example") {
+		t.Fatalf("dead SNI survived: %s", got)
+	}
+	allDead := map[string]bool{"good.example": true, "dead.example": true, "also.good": true}
+	if got2 := dropDeadSNIs(link, allDead); got2 != link {
+		t.Fatalf("all-dead pool must pass through unchanged: %s", got2)
+	}
+	single := "kal2://psk@h:443?sni=only.example"
+	if got3 := dropDeadSNIs(single, map[string]bool{"only.example": true}); got3 != single {
+		t.Fatalf("single-SNI link rewritten: %s", got3)
 	}
 }

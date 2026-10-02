@@ -385,6 +385,69 @@ func deadFronts(path string) map[string]bool {
 	return dead
 }
 
+// deadSNIs reports cover SNIs the RU canary currently sees dead — same
+// streak rule as fronts, keyed on the "sni" field direct probe rows carry.
+// A filtered domain dies at the handshake stage while the server stays up,
+// so per-SNI failure attribution works even when other entries are green.
+func deadSNIs(path string) map[string]bool {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	streak := map[string]int{}
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var r struct {
+			SNI string `json:"sni"`
+			OK  bool   `json:"ok"`
+		}
+		if json.Unmarshal([]byte(line), &r) != nil || r.SNI == "" {
+			continue
+		}
+		if r.OK {
+			streak[r.SNI] = 0
+		} else {
+			streak[r.SNI]++
+		}
+	}
+	dead := map[string]bool{}
+	for s, n := range streak {
+		if n >= 3 {
+			dead[s] = true
+		}
+	}
+	return dead
+}
+
+// dropDeadSNIs filters dead names out of a link's sni= comma list. When the
+// whole pool is dead the link is returned unchanged — a blocklist that
+// covers everything is stale data, not a reason to brick the link.
+func dropDeadSNIs(link string, dead map[string]bool) string {
+	if len(dead) == 0 {
+		return link
+	}
+	u, err := url.Parse(link)
+	if err != nil {
+		return link
+	}
+	q := u.Query()
+	snis := q.Get("sni")
+	if snis == "" || !strings.Contains(snis, ",") {
+		return link
+	}
+	var kept []string
+	for _, s := range strings.Split(snis, ",") {
+		if s = strings.TrimSpace(s); s != "" && !dead[s] {
+			kept = append(kept, s)
+		}
+	}
+	if len(kept) == 0 {
+		return link
+	}
+	q.Set("sni", strings.Join(kept, ","))
+	u.RawQuery = q.Encode()
+	return u.String()
+}
+
 // dropDeadFronts removes dead front= params from a kal2:// link; the direct
 // entry stays so the link degrades to a plain connection, not a dead end.
 func dropDeadFronts(link string, dead map[string]bool) string {
@@ -791,8 +854,9 @@ func (p *panel) sub(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dead := deadFronts(canaryPath)
+	deadSNI := deadSNIs(canaryPath)
 	for i := range links {
-		links[i] = dropDeadFronts(links[i], dead)
+		links[i] = dropDeadSNIs(dropDeadFronts(links[i], dead), deadSNI)
 	}
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.Write([]byte(strings.Join(links, "\n")))
@@ -850,8 +914,26 @@ func (p *panel) genlink(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	primary := in.Addrs[0]
+	sniPool := or(in.SNI, "kal.mergescribe.dev")
+	sniDropped := 0
+	if deadSNI := deadSNIs(canaryPath); len(deadSNI) > 0 && strings.Contains(sniPool, ",") {
+		var kept []string
+		for _, s := range strings.Split(sniPool, ",") {
+			if s = strings.TrimSpace(s); s == "" {
+				continue
+			}
+			if deadSNI[s] {
+				sniDropped++
+				continue
+			}
+			kept = append(kept, s)
+		}
+		if len(kept) > 0 {
+			sniPool = strings.Join(kept, ",")
+		}
+	}
 	q := []string{
-		"sni=" + or(in.SNI, "kal.mergescribe.dev"),
+		"sni=" + sniPool,
 		"pub=" + st.Pub,
 		"carrier=" + or(in.Carrier, "auto"),
 	}
@@ -871,7 +953,7 @@ func (p *panel) genlink(w http.ResponseWriter, r *http.Request) {
 		q = append(q, "front="+url.QueryEscape(f))
 	}
 	link := "kal2://" + psk + "@" + primary + "?" + strings.Join(q, "&")
-	writeJSON(w, map[string]any{"link": link, "fronts_dropped": dropped})
+	writeJSON(w, map[string]any{"link": link, "fronts_dropped": dropped, "snis_dropped": sniDropped})
 }
 
 // unitUserPSK pulls the first `-user id=psk` value from the unit's

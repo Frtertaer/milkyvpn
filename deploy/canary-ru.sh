@@ -12,6 +12,9 @@
 #   CANARY_PSK      probe user's PSK                 (read from /etc/kal2/canary.psk)
 #   CANARY_PUB      server ed25519 pub               (default below)
 #   CANARY_PUSH     scp target for the summary file  (default root@23.133.88.167:/etc/kal2/canary-ru.jsonl)
+#   CANARY_SNI_POOL comma list of cover SNIs in use — each gets its own probe
+#                   row so the panel's dead-SNI watchdog can drop filtered
+#                   decoy names from generated links (rows tag "sni").
 set -u
 
 CLIENT=${CANARY_CLIENT:-/opt/kal2/kal2-client}
@@ -19,21 +22,24 @@ PSK=${CANARY_PSK:-$(cat /opt/kal2/canary.psk 2>/dev/null)}
 PUB=${CANARY_PUB:-9f0dfb763d6fbdb2fa0f0b1f2fb6fd2f3d8e9ca681c523241c63434d41c76c8f}
 PUSH=${CANARY_PUSH:-root@23.133.88.167:/etc/kal2/canary-ru.jsonl}
 SNI=${CANARY_SNI:-kal.mergescribe.dev}
+SNI_POOL=${CANARY_SNI_POOL:-}
 OUT=/opt/kal2/canary-ru.jsonl
 SOCKS=127.0.0.1:13918
 mkdir -p /opt/kal2
 
-# probe <entry-label> <addr> <carrier> [extra client args...]
+# probe <entry-label> <addr> <carrier> <sni> [extra client args...]
 # If a -front <url> pair is among the extra args, its URL is echoed as the
-# record's "front" field — the panel's front watchdog keys on it.
+# record's "front" field — the panel's front watchdog keys on it. Direct
+# rows also carry the dialed "sni" so a filtered cover name is attributable
+# to that domain, not to the server.
 probe() {
-  local entry=$1 addr=$2 carrier=$3; shift 3
+  local entry=$1 addr=$2 carrier=$3 sni=$4; shift 4
   local t0 ok=0 log=/tmp/canary-ru-client.log front=""
   local args=("$@")
   for i in "${!args[@]}"; do
     [ "${args[$i]}" = "-front" ] && front=${args[$((i+1))]:-}
   done
-  timeout 25 "$CLIENT" -addr "$addr" -sni "$SNI" -pub "$PUB" -psk "$PSK" \
+  timeout 25 "$CLIENT" -addr "$addr" -sni "$sni" -pub "$PUB" -psk "$PSK" \
     -carrier "$carrier" -socks "$SOCKS" "$@" >"$log" 2>&1 &
   local pid=$! t0=$(date +%s%3N)
   for i in $(seq 1 40); do
@@ -44,20 +50,30 @@ probe() {
   kill $pid 2>/dev/null; wait $pid 2>/dev/null
   local okb=false; [ $ok -eq 1 ] && okb=true
   local fj=""; [ -n "$front" ] && fj=",\"front\":\"$front\""
-  printf '{"ts":"%s","entry":"%s","carrier":"%s"%s,"ok":%s,"ms":%d}\n' \
-    "$(date -u +%FT%TZ)" "$entry" "$carrier" "$fj" "$okb" "$(( $(date +%s%3N) - t0 ))"
+  local sj=""; [ -z "$front" ] && sj=",\"sni\":\"$sni\""
+  printf '{"ts":"%s","entry":"%s","carrier":"%s"%s%s,"ok":%s,"ms":%d}\n' \
+    "$(date -u +%FT%TZ)" "$entry" "$carrier" "$fj" "$sj" "$okb" "$(( $(date +%s%3N) - t0 ))"
 }
 
 {
-  probe "us:443"     "23.133.88.167:443"   veil
-  probe "us:20444"   "23.133.88.167:20444" quic2
-  probe "us:20445"   "23.133.88.167:20445" rtc
-  probe "yandex-fn"  "23.133.88.167:443"   mosaic \
+  probe "us:443"     "23.133.88.167:443"   veil   "$SNI"
+  probe "us:20444"   "23.133.88.167:20444" quic2  "$SNI"
+  probe "us:20445"   "23.133.88.167:20445" rtc    "$SNI"
+  probe "us:443-udp" "23.133.88.167:443"   quic2  "$SNI"
+  probe "us:443-qsr" "23.133.88.167:443"   quasar "$SNI" # opaque UDP — dead from RU, kept to document flapping
+  probe "yandex-fn"  "23.133.88.167:443"   mosaic "$SNI" \
     -front "https://functions.yandexcloud.net/d4erhmmikarvfr4tsc7e"
-  probe "cf-worker"  "23.133.88.167:443"   mosaic \
+  probe "cf-worker"  "23.133.88.167:443"   mosaic "$SNI" \
     -front "https://milky-front.milky-front.workers.dev"
-  probe "cf-worker"  "23.133.88.167:443"   cdn \
+  probe "cf-worker"  "23.133.88.167:443"   cdn    "$SNI" \
     -front "https://milky-front.milky-front.workers.dev"
+  # Cover-SNI pool: one extra direct probe per name (entry sni:<domain>).
+  IFS=',' read -ra _pool <<< "$SNI_POOL"
+  for s in "${_pool[@]}"; do
+    s=$(echo "$s" | tr -d '[:space:]')
+    [ -z "$s" ] || [ "$s" = "$SNI" ] && continue
+    probe "sni:$s" "23.133.88.167:443" veil "$s"
+  done
 } > "$OUT.new" 2>/dev/null
 mv "$OUT.new" "$OUT"
 
