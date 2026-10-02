@@ -115,6 +115,7 @@
     <div class="row" style="margin-bottom:8px">
       <input type="text" id="newUser" placeholder="имя нового юзера (a-z0-9_-)" style="max-width:240px">
       <button onclick="addUser()">Добавить</button>
+      <button class="ghost" onclick="rotateAll()" title="новый PSK всем активным юзерам, URL подписок сохраняются">Перевыпустить все ключи</button>
     </div>
     <table id="usersTbl"><thead><tr>
       <th>Юзер</th><th>Трафик ↑/↓</th><th>Месяц / квота</th><th>Сессий</th><th>Онлайн</th><th>Активность</th><th></th>
@@ -383,6 +384,13 @@ async function userRekey(id){
   try{ await api('/api/users',{rekey:id});
     const u=await api('/api/users'); const s=await api('/api/stats'); renderUsers(u,s);
     toast('Ключи '+id+' перевыпущены');
+  }catch(e){ toast('Ошибка: '+e.message,false); }
+}
+async function rotateAll(){
+  if(!confirm('Перевыпустить PSK ВСЕМ активным юзерам? Старые ссылки умрут — клиенты получат новые при следующем обновлении подписки (авто-обновление должно быть включено), либо раздай подписки заново.'))return;
+  try{ const r=await api('/api/users',{rotate_all:true});
+    const u=await api('/api/users'); const s=await api('/api/stats'); renderUsers(u,s);
+    toast('Ключи перевыпущены: '+r.rotated+' юзеров');
   }catch(e){ toast('Ошибка: '+e.message,false); }
 }
 async function userSet(id){

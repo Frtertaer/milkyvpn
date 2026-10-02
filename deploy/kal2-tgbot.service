@@ -1,0 +1,13 @@
+[Unit]
+Description=MilkyVPN Telegram management bot (kal2-tgbot)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+ExecStart=/usr/bin/python3 /etc/kal2/tg-bot.py
+Restart=always
+RestartSec=10
+# reads /etc/kal2/tg.token + tg.chat; talks to panel ops API on 127.0.0.1:9449
+
+[Install]
+WantedBy=multi-user.target

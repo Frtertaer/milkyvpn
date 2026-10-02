@@ -121,6 +121,7 @@ func main() {
 	unit := flag.String("unit", "kal2.service", "managed systemd unit")
 	quasar := flag.String("unit-quasar", "kal2-quasar.service", "quasar UDP unit (toggled by the udp-listen switch)")
 	pubOrigin := flag.String("pub-origin", "", "public base URL for the subscription link, e.g. https://kal.example:9443 (empty = request Host)")
+	ops := flag.String("ops-listen", "", "loopback-only ops API addr, e.g. 127.0.0.1:9449 — no auth, never expose externally (used by the tg-bot helper)")
 	flag.Parse()
 
 	if *token == "" {
@@ -134,6 +135,19 @@ func main() {
 		pubOrigin: strings.TrimRight(*pubOrigin, "/"),
 	}
 	p.load()
+
+	if *ops != "" {
+		om := http.NewServeMux()
+		om.HandleFunc("/ops/status", p.opsStatus)
+		om.HandleFunc("/ops/users", p.opsUsers)
+		om.HandleFunc("/ops/rotate-all", p.rotateAll)
+		go func() {
+			log.Printf("kal2-panel: ops api on http://%s (loopback only)", *ops)
+			if err := http.ListenAndServe(*ops, om); err != nil {
+				log.Printf("ops listener: %v", err)
+			}
+		}()
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", p.ui)
@@ -939,12 +953,16 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 			Set       string `json:"set"`
 			QuotaMB   int64  `json:"quota_mb"`
 			ExpiresAt int64  `json:"expires_at"`
+			RotateAll bool   `json:"rotate_all"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 			http.Error(w, "bad json", 400)
 			return
 		}
 		switch {
+		case in.RotateAll:
+			n := p.rotateAllLocked()
+			p.audit(r, "user_rotate_all", fmt.Sprintf("%d users", n))
 		case in.Add != "":
 			id := strings.TrimSpace(in.Add)
 			if !userIDRe.MatchString(id) {
@@ -1060,6 +1078,104 @@ type statAgg struct {
 	Sessions int    `json:"sessions"`
 	LastSeen int64  `json:"last_seen"`
 	Online   int    `json:"online"`
+}
+
+// ------------------------------------------------------------------ ops API
+
+// rotateAllLocked assigns fresh PSKs to every ENABLED user, keeping sub
+// tokens (and therefore subscription URLs) stable — rotated links rekey
+// automatically on the client's next subscription fetch. Caller holds p.mu
+// or runs before serving; returns the count rotated.
+func (p *panel) rotateAllLocked() int {
+	n := 0
+	for i := range p.store.Users {
+		if p.store.Users[i].Disabled {
+			continue
+		}
+		p.store.Users[i].PSK = randHex(32)
+		n++
+	}
+	return n
+}
+
+// rotateAll exposes rotate-all on both the authed /api/users op and the
+// loopback ops mux. POST only.
+func (p *panel) rotateAll(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "POST only", 405)
+		return
+	}
+	p.mu.Lock()
+	n := p.rotateAllLocked()
+	p.audit(r, "user_rotate_all", fmt.Sprintf("%d users (ops)", n))
+	p.save()
+	p.mu.Unlock()
+	if err := p.ensureUserMode(); err != nil {
+		http.Error(w, "rotated but unit update failed: "+err.Error(), 500)
+		return
+	}
+	writeJSON(w, map[string]any{"rotated": n})
+}
+
+// opsStatus is the tg-bot's health probe: panel side state only.
+func (p *panel) opsStatus(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	enabled := 0
+	for _, u := range p.store.Users {
+		if !u.Disabled {
+			enabled++
+		}
+	}
+	writeJSON(w, map[string]any{
+		"users":         len(p.store.Users),
+		"users_enabled": enabled,
+		"file_mode":     p.fileMode(),
+	})
+}
+
+// opsUsers: GET lists users for the tg-bot; POST {"id","disabled"} toggles
+// one user — same mutation path the UI uses (save + ensureUserMode).
+func (p *panel) opsUsers(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		p.mu.Lock()
+		users := append([]panelUser(nil), p.store.Users...)
+		p.mu.Unlock()
+		writeJSON(w, map[string]any{"users": users})
+	case http.MethodPost:
+		var in struct {
+			ID       string `json:"id"`
+			Disabled bool   `json:"disabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil || in.ID == "" {
+			http.Error(w, "need {id,disabled}", 400)
+			return
+		}
+		p.mu.Lock()
+		found := false
+		for i := range p.store.Users {
+			if p.store.Users[i].ID == in.ID {
+				p.store.Users[i].Disabled = in.Disabled
+				found = true
+			}
+		}
+		if !found {
+			p.mu.Unlock()
+			http.Error(w, "no such user", 404)
+			return
+		}
+		p.audit(r, "user_disable", fmt.Sprintf("%s=%v (ops)", in.ID, in.Disabled))
+		p.save()
+		p.mu.Unlock()
+		if err := p.ensureUserMode(); err != nil {
+			http.Error(w, "applied but unit update failed: "+err.Error(), 500)
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true, "id": in.ID, "disabled": in.Disabled})
+	default:
+		http.Error(w, "GET/POST", 405)
+	}
 }
 
 // ------------------------------------------------------------------ QR
