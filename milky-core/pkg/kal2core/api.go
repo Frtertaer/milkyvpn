@@ -743,6 +743,9 @@ func carrierMemUnblock(path, netClass, sni string) {
 	}
 	carrierMemMutate(path, func(m *carrierMemFile) {
 		list := m.Blocked[netClass]
+		if len(list) == 0 {
+			return
+		}
 		out := list[:0]
 		for _, s := range list {
 			if s != sni {

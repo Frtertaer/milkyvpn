@@ -491,6 +491,9 @@ func TestCarrierMemRoundTripAndPrefer(t *testing.T) {
 
 func TestCarrierMemBlocklist(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "cmem.json")
+	// Unblock on a fresh/never-blocked file must not panic (nil map write
+	// crashed the :kal2 process on Android — every successful dial calls it).
+	carrierMemUnblock(path, "wifi", "dead.example")
 	carrierMemBlock(path, "wifi", "dead.example")
 	carrierMemBlock(path, "wifi", "dead.example") // dedupe
 	carrierMemBlock(path, "wifi", "gone.example")
