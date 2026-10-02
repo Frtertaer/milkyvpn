@@ -55,6 +55,15 @@ const (
 	// canaryPath is where the RU-side probe (deploy/canary-ru.sh, scp'd by
 	// cron) drops its JSONL summary; panel reads it for the "входы из РФ" card.
 	canaryPath = "/etc/kal2/canary-ru.jsonl"
+	// canaryHistPath is the appended long-run log the same script maintains;
+	// /api/canary/history renders latency/uptime trends from it.
+	canaryHistPath = "/etc/kal2/canary-ru-history.jsonl"
+	// histPoints caps samples per entry returned by the history API —
+	// 144 × 10-min cron ≈ 24h of trend.
+	histPoints = 144
+	// auditPath is the admin action log; auditLimit bounds /api/audit output.
+	auditPath  = "/etc/kal2/audit.jsonl"
+	auditLimit = 200
 )
 
 // panelUser is a provisioned client: the panel owns id/psk/subscription and
@@ -134,6 +143,16 @@ func main() {
 	mux.HandleFunc("/api/qr", p.auth(p.qr))
 	mux.HandleFunc("/api/password", p.auth(p.password))
 	mux.HandleFunc("/api/backup", p.auth(p.backup))
+	mux.HandleFunc("/api/canary/history", p.auth(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"series": canaryHistory(canaryHistPath)})
+	}))
+	mux.HandleFunc("/api/traffic", p.auth(func(w http.ResponseWriter, r *http.Request) {
+		h, d := trafficSeries(p.statsPath())
+		writeJSON(w, map[string]any{"hourly": h, "daily": d})
+	}))
+	mux.HandleFunc("/api/audit", p.auth(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"events": auditTail(auditPath, auditLimit)})
+	}))
 	mux.HandleFunc("/sub/", p.sub)
 
 	go p.enforceWatch()
@@ -214,9 +233,11 @@ func (p *panel) login(w http.ResponseWriter, r *http.Request) {
 	var in struct{ Token string }
 	_ = json.NewDecoder(r.Body).Decode(&in)
 	if subtle.ConstantTimeCompare([]byte(in.Token), p.token) != 1 {
+		p.audit(r, "login_fail", "")
 		http.Error(w, "bad token", 401)
 		return
 	}
+	p.audit(r, "login", "")
 	exp := time.Now().Add(cookieTTL).Unix()
 	mac := hmac.New(sha256.New, p.token)
 	fmt.Fprintf(mac, "%d", exp)
@@ -285,6 +306,70 @@ type canRec struct {
 	Carrier string `json:"carrier"`
 	OK      bool   `json:"ok"`
 	Ms      int64  `json:"ms"`
+}
+
+// canSeries is the per-entry trend the history card renders: ordered
+// samples plus pre-computed uptime/avg so the UI stays dumb.
+type canSeries struct {
+	Entry   string    `json:"entry"`
+	Carrier string    `json:"carrier"`
+	Uptime  float64   `json:"uptime"` // % of ok samples in the window
+	AvgMs   int64     `json:"avg_ms"`
+	Pts     []canPoint `json:"pts"`
+}
+
+type canPoint struct {
+	TS string `json:"ts"`
+	OK bool   `json:"ok"`
+	Ms int64  `json:"ms"`
+}
+
+// canaryHistory reads the appended long-run JSONL and returns each
+// entry+carrier's newest histPoints samples in time order.
+func canaryHistory(path string) []canSeries {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	byKey := map[string]*canSeries{}
+	var order []string
+	for _, ln := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var r canRec
+		if json.Unmarshal([]byte(ln), &r) != nil {
+			continue
+		}
+		k := r.Entry + "|" + r.Carrier
+		s := byKey[k]
+		if s == nil {
+			s = &canSeries{Entry: r.Entry, Carrier: r.Carrier}
+			byKey[k] = s
+			order = append(order, k)
+		}
+		s.Pts = append(s.Pts, canPoint{TS: r.TS, OK: r.OK, Ms: r.Ms})
+		if len(s.Pts) > histPoints {
+			s.Pts = s.Pts[len(s.Pts)-histPoints:]
+		}
+	}
+	var out []canSeries
+	for _, k := range order {
+		s := byKey[k]
+		var ok, msSum, msN int64
+		for _, p := range s.Pts {
+			if p.OK {
+				ok++
+				msSum += p.Ms
+				msN++
+			}
+		}
+		if len(s.Pts) > 0 {
+			s.Uptime = float64(ok) * 100 / float64(len(s.Pts))
+		}
+		if msN > 0 {
+			s.AvgMs = msSum / msN
+		}
+		out = append(out, *s)
+	}
+	return out
 }
 
 // canaryLatest reads the JSONL the RU probe writes and keeps the newest
@@ -504,6 +589,7 @@ func (p *panel) config(w http.ResponseWriter, r *http.Request) {
 	} else {
 		exec.Command("systemctl", "disable", "--now", p.quasar).Run()
 	}
+	p.audit(r, "apply", fmt.Sprintf("flags=%v", in.Flags))
 	writeJSON(w, map[string]bool{"ok": true})
 }
 
@@ -523,6 +609,7 @@ func (p *panel) links(w http.ResponseWriter, r *http.Request) {
 		}
 		if in.SubDisabled != nil {
 			p.store.SubDisabled = *in.SubDisabled
+			p.audit(r, "sub_toggle", fmt.Sprintf("disabled=%v", *in.SubDisabled))
 		}
 		if in.Add != "" && strings.HasPrefix(in.Add, "kal2://") {
 			dup := false
@@ -533,6 +620,7 @@ func (p *panel) links(w http.ResponseWriter, r *http.Request) {
 			}
 			if !dup {
 				p.store.Links = append(p.store.Links, in.Add)
+				p.audit(r, "link_add", in.Add)
 			}
 			p.save()
 		}
@@ -849,6 +937,7 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 			p.store.Users = append(p.store.Users, panelUser{
 				ID: id, PSK: randHex(32), Created: time.Now().Unix(), SubToken: randHex(16),
 			})
+			p.audit(r, "user_add", id)
 		case in.Del != "":
 			n := len(p.store.Users)
 			out := p.store.Users[:0]
@@ -862,6 +951,7 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "no such user", 404)
 				return
 			}
+			p.audit(r, "user_del", in.Del)
 		case in.Disable != "":
 			found := false
 			for i := range p.store.Users {
@@ -874,6 +964,7 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "no such user", 404)
 				return
 			}
+			p.audit(r, "user_disable", fmt.Sprintf("%s=%v", in.Disable, in.Disabled))
 		case in.Rekey != "":
 			found := false
 			for i := range p.store.Users {
@@ -887,6 +978,7 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "no such user", 404)
 				return
 			}
+			p.audit(r, "user_rekey", in.Rekey)
 		case in.Set != "":
 			if in.QuotaMB < 0 || in.ExpiresAt < 0 {
 				http.Error(w, "quota/expiry must be >= 0", 400)
@@ -904,6 +996,7 @@ func (p *panel) users(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, "no such user", 404)
 				return
 			}
+			p.audit(r, "user_set", fmt.Sprintf("%s quota=%dMB exp=%d", in.Set, in.QuotaMB, in.ExpiresAt))
 		default:
 			http.Error(w, "empty op", 400)
 			return
@@ -1004,6 +1097,7 @@ func (p *panel) password(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.token = []byte(in.New)
+	p.audit(r, "password_change", "")
 	writeJSON(w, map[string]any{"ok": true})
 }
 
@@ -1022,6 +1116,7 @@ func (p *panel) backup(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.Header().Set("Content-Disposition", `attachment; filename="kal2-backup.json"`)
 	w.Write(out)
+	p.audit(r, "backup", "")
 }
 
 func (p *panel) statsPath() string {
@@ -1121,6 +1216,108 @@ func (p *panel) stats(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, out)
+}
+
+// trafficBucket is one column of the traffic chart.
+type trafficBucket struct {
+	T    int64  `json:"t"`
+	Up   uint64 `json:"up"`
+	Down uint64 `json:"down"`
+}
+
+// trafficSeries folds stats.jsonl close-events into per-hour buckets for the
+// last 24h and per-day buckets for the last 30d (totals across users).
+func trafficSeries(path string) ([]trafficBucket, []trafficBucket) {
+	now := time.Now()
+	h0 := now.Truncate(time.Hour).Add(-23 * time.Hour).Unix()
+	d0 := time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.Local).AddDate(0, 0, -29).Unix()
+	hours := make([]trafficBucket, 24)
+	days := make([]trafficBucket, 30)
+	for i := range hours {
+		hours[i].T = h0 + int64(i)*3600
+	}
+	for i := range days {
+		days[i].T = d0 + int64(i)*86400
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return hours, days
+	}
+	defer f.Close()
+	var rec struct {
+		T    int64  `json:"t"`
+		Ev   string `json:"ev"`
+		Up   uint64 `json:"up"`
+		Down uint64 `json:"down"`
+	}
+	dec := json.NewDecoder(f)
+	for {
+		if err := dec.Decode(&rec); err != nil {
+			break
+		}
+		if rec.Ev != "close" {
+			continue
+		}
+		if rec.T >= h0 {
+			i := int((rec.T - h0) / 3600)
+			if i >= 0 && i < 24 {
+				hours[i].Up += rec.Up
+				hours[i].Down += rec.Down
+			}
+		}
+		if rec.T >= d0 {
+			i := int((rec.T - d0) / 86400)
+			if i >= 0 && i < 30 {
+				days[i].Up += rec.Up
+				days[i].Down += rec.Down
+			}
+		}
+	}
+	return hours, days
+}
+
+// ------------------------------------------------------------------ audit
+
+type auditRec struct {
+	T      int64  `json:"t"`
+	Action string `json:"action"`
+	Detail string `json:"detail,omitempty"`
+	IP     string `json:"ip,omitempty"`
+}
+
+// audit appends one admin action to the JSONL audit log.
+func (p *panel) audit(r *http.Request, action, detail string) {
+	rec := auditRec{T: time.Now().Unix(), Action: action, Detail: detail}
+	if r != nil {
+		rec.IP, _, _ = net.SplitHostPort(r.RemoteAddr)
+	}
+	b, _ := json.Marshal(rec)
+	f, err := os.OpenFile(auditPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	f.Write(append(b, '\n'))
+}
+
+// auditTail returns the newest n audit records, oldest first.
+func auditTail(path string, n int) []auditRec {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	out := make([]auditRec, 0, len(lines))
+	for _, ln := range lines {
+		var r auditRec
+		if json.Unmarshal([]byte(ln), &r) == nil {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // ------------------------------------------------------------------ util
