@@ -64,11 +64,12 @@ const Map<String, (String en, String ru)> kCountryNames = {
 };
 
 /// Bare 2-letter tokens only count at "free" boundaries — start/end, spaces
-/// and explicit delimiters. A hyphen binds a token only before digits
-/// (`de-3`) — otherwise id-shaped remarks like `unknown-ws` would parse
+/// and explicit delimiters on the LEFT; on the right a hyphen also works
+/// (`fi-reality`, `us-east`, `de-3` all lead with a code). Mid-string hyphens
+/// never open a token, so id-shaped remarks like `unknown-ws` don't parse
 /// their suffix as Samoa.
 final RegExp _tokenRe = RegExp(
-  r'(?:^|[\s\[\]({}|_,;:#@])([a-z]{2})(?=[\s\]\[)({}|_,;:#@]|$|-\d)',
+  r'(?:^|[\s\[\]({}|_,;:#@])([a-z]{2})(?=[\s\]\[)({}|_,;:#@-]|$)',
 );
 
 /// Aliases beyond kCountryNames values: cities and alternate spellings that
@@ -94,8 +95,11 @@ bool isValidLocationCode(String code) =>
 
 /// Detects the country code from a profile remark, or null when unknown.
 String? locationCodeFromRemark(String remark) {
-  for (var i = 0; i + 1 < remark.length; i++) {
-    final a = remark.codeUnitAt(i), b = remark.codeUnitAt(i + 1);
+  // runes — regional indicators sit above the BMP, so code units would
+  // only see surrogate halves.
+  final runes = remark.runes.toList();
+  for (var i = 0; i + 1 < runes.length; i++) {
+    final a = runes[i], b = runes[i + 1];
     if (a >= 0x1F1E6 && a <= 0x1F1FF && b >= 0x1F1E6 && b <= 0x1F1FF) {
       return '${String.fromCharCode(a - 0x1F1E6 + 0x61)}'
           '${String.fromCharCode(b - 0x1F1E6 + 0x61)}';

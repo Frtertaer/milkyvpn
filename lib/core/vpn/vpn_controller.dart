@@ -226,6 +226,18 @@ class VpnController extends ChangeNotifier {
 
   /// Filters profiles the engine can genuinely execute.
   Future<List<VpnProfile>> supportedProfiles(List<VpnProfile> all) async {
+    var out = await _supportedPass(all);
+    if (out.isEmpty && all.any((p) => p.kind != ProfileKind.other)) {
+      // A transient bridge error (binder rebind, busy core) shouldn't empty a
+      // small sweep — one retry after the channel settles.
+      await Future<void>.delayed(const Duration(milliseconds: 400));
+      out = await _supportedPass(all);
+    }
+    _compatibleCount = out.length;
+    return out;
+  }
+
+  Future<List<VpnProfile>> _supportedPass(List<VpnProfile> all) async {
     final out = <VpnProfile>[];
     var consecutiveErrors = 0;
     for (final p in all) {
@@ -239,7 +251,6 @@ class VpnController extends ChangeNotifier {
         if (++consecutiveErrors >= 3) break;
       }
     }
-    _compatibleCount = out.length;
     return out;
   }
 

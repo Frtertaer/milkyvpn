@@ -274,7 +274,9 @@ class _SourcesCard extends StatelessWidget {
     final c = context.milky;
     final repo = context.watch<SubscriptionRepository>();
     final urls = repo.sourceUrls;
-    if (urls.isEmpty) return const SizedBox.shrink();
+    // The card renders even without URL sources: a manual kal2://-only
+    // subscription still needs the visible "add another" affordance —
+    // hiding the whole card hid the add path entirely.
     return MilkyGlassCard(
       elevated: false,
       padding: const EdgeInsets.symmetric(
