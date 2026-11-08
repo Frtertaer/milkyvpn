@@ -3,9 +3,11 @@ package core
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"net/netip"
 	"strings"
 	"time"
 
@@ -28,7 +30,13 @@ type EgressConfig struct {
 	// (e.g. "chatgpt.com" matches host and subdomains). Empty = all traffic
 	// goes through Upstream when it is set.
 	UpstreamOnly []string
+	// AllowPrivate disables the destination filter so clients may reach
+	// loopback/private/link-local targets and the host's own addresses.
+	// Tests and lab setups only — never on a server shared with users.
+	AllowPrivate bool
 }
+
+func (cfg *EgressConfig) allowPrivate() bool { return cfg != nil && cfg.AllowPrivate }
 
 // UpstreamSOCKS5 is a chained SOCKS5 proxy for outbound egress.
 type UpstreamSOCKS5 struct {
@@ -190,7 +198,18 @@ func (cfg *EgressConfig) routeUpstream(host string) bool {
 // dial picks direct vs upstream and applies the family preference.
 func (cfg *EgressConfig) dial(dialer *net.Dialer, network, host string, port uint16, logf func(string, ...any)) (net.Conn, error) {
 	target := net.JoinHostPort(host, fmt.Sprint(int(port)))
+	if !cfg.allowPrivate() {
+		if err := precheckHost(host); err != nil {
+			return nil, err
+		}
+		dialer = guardDialer(dialer)
+	}
 	if cfg != nil && cfg.routeUpstream(host) {
+		if !cfg.allowPrivate() {
+			if err := precheckResolved(host); err != nil {
+				return nil, err
+			}
+		}
 		cfg.Upstream.preferV4 = cfg.PreferIPv4 || cfg.OnlyIPv4
 		c, err := cfg.Upstream.Dial(network, host, port)
 		if err != nil {
@@ -265,6 +284,10 @@ func ServeEgressCfg(sess *kal2.Session, dialer *net.Dialer, cfg *EgressConfig, l
 			up, err := cfg.dial(dialer, network, host, port, logf)
 			if err != nil {
 				logf("egress: dial %s:%d: %v", host, int(port), err)
+				if errors.Is(err, ErrEgressBlocked) {
+					_ = st.Ack(0x02) // SOCKS5: not allowed by ruleset
+					return
+				}
 				_ = st.Ack(0x05)
 				return
 			}
@@ -314,6 +337,13 @@ func relayUDP(st *kal2.Stream, dialer *net.Dialer, cfg *EgressConfig, logf func(
 			dst, payload, err := parseUDPHeader(buf[:n])
 			if err != nil {
 				continue
+			}
+			if !cfg.allowPrivate() {
+				ip, _ := netip.AddrFromSlice(dst.IP)
+				if err := checkEgressIP(ip); err != nil {
+					logf("egress: udp %v", err)
+					continue
+				}
 			}
 			if _, err := pc.WriteTo(payload, dst); err != nil {
 				errCh <- struct{}{}

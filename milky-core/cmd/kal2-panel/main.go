@@ -1316,6 +1316,10 @@ func (p *panel) opsUsers(w http.ResponseWriter, r *http.Request) {
 		p.mu.Lock()
 		users := append([]panelUser(nil), p.store.Users...)
 		p.mu.Unlock()
+		// The ops listener is unauthenticated: never hand out credentials.
+		for i := range users {
+			users[i].PSK, users[i].SubToken = "", ""
+		}
 		writeJSON(w, map[string]any{"users": users})
 	case http.MethodPost:
 		var in struct {
