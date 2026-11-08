@@ -259,4 +259,129 @@ void main() {
       expect(WindowsProcessVpnBridge.parseRegQueryValue('', 'ProxyEnable'), isNull);
     });
   });
+  // Code-scan sfind-c5d7155: subscription fields were spliced into a
+  // `powershell -Command` string inside unescaped '...' — sni=x'; calc; '
+  // ran calc before UAC. The script must be constant and every hostile value
+  // must round-trip as ONE literal argv element.
+  group('-tun elevated launch', () {
+    const hostile = [
+      "a'; calc; '",
+      'a\u2019; calc; \u2018',
+      r'$(calc)',
+      '`calc`',
+      'x -log C:\\Windows\\System32\\evil.dll',
+      'say "hi" \\" -pin x',
+      'trail\\',
+      'tab\there',
+      '',
+    ];
+
+    test('script is constant; profile values only travel via env', () {
+      final b = WindowsProcessVpnBridge(logPath: r'C:\Logs\kal2-client.log');
+      final p = VpnProfile(
+        id: 'p1',
+        protocol: 'kal2',
+        address: '23.133.88.167',
+        port: 443,
+        secret: "psk'; calc; '",
+        remark: 'r',
+        sni: "a'; calc; '",
+        publicKey: 'PUBK',
+        ech: r'$(calc)',
+        pin: '`calc`',
+        path: '/p"; calc; "',
+      );
+      final args = b.tunArgsForTesting(p);
+      final l = WindowsProcessVpnBridge.tunLaunchFor(
+        r"C:\Users\o'neil\$(calc)\kal2-client.exe",
+        args,
+      );
+      expect(l.executable, 'powershell');
+      expect(l.arguments, [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        r'Start-Process -Verb RunAs -FilePath $env:MILKY_TUN_EXE '
+            r'-ArgumentList $env:MILKY_TUN_ARGS',
+      ]);
+      expect(
+        l.environment['MILKY_TUN_EXE'],
+        r"C:\Users\o'neil\$(calc)\kal2-client.exe",
+      );
+      expect(_splitWindowsCommandLine(l.environment['MILKY_TUN_ARGS']!), args);
+      expect(args[args.indexOf('-sni') + 1], "a'; calc; '");
+    });
+
+    test('hostile values round-trip as single argv elements', () {
+      for (final v in hostile) {
+        final line = WindowsProcessVpnBridge.windowsCommandLine([
+          '-sni',
+          v,
+          '-tun',
+        ]);
+        expect(_splitWindowsCommandLine(line), ['-sni', v, '-tun'], reason: v);
+      }
+    });
+
+    test('plain values are not quoted', () {
+      expect(
+        WindowsProcessVpnBridge.windowsCommandLine(['-addr', '1.2.3.4:443']),
+        '-addr 1.2.3.4:443',
+      );
+    });
+
+    test('NUL is rejected', () {
+      expect(
+        () => WindowsProcessVpnBridge.tunLaunchFor('c.exe', ['a\u0000b']),
+        throwsArgumentError,
+      );
+    });
+  });
+}
+
+/// Reference splitter: CommandLineToArgvW / MSVC rules (2n backslashes + "
+/// → n backslashes + toggle; 2n+1 → n backslashes + literal ").
+List<String> _splitWindowsCommandLine(String line) {
+  final out = <String>[];
+  final cur = StringBuffer();
+  var inQuotes = false;
+  var hasToken = false;
+  var i = 0;
+  while (i < line.length) {
+    final c = line[i];
+    if (c == '\\') {
+      var n = 0;
+      while (i < line.length && line[i] == '\\') {
+        n++;
+        i++;
+      }
+      if (i < line.length && line[i] == '"') {
+        cur.write('\\' * (n ~/ 2));
+        if (n.isOdd) {
+          cur.write('"');
+          i++;
+        }
+      } else {
+        cur.write('\\' * n);
+      }
+      hasToken = true;
+      continue;
+    }
+    if (c == '"') {
+      inQuotes = !inQuotes;
+      hasToken = true;
+    } else if ((c == ' ' || c == '\t') && !inQuotes) {
+      if (hasToken) {
+        out.add(cur.toString());
+        cur.clear();
+        hasToken = false;
+      }
+    } else {
+      cur.write(c);
+      hasToken = true;
+    }
+    i++;
+  }
+  if (hasToken) out.add(cur.toString());
+  return out;
 }
