@@ -156,10 +156,8 @@ class WindowsProcessVpnBridge implements VpnBridge {
     // dial so a blocked carrier still connects (BUG-2026-10-02-01).
     const passThrough = {'quasar', 'quic2', 'rtc', 'relay'};
     final carrier = passThrough.contains(network) ? network : 'auto';
-    // A flag with a '' value is fatal on the -tun path: `Start-Process
-    // -ArgumentList` rejects empty elements, and Go's flag pkg would read the
-    // NEXT token as the value. Every client flag defaults to "" anyway —
-    // omit the pair.
+    // A flag with a '' value would make Go's flag pkg read the NEXT token as
+    // the value. Every client flag defaults to "" anyway — omit the pair.
     List<String> kv(String flag, String value) =>
         value.isEmpty ? const [] : [flag, value];
     return <String>[
@@ -196,6 +194,74 @@ class WindowsProcessVpnBridge implements VpnBridge {
   /// Visible seam for unit tests — the spawned command line is the bridge's
   /// real contract with kal2-client (flags dropped here are silent bugs).
   List<String> argsForTesting(VpnProfile p) => _argsFor(p);
+
+  List<String> _tunArgsFor(VpnProfile p) => [
+    ..._argsFor(p),
+    '-tun',
+    'MilkyVPN-TUN',
+    '-ctl',
+    _ctlAddr,
+  ];
+
+  List<String> tunArgsForTesting(VpnProfile p) => _tunArgsFor(p);
+
+  /// Elevated -tun spawn via `Start-Process -Verb RunAs`. Profile fields come
+  /// from untrusted subscriptions, so they never enter the PowerShell source:
+  /// the script is a constant that reads the exe path and the pre-quoted
+  /// argv line from env vars (expanded as plain strings, never parsed).
+  static TunLaunch tunLaunchFor(String clientPath, List<String> args) =>
+      TunLaunch(
+        executable: 'powershell',
+        arguments: const [
+          '-NoProfile',
+          '-NonInteractive',
+          '-Command',
+          r'Start-Process -Verb RunAs -FilePath $env:MILKY_TUN_EXE '
+              r'-ArgumentList $env:MILKY_TUN_ARGS',
+        ],
+        environment: {
+          'MILKY_TUN_EXE': _checkNoNul(clientPath),
+          'MILKY_TUN_ARGS': windowsCommandLine(args),
+        },
+      );
+
+  /// Joins [args] into one Windows command line that CommandLineToArgvW /
+  /// Go's os.Args split back into exactly [args] (MSVC quoting rules), so a
+  /// space or quote inside a value cannot inject extra flags.
+  static String windowsCommandLine(List<String> args) =>
+      args.map(_quoteWindowsArg).join(' ');
+
+  static String _checkNoNul(String s) {
+    if (s.contains('\u0000')) {
+      throw ArgumentError('NUL in process argument');
+    }
+    return s;
+  }
+
+  static String _quoteWindowsArg(String arg) {
+    _checkNoNul(arg);
+    if (arg.isNotEmpty && !arg.contains(RegExp('[ \t\n\v"]'))) {
+      return arg;
+    }
+    final b = StringBuffer('"');
+    var slashes = 0;
+    for (final c in arg.split('')) {
+      if (c == r'\') {
+        slashes++;
+        continue;
+      }
+      if (c == '"') {
+        b.write(r'\' * (slashes * 2 + 1));
+      } else {
+        b.write(r'\' * slashes);
+      }
+      slashes = 0;
+      b.write(c);
+    }
+    b.write(r'\' * (slashes * 2));
+    b.write('"');
+    return b.toString();
+  }
 
   @override
   Future<void> connect(VpnProfile profile) async {
@@ -331,23 +397,25 @@ class WindowsProcessVpnBridge implements VpnBridge {
   /// Full-TUN connect: spawn kal2-client elevated via UAC and drive it over
   /// the -ctl socket. The system proxy is untouched — routes do the work.
   Future<void> _connectTun(VpnProfile profile) async {
-    final args = <String>[
-      ..._argsFor(profile),
-      '-tun',
-      'MilkyVPN-TUN',
-      '-ctl',
-      _ctlAddr,
-    ];
+    final args = _tunArgsFor(profile);
     // A helper orphaned by a previous app run would already own the adapter;
     // ask it to stop before spawning a new one.
     await _stopCtl();
 
-    final argLine = args.map((a) => "'$a'").join(', ');
-    final res = await Process.run('powershell', [
-      '-NoProfile',
-      '-Command',
-      'Start-Process -Verb RunAs -FilePath "$_clientPath" -ArgumentList $argLine',
-    ]);
+    final TunLaunch launch;
+    try {
+      launch = tunLaunchFor(_clientPath, args);
+    } on ArgumentError catch (e) {
+      _set(
+        const VpnSnapshot(state: VpnState.error, errorCode: 'tun_uac_denied'),
+      );
+      throw VpnBridgeException('tun_uac_denied', '${e.message}');
+    }
+    final res = await Process.run(
+      launch.executable,
+      launch.arguments,
+      environment: launch.environment,
+    );
     if (res.exitCode != 0) {
       _set(
         const VpnSnapshot(state: VpnState.error, errorCode: 'tun_uac_denied'),
@@ -660,4 +728,16 @@ $t=Add-Type -MemberDefinition $sig -Name W -Namespace I -PassThru
 
   @override
   Future<String> privateDnsSpecifier() async => '';
+}
+
+class TunLaunch {
+  const TunLaunch({
+    required this.executable,
+    required this.arguments,
+    required this.environment,
+  });
+
+  final String executable;
+  final List<String> arguments;
+  final Map<String, String> environment;
 }
