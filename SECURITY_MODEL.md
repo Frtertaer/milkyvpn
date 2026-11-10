@@ -54,12 +54,17 @@ Trust boundaries:
 - Decoy-through + SNI splice, keyed drift path, tarpit, per-IP pre-auth cap, mimicry padding (`DESIGN.md`).
 - Panel: constant-time token compare, HMAC session cookie, TOTP, audit log, ops API bound to loopback, sub tokens compared constant-time, per-user PSK rekey.
 - App: `lib/core/security/subscription_url_policy.dart` (SSRF URL guard), `redactor.dart`, `SafeLog.kt`, Keystore-sealed storage, FallbackSecureStore on macOS.
+- Server egress destination guard (`internal/core/egress_guard.go`): subscriber egress refuses non-public targets (loopback, private, link-local, CGNAT, the host's own addresses, NAT64/6to4-embedded equivalents) on the TCP, UDP and upstream-SOCKS5 paths, with a resolved-address `Dialer.Control` check so DNS names and rebinding to private ranges are covered too. Closes the A3 SSRF-to-ops-API path; `AllowPrivate` opts out for lab use only.
+- Panel ops API (`/ops/users`): PSKs and sub tokens are stripped from responses on the unauthenticated loopback listener.
+- Windows `-tun` elevation (`windows_vpn_bridge.dart`): subscription fields never enter the PowerShell source — the exe path and a `CommandLineToArgvW`-quoted argv line pass through env vars, so a crafted link cannot inject flags into the elevated spawn (A4).
 - Releases: garble-obfuscated libcore.so, stripped binaries; gitleaks + PR-body scan in CI.
 
 ## Out of scope / accepted risk (user)
 - Nothing excluded: user said all repo paths (incl. `kaleido/`, `research/`, `testing/`, `tool/`, `scripts/`, iOS/macOS) and all attackers above are in scope.
 - From `kaleido/THREAT_MODEL.md`: global passive adversary, endpoint compromise / device malware with root, legal/physical coercion are not claimed to be defended. IP/domain blocking by a determined censor is an acknowledged limit (handled by agility, not by code).
 
+## Resolved (2026-11)
+- Server egress now blocks loopback/private/link-local/own-host targets (`internal/core/egress_guard.go`), so the unauthenticated ops API 127.0.0.1:9449 is no longer reachable by a subscriber. Was: "egress does NOT block non-public targets" (2026-11 scan of `internal/core/egress.go`).
+
 ## Open questions
-- Server egress does NOT block loopback/private/link-local targets (confirmed by the 2026-11 scan: `internal/core/egress.go`), so the unauthenticated ops API 127.0.0.1:9449 is reachable by any subscriber until fixed.
 - Is the panel :9443 exposed publicly or only via restricted IPs?
