@@ -467,20 +467,13 @@ func (v *VeilListener) acceptResume(bc BoundConn, magic []byte) bool {
 		v.serveHTTP(WrapPrefix2(bc, head))
 		return false
 	}
-	cp := res.Session.Checkpoint().Encode()
-	out := append(flight, byte(len(cp)), byte(len(cp)>>8))
-	out = append(out, cp...)
-	if _, err := bc.Write(out); err != nil {
+	if _, err := bc.Write(append(flight, res.ServerTrailer()...)); err != nil {
 		return false
 	}
-	if err := res.Finish(); err != nil {
+	// Attach re-keys, binds the transport and issues the replacement ticket.
+	if err := res.Attach(bc); err != nil {
+		v.cfg.logf("veil: resume attach %s: %v", remoteIPConn(bc), err)
 		return false
-	}
-	if err := res.Session.ResumeAttach(bc, res.Checkpoint); err != nil {
-		return false
-	}
-	if err := v.cfg.Resumer.Refresh(res.Session); err != nil {
-		v.cfg.logf("veil: refresh ticket: %v", err)
 	}
 	v.clearFails(remoteIPConn(bc))
 	return true

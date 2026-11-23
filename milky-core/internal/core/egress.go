@@ -296,10 +296,9 @@ func ServeEgressCfg(sess *kal2.Session, dialer *net.Dialer, cfg *EgressConfig, l
 				return
 			}
 			defer up.Close()
-			errCh := make(chan struct{}, 2)
-			go func() { _, _ = io.CopyBuffer(up, st, make([]byte, 1<<16)); errCh <- struct{}{} }()
-			go func() { _, _ = io.CopyBuffer(st, up, make([]byte, 1<<16)); errCh <- struct{}{} }()
-			<-errCh
+			// An upstream that resets, or a client stream that is aborted,
+			// is passed on as an abort — never as a clean end (see Relay).
+			Relay(up, st)
 		}()
 	}
 }

@@ -71,13 +71,11 @@ func handleSocks(c net.Conn, sessFn func() *kal2.Session) {
 	pumpSocks(c, st)
 }
 
-// pumpSocks relays client<->stream until either side closes.
+// pumpSocks relays client<->stream until either side ends. A stream that
+// ends abnormally (reset, refused dial, lost session) resets the client's
+// connection instead of closing it cleanly — see Relay.
 func pumpSocks(c net.Conn, st *kal2.Stream) {
-	errCh := make(chan struct{}, 2)
-	go func() { _, _ = io.CopyBuffer(st, c, make([]byte, 1<<16)); errCh <- struct{}{} }()
-	go func() { _, _ = io.CopyBuffer(c, st, make([]byte, 1<<16)); errCh <- struct{}{} }()
-	<-errCh
-	st.Close()
+	Relay(c, st)
 }
 
 // socksPeekVer reads the first byte — the SOCKS version marker.

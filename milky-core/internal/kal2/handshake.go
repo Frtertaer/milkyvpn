@@ -365,9 +365,11 @@ func deriveSessionKeys(transcriptBytes, salt []byte) (*Session, error) {
 	return s, nil
 }
 
-// rekey replaces the session's traffic keys from a resumption transcript
-// (fresh ephemeral X25519 per resume); direction roles are preserved.
-func (s *Session) rekey(salt, transcriptBytes []byte) error {
+// rekeyLocked replaces the session's traffic keys from a resumption
+// transcript (fresh ephemeral X25519 per resume); direction roles are
+// preserved. The caller holds migMu, and the session's record loops are
+// stopped (it is frozen).
+func (s *Session) rekeyLocked(salt, transcriptBytes []byte) error {
 	ck, err := hkdfDerive(labelClientRecord, salt, transcriptBytes, chacha20poly1305.KeySize)
 	if err != nil {
 		return err

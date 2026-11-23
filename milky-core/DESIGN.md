@@ -65,6 +65,80 @@ New in v2:
 - **Record types**: OPEN, DATA, CLOSE, RST, PING, PONG, MIGRATE(reserved),
   CHALLENGE(reserved).
 
+## Session reliability (v2.2)
+
+Contract: a stream either delivers every byte in order and ends with EOF, or
+it ends with an error **both** applications see. Never a silent gap, never a
+truncation that looks like completion. Wire version stays `0x02`; v2.2 is a
+set of additions that v2.1 peers (releases v1.0.0–v1.2.2) skip or never see.
+
+**Stream endings.** EOF means only "the peer closed after delivering
+everything". A reset, a refused dial, or a lost session reads as
+`ErrStreamAborted` (`kal2.IsAbort`). Relays carry the distinction across
+(`core.Relay`, used by SOCKS, server egress and TUN): an aborted tunnel
+stream resets the application's TCP connection (RST), and a reset socket
+aborts the tunnel stream. Before, every ending was a FIN: a cut download
+looked finished. Writes to a stream the peer closed or reset fail instead of
+vanishing.
+
+**Exact replay on resumption.** Every stream-affecting record (OPEN, DATA,
+CLOSE, RST, OPEN_ACK) and every TICKET stays in a replay window until the
+peer acknowledges it. A resumption replays exactly the records the peer is
+missing, in their original order:
+- the checkpoint is read only after the dead transport's record loops have
+  exited, so the receive counter cannot move after it was announced;
+- replayed records re-enter the window under their new sequence numbers;
+  what an interrupted replay never emitted is carried over, never dropped;
+- a transport fault freezes the session and never latches a write error into
+  it (v2.1 latched one whenever the writer was mid-write — every resumption
+  under load then produced a session that could not send);
+- stream tables are not reconciled by set difference: a stream whose OPEN or
+  CLOSE was in flight at the loss is completed by the replay, not reset;
+- overlapping resumption flights: only the latest accepted one may attach;
+- a resumption attempt freezes the session before its checkpoint leaves, so
+  a failed attempt leaves it resumable rather than half-moved.
+
+**Bounded replay memory.** The window is capped at 8 MiB / 2048 records.
+v2.1 kept the last 2048 records whatever their size — 64 MiB pinned per
+session after any bulk transfer. Evicted unacknowledged records are
+remembered as lost; a resumption that would need them aborts every stream
+on both ends (`migrate-gap`) and keeps the session. A server only keeps a
+window for sessions its registry can resume.
+
+**New records** (types < 0x80: v2.1 authenticates and skips them, SPEC §12):
+
+| type | name | payload | when |
+|---|---|---|---|
+| 0x0B | SETTINGS | `version(1)=1 ‖ features(4,BE)` (+ TLVs, ignored) | after every attach and resumption — control records are not replayed |
+| 0x0D | ACK | `nextRecvSeq(8,BE)` | every 256 KiB received, only to peers that announced `FeatReplay` |
+| 0x0C | — | reserved: per-stream flow-control credit | — |
+
+`FeatReplay` (bit 0): the peer acknowledges and resumes by exact replay.
+
+**Tickets.** A server issues two tickets at adoption, so a client is never
+one lost record away from being unable to resume. A v2.2 client lists stream
+id 0 with flags bit 1 in its resumption checkpoint (only when the server
+announced `FeatReplay`); the server then appends `extLen(2,LE) ‖ TLVs` to its
+checkpoint trailer, TLV `0x01` carrying the next ticket — every completed
+resumption handshake leaves the client able to resume again, even if the new
+transport then carries nothing. For other clients the replacement ticket is
+the first record after MIGRATE.
+
+**Mixed fleets** (`internal/kal2/interop_test.go`, against a frozen copy of
+the v2.1 code in `internal/kal2/internal/v21ref`): a v2.2 server echoes a
+v2.1 client's own stream list in its checkpoint, so the old client's
+set-difference reconcile is a no-op and the exact replay converges the
+tables; reconcile resets a v2.1 peer sends for streams whose OPEN is in our
+replay are ignored; a duplicate OPEN for a recently ended stream is dropped
+instead of dialing the target twice. A v2.1 peer still has its own defects:
+it latches write errors (a resumption survives only if its writer was idle
+at the loss) and truncates a stream at 512 queued records.
+
+**Not yet: per-stream flow control.** A consumer slower than the tunnel
+cannot slow the sender down; past 32 MiB buffered the stream is aborted —
+visibly, on both ends. Credit-based flow control (record 0x0C, negotiated via
+SETTINGS) is the next step.
+
 ## Carriers
 
 | Carrier | Shape | Use |

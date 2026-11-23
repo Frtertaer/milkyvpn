@@ -7,7 +7,6 @@ import (
 	"crypto/subtle"
 	"crypto/tls"
 	"crypto/x509"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -402,20 +401,12 @@ func runResumeHandshake(bc BoundConn, cfg ClientConfig) (*kal2.Session, error) {
 	if err := cr.FinishResume(s, cfg.ServerPub, head, bc.Binding()); err != nil {
 		return nil, err
 	}
-	// Server checkpoint trailer: cpLen(2,LE) || checkpoint.
-	var clb [2]byte
-	if _, err := io.ReadFull(bc, clb[:]); err != nil {
-		return nil, fmt.Errorf("resume checkpoint: %w", err)
-	}
-	cpb := make([]byte, binary.LittleEndian.Uint16(clb[:]))
-	if _, err := io.ReadFull(bc, cpb); err != nil {
-		return nil, fmt.Errorf("resume checkpoint: %w", err)
-	}
-	cp, err := kal2.DecodeCheckpoint(cpb)
+	// Server trailer: checkpoint (+ the next ticket, from a v2.2 server).
+	cp, err := cr.ReadTrailer(s, bc)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.ResumeAttach(bc, cp); err != nil {
+	if err := cr.Attach(s, bc, cp); err != nil {
 		return nil, err
 	}
 	return s, nil

@@ -75,7 +75,7 @@ func runStack(ctx context.Context, dev Device, cfg *Config) error {
 		}
 		r.Complete(false)
 		logf("tun: tcp flow → %s:%d", id.LocalAddress, id.LocalPort)
-		go serveTCP(gonet.NewTCPConn(&wq, rep), id, cfg, logf)
+		go serveTCP(core.Aborter{ReadWriteCloser: gonet.NewTCPConn(&wq, rep), AbortFn: rep.Abort}, id, cfg, logf)
 	})
 	s.SetTransportProtocolHandler(tcp.ProtocolNumber, tcpFwd.HandlePacket)
 
@@ -143,15 +143,19 @@ func runStack(ctx context.Context, dev Device, cfg *Config) error {
 	}
 }
 
-func serveTCP(local *gonet.TCPConn, id stack.TransportEndpointID, cfg *Config, logf func(string, ...any)) {
+// serveTCP relays one netstack TCP flow over a tunnel stream. A stream that
+// ends abnormally resets the application's connection (RST out of the TUN
+// device) instead of finishing it cleanly — see core.Relay.
+func serveTCP(local core.Aborter, id stack.TransportEndpointID, cfg *Config, logf func(string, ...any)) {
 	defer local.Close()
 	dst := hostPort(id.LocalAddress, id.LocalPort)
 	up, err := cfg.OpenTCP(context.Background(), dst)
 	if err != nil {
 		logf("tun: open tcp %s: %v", dst, err)
+		local.Abort() // the tunnel could not carry it: refuse, do not fake a clean end
 		return
 	}
-	ab, ba := splice(local, up)
+	ab, ba := core.Relay(local, up)
 	logf("tun: tcp %s done remote→local=%dB local→remote=%dB", dst, ab, ba)
 }
 

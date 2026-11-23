@@ -76,17 +76,10 @@ func TestResumeMigration(t *testing.T) {
 		t.Fatal("session not frozen")
 	}
 
-	// Write while frozen: the record waits for resync (gate), lands post-attach.
-	writeDone := make(chan error, 1)
-	go func() {
-		_, err := st.Write([]byte("post-freeze"))
-		writeDone <- err
-	}()
-	select {
-	case <-writeDone:
-		// fast local queues may accept it — also fine
-	case <-time.After(300 * time.Millisecond):
-		// blocked on the gate — expected
+	// Write while frozen: the record is queued behind the replay and lands
+	// once a resumed transport attaches.
+	if _, err := st.Write([]byte("post-freeze")); err != nil {
+		t.Fatalf("write on a frozen session: %v", err)
 	}
 
 	cfg.Resume = rs
@@ -100,9 +93,6 @@ func TestResumeMigration(t *testing.T) {
 	if sess.Frozen() {
 		t.Fatal("session still frozen after attach")
 	}
-	if err := <-writeDone; err != nil {
-		t.Fatalf("queued write after migrate: %v", err)
-	}
 	buf = make([]byte, len("post-freeze"))
 	if _, err := io.ReadFull(st, buf); err != nil {
 		t.Fatalf("post-migrate echo: %v", err)
@@ -111,12 +101,7 @@ func TestResumeMigration(t *testing.T) {
 		t.Fatalf("echo mismatch %q", buf)
 	}
 
-	// Second freeze + migration cycle works too (fresh ticket via Refresh).
-	rs2 := waitTicket(t, sess)
-	_ = bc
-	cfg.Resume = rs2
-	// (bc is dead already; kill the new transport through NeedsMigrate)
-	// — this is covered by a second real conn below.
+	// A second freeze + migration cycle is covered by TestResumeTwice.
 }
 
 // A second consecutive migration proves the ticket refresh cycle works:
@@ -181,10 +166,9 @@ func TestResumeUnknownSessionFailsClean(t *testing.T) {
 
 	// Forged session ID — registry lookup must fail cleanly (cover response,
 	// not a crash or a session).
-	fake := &kal2.ResumeState{Session: sess}
-	copy(fake.SessionID[:], rs.SessionID[:])
+	fakeState := *rs
+	fake := &fakeState
 	fake.SessionID[0] ^= 0xff
-	fake.Ticket = rs.Ticket
 	cfg := ClientConfig{
 		Addr:               ts.ln.Addr().String(),
 		SNI:                "kal.test",
@@ -196,7 +180,22 @@ func TestResumeUnknownSessionFailsClean(t *testing.T) {
 	if _, _, err := DialVeil(ctx, cfg); err == nil {
 		t.Fatal("resume with unknown session id must fail")
 	}
-	// The real session must be untouched.
+	// A resumption attempt gives up the old transport before its checkpoint
+	// goes out (the server is told "replay from here", so nothing may be
+	// received after that). A failed attempt therefore leaves the session
+	// frozen — and resumable: a retry with a valid ticket brings it back
+	// with its streams.
+	if !sess.Frozen() {
+		t.Fatal("a failed resumption attempt must leave the session frozen, not half-moved")
+	}
+	good, ok := sess.TicketState()
+	if !ok {
+		t.Fatal("no ticket left for the retry")
+	}
+	cfg.Resume = good
+	if _, _, err := DialVeil(ctx, cfg); err != nil {
+		t.Fatalf("retry with a valid ticket: %v", err)
+	}
 	streamEchoTest(t, sess)
 }
 

@@ -12,6 +12,7 @@ package kal2
 import (
 	"crypto/rand"
 	"encoding/binary"
+	"errors"
 	"fmt"
 )
 
@@ -80,11 +81,16 @@ const (
 	MsgOpenAck   byte = 0x08 // OPEN_ACK: server reports dial result (payload = code)
 	MsgChallenge byte = 0x09 // CHALLENGE: reserved anti-replay extension
 	MsgTicket    byte = 0x0A // TICKET: server issues a resumption ticket (v2.1)
+	MsgSettings  byte = 0x0B // SETTINGS: capability announcement, stream 0 (v2.2)
+	MsgAck       byte = 0x0D // ACK: cumulative receive counter, stream 0 (v2.2)
 )
+
+// 0x0C is reserved for the per-stream flow-control credit record (v2.2).
 
 func validMsgType(t byte) bool {
 	switch t {
-	case MsgOpen, MsgData, MsgClose, MsgPing, MsgPong, MsgMigrate, MsgRst, MsgOpenAck, MsgChallenge, MsgTicket:
+	case MsgOpen, MsgData, MsgClose, MsgPing, MsgPong, MsgMigrate, MsgRst, MsgOpenAck, MsgChallenge, MsgTicket,
+		MsgSettings, MsgAck:
 		return true
 	}
 	return false
@@ -113,6 +119,10 @@ func MsgName(t byte) string {
 		return "CHALLENGE"
 	case MsgTicket:
 		return "TICKET"
+	case MsgSettings:
+		return "SETTINGS"
+	case MsgAck:
+		return "ACK"
 	}
 	return fmt.Sprintf("UNKNOWN(%#x)", t)
 }
@@ -135,6 +145,28 @@ const (
 	ErrMigrate   Error = "session: migration failed"
 	ErrTicket    Error = "session: resumption ticket invalid"
 )
+
+// ErrStreamAborted marks a stream that ended abnormally: reset by the peer,
+// refused by the far end, or carried by a session that was lost. A stream
+// that ends this way did NOT complete. Relays must pass it on as a
+// connection abort (TCP RST), never as a clean end of stream (FIN) — a clean
+// end tells the application the body it was reading arrived in full.
+var ErrStreamAborted = errors.New("session: stream aborted")
+
+// abortError is the concrete abnormal-end error; it matches ErrStreamAborted
+// under errors.Is and keeps the human-readable cause.
+type abortError struct{ cause string }
+
+func (e *abortError) Error() string        { return "session: stream aborted: " + e.cause }
+func (e *abortError) Is(target error) bool { return target == ErrStreamAborted }
+
+func abortf(format string, args ...any) error {
+	return &abortError{cause: fmt.Sprintf(format, args...)}
+}
+
+// IsAbort reports whether err is an abnormal end of a stream (see
+// ErrStreamAborted), as opposed to io.EOF, a deadline, or a local close.
+func IsAbort(err error) bool { return errors.Is(err, ErrStreamAborted) }
 
 // ---------------------------------------------------------------------------
 // Padding

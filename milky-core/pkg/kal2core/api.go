@@ -230,10 +230,10 @@ type ClientConfig struct {
 type Client struct {
 	Sess *kal2.Session
 
-	cfg    ClientConfig
-	logf   func(string, ...any)
-	mu     sync.Mutex
-	lanes  []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
+	cfg   ClientConfig
+	logf  func(string, ...any)
+	mu    sync.Mutex
+	lanes []atomic.Pointer[kal2.Session] // quasar lane pool; nil when single
 	// laneCfg is each lane's dial config: when the carrier list has >1
 	// entry each lane pins to carriers[i%len] — true multipath, not N
 	// copies of the same fastest carrier.
@@ -255,7 +255,11 @@ type Client struct {
 	// Ping method): the session routes each PONG to a single registered
 	// channel, so concurrent Pings would steal each other's replies.
 	pingMu sync.Mutex
-	scores *core.Scorecard
+	// resumeMu serializes resumptions of the live session: a carrier
+	// rotation (churn) and a migration after a transport loss must not
+	// present two different tickets for one session at the same time.
+	resumeMu sync.Mutex
+	scores   *core.Scorecard
 }
 
 // laneQuarantineRTT is the watchdog pong RTT above which a lane is
@@ -823,12 +827,19 @@ func (c *Client) churnLoop(every time.Duration) {
 		if sess == nil {
 			continue
 		}
-		rs, ok := sess.TicketState()
-		if !ok {
-			continue
-		}
 		cs := carriers(c.cfg)
 		if len(cs) < 2 {
+			continue
+		}
+		c.resumeMu.Lock()
+		if sess.Frozen() {
+			// The transport died on its own; the reconnect loop owns it.
+			c.resumeMu.Unlock()
+			continue
+		}
+		rs, ok := sess.TicketState()
+		if !ok {
+			c.resumeMu.Unlock()
 			continue
 		}
 		cur, _ := c.activeCarrier.Load().(string)
@@ -841,6 +852,7 @@ func (c *Client) churnLoop(every time.Duration) {
 			}
 		}
 		if next == "" {
+			c.resumeMu.Unlock()
 			continue
 		}
 		c2 := c.cfg
@@ -849,6 +861,7 @@ func (c *Client) churnLoop(every time.Duration) {
 		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 		s, _, _, err := dialAny(ctx, c2, int(c.rrIdx.Add(1)), c.scores)
 		cancel()
+		c.resumeMu.Unlock()
 		if err == nil && s == sess {
 			c.activeCarrier.Store(next)
 			carrierMemWrite(c.cfg.CarrierStatePath, c.cfg.NetClass, next, c2.SNI)
@@ -1474,6 +1487,18 @@ func (c *Client) probe(s *kal2.Session, pongTimeout, slack time.Duration) error 
 // carrier (hedged race across the carrier list — the server's single-use
 // ticket makes exactly one attempt stick). False means fall back to redial.
 func (c *Client) tryMigrate(sess *kal2.Session) bool {
+	c.resumeMu.Lock()
+	defer c.resumeMu.Unlock()
+	select {
+	case <-sess.WaitClosed():
+		return false
+	default:
+	}
+	if !sess.Frozen() {
+		// A carrier rotation that froze the session to move it has already
+		// re-attached it — nothing left to migrate.
+		return true
+	}
 	rs, ok := sess.TicketState()
 	if !ok {
 		return false

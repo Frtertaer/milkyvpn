@@ -10,6 +10,19 @@ package kal2
 //     resumption flight instead of KLDO-in-;
 //   - both sides rekey from transcript2/salt2 (fresh X25519), then exchange
 //     MIGRATE checkpoints and replay unacked stream records.
+//
+// Invariants the implementation keeps (v2.2 — each one is a defect the v2.1
+// code had under load or back-to-back transport losses):
+//   - a checkpoint is only read after the record loops of the dead
+//     transport have exited, so the receive counter cannot move under it;
+//   - the replay is exactly the records the peer has not received, in their
+//     original order: acknowledged records leave the window, replayed ones
+//     re-enter it under their new sequence numbers, and records a previous
+//     replay never got to emit are carried over, never dropped;
+//   - a transport fault never latches an error into a session that resumes;
+//   - stream tables are not reconciled by set difference — the exact replay
+//     converges them, and a difference only means a record is still in
+//     flight.
 
 import (
 	"bytes"
@@ -177,6 +190,11 @@ type ResumeCheckpoint struct {
 type ResumeStreamState struct {
 	ID       uint32
 	WriteEnd bool // our write side is closed (CLOSE already emitted)
+	// Ext (flags bit 1) is only meaningful on the entry for stream id 0,
+	// which never names a stream: a v2.2 client lists it to tell a v2.2
+	// server that it reads the extended resumption trailer (see
+	// ResumeResult.ServerTrailer). v2.1 ignores the bit and the entry.
+	Ext bool
 }
 
 func (cp *ResumeCheckpoint) Encode() []byte {
@@ -186,11 +204,24 @@ func (cp *ResumeCheckpoint) Encode() []byte {
 		b = binary.BigEndian.AppendUint32(b, st.ID)
 		var f byte
 		if st.WriteEnd {
-			f = 1
+			f |= 1
+		}
+		if st.Ext {
+			f |= 2
 		}
 		b = append(b, f)
 	}
 	return b
+}
+
+// wantsExt reports whether the checkpoint carries the extended-trailer marker.
+func (cp *ResumeCheckpoint) wantsExt() bool {
+	for _, st := range cp.Streams {
+		if st.ID == 0 && st.Ext {
+			return true
+		}
+	}
+	return false
 }
 
 func DecodeCheckpoint(b []byte) (*ResumeCheckpoint, error) {
@@ -207,6 +238,7 @@ func DecodeCheckpoint(b []byte) (*ResumeCheckpoint, error) {
 		cp.Streams = append(cp.Streams, ResumeStreamState{
 			ID:       binary.BigEndian.Uint32(b[o : o+4]),
 			WriteEnd: b[o+4]&1 != 0,
+			Ext:      b[o+4]&2 != 0,
 		})
 	}
 	return cp, nil
@@ -229,21 +261,29 @@ func resumePreauth(secret []byte, sessionID [8]byte, clientEph, ticket []byte, b
 }
 
 // ResumeFlight builds the KLDO-rs- client resumption flight for the
-// session's own sessionID. Use ResumeState.ResumeFlight to resume under a
-// specific (e.g. forged in tests) session id.
+// session's own sessionID and its oldest unused ticket. Use
+// ResumeState.BeginResumeFlight to resume under a specific (e.g. forged in
+// tests) session id or ticket.
 func (s *Session) ResumeFlight(clientEph []byte, cp *ResumeCheckpoint, binding ChannelBinding) []byte {
-	return s.resumeFlight(s.sessionID, clientEph, cp, binding)
+	s.migMu.Lock()
+	sid := s.sessionID
+	var ticket []byte
+	if len(s.tickets) > 0 {
+		ticket = s.tickets[0]
+	}
+	s.migMu.Unlock()
+	return s.resumeFlight(sid, ticket, clientEph, cp, binding)
 }
 
-func (s *Session) resumeFlight(sessionID [8]byte, clientEph []byte, cp *ResumeCheckpoint, binding ChannelBinding) []byte {
+func (s *Session) resumeFlight(sessionID [8]byte, ticket, clientEph []byte, cp *ResumeCheckpoint, binding ChannelBinding) []byte {
 	out := append(append([]byte{}, ResumeMagic...), Version)
 	out = append(out, sessionID[:]...)
 	out = append(out, clientEph...)
 	var tb [2]byte
-	binary.LittleEndian.PutUint16(tb[:], uint16(len(s.ticket)))
+	binary.LittleEndian.PutUint16(tb[:], uint16(len(ticket)))
 	out = append(out, tb[:]...)
-	out = append(out, s.ticket...)
-	out = append(out, resumePreauth(s.resumeSecret, sessionID, clientEph, s.ticket, binding)...)
+	out = append(out, ticket...)
+	out = append(out, resumePreauth(s.resumeSecret, sessionID, clientEph, ticket, binding)...)
 	return append(out, cp.Encode()...)
 }
 
@@ -293,49 +333,132 @@ func resumeSalt(shared, binding, resumeSecret []byte) []byte {
 // ---------------------------------------------------------------------------
 
 // ClientResume drives the client side of a resumption handshake on a fresh
-// carrier connection. On success the session is re-keyed and re-attached;
-// the caller then exchanges MIGRATE checkpoints via s.Migratate.
+// carrier connection. On success the session is re-keyed; the caller then
+// hands the server's checkpoint to ResumeAttach.
 type ClientResume struct {
 	ephPriv   []byte
 	ephPub    []byte
 	sessionID [8]byte
+	ticket    []byte
+	// ext: the flight announced the extended trailer, so the server's
+	// trailer carries one (the server is known to be v2.2).
+	ext bool
+	// gen is the transport generation this attempt replaces; it may only
+	// attach while the session is still in it.
+	gen uint64
+	// salt / tr are the re-key inputs, set once FinishResume verified the
+	// server flight.
+	salt, tr []byte
 }
 
 // BeginResumeFlight writes the resumption flight on rw and returns the
-// handshake state needed to consume the server flight.
+// handshake state needed to consume the server flight. It resumes under the
+// session's own id with its oldest unused ticket.
 func (s *Session) BeginResumeFlight(rw io.Writer, binding ChannelBinding) (*ClientResume, error) {
+	rs, ok := s.TicketState()
+	if !ok {
+		return nil, ErrTicket
+	}
+	return rs.BeginResumeFlight(rw, binding)
+}
+
+// BeginResumeFlight drives the exchange through a ResumeState: the flight
+// announces rs.SessionID and presents rs.Ticket, which may differ from the
+// session's own (server-side ticket rebinding, or a forged id in tests).
+//
+// The session is frozen first, and its record loops are waited out, before
+// the checkpoint is taken: the flight tells the server "replay from here",
+// so nothing may be received on the old transport after that number is on
+// the wire. A proactive resumption (carrier rotation) therefore gives up its
+// working transport at this point — if the attempt then fails, the session
+// stays frozen and resumable rather than half-moved.
+//
+// Several attempts may run at once (a hedged dial races carriers with one
+// ResumeState): the first to attach wins, and an attempt that reaches this
+// point after a sibling already re-attached the session is refused rather
+// than freezing the fresh transport.
+func (rs *ResumeState) BeginResumeFlight(rw io.Writer, binding ChannelBinding) (*ClientResume, error) {
+	s := rs.Session
+	if err := s.quiesceAt(rs.gen); err != nil {
+		return nil, err
+	}
 	priv, pub, err := genX25519()
 	if err != nil {
 		return nil, err
 	}
 	cp := s.Checkpoint()
-	flight := s.ResumeFlight(pub, cp, binding)
+	// Only a server that announced v2.2 itself is asked for the extended
+	// trailer: a v2.1 server would send the plain one, and the client would
+	// then mistake the first record for the extension.
+	ext := s.peerFeat.Load()&FeatReplay != 0
+	if ext {
+		cp.Streams = append(cp.Streams, ResumeStreamState{ID: 0, Ext: true})
+	}
+	flight := s.resumeFlight(rs.SessionID, rs.Ticket, pub, cp, binding)
 	if _, err := rw.Write(flight); err != nil {
 		return nil, err
 	}
-	return &ClientResume{ephPriv: priv, ephPub: pub, sessionID: s.sessionID}, nil
+	return &ClientResume{ephPriv: priv, ephPub: pub, sessionID: rs.SessionID, ticket: rs.Ticket, ext: ext, gen: rs.gen}, nil
 }
 
-// BeginResumeFlight drives the same exchange through a ResumeState: the
-// flight announces rs.SessionID, which may differ from the session's own id
-// (server-side ticket rebinding, or a forged id in tests).
-func (rs *ResumeState) BeginResumeFlight(rw io.Writer, binding ChannelBinding) (*ClientResume, error) {
-	s := rs.Session
-	priv, pub, err := genX25519()
+// Trailer extension TLV types (ResumeResult.ServerTrailer).
+const trailerExtTicket byte = 0x01
+
+// maxTrailerExt bounds the extension a client will read.
+const maxTrailerExt = 8192
+
+// ReadTrailer consumes what follows the server flight: cpLen(2,LE) ||
+// checkpoint and, when this resumption asked for it, extLen(2,LE) ||
+// extension. Call it after FinishResume; pass the result to ResumeAttach.
+//
+// The extension hands the client its next resumption ticket inside the
+// handshake itself, so completing a resumption always leaves it able to
+// resume again — even if this transport then fails to carry a single record.
+func (cr *ClientResume) ReadTrailer(s *Session, r io.Reader) (*ResumeCheckpoint, error) {
+	var lb [2]byte
+	if _, err := io.ReadFull(r, lb[:]); err != nil {
+		return nil, fmt.Errorf("resume checkpoint: %w", err)
+	}
+	cpb := make([]byte, binary.LittleEndian.Uint16(lb[:]))
+	if _, err := io.ReadFull(r, cpb); err != nil {
+		return nil, fmt.Errorf("resume checkpoint: %w", err)
+	}
+	cp, err := DecodeCheckpoint(cpb)
 	if err != nil {
 		return nil, err
 	}
-	flight := s.resumeFlight(rs.SessionID, pub, s.Checkpoint(), binding)
-	if _, err := rw.Write(flight); err != nil {
-		return nil, err
+	if !cr.ext {
+		return cp, nil
 	}
-	return &ClientResume{ephPriv: priv, ephPub: pub, sessionID: rs.SessionID}, nil
+	if _, err := io.ReadFull(r, lb[:]); err != nil {
+		return nil, fmt.Errorf("resume trailer: %w", err)
+	}
+	n := int(binary.LittleEndian.Uint16(lb[:]))
+	if n > maxTrailerExt {
+		return nil, ErrFraming
+	}
+	ext := make([]byte, n)
+	if _, err := io.ReadFull(r, ext); err != nil {
+		return nil, fmt.Errorf("resume trailer: %w", err)
+	}
+	for len(ext) >= 3 {
+		t, l := ext[0], int(binary.LittleEndian.Uint16(ext[1:3]))
+		if l > len(ext)-3 {
+			return nil, ErrFraming
+		}
+		if v := ext[3 : 3+l]; t == trailerExtTicket && l > 0 {
+			s.poolTicket(v)
+		}
+		ext = ext[3+l:] // unknown types are skipped
+	}
+	return cp, nil
 }
 
-// FinishResume consumes the server flight (eph||sig), verifies the Ed25519
-// signature over transcript2, re-keys the session and returns the server
-// Finished value the caller must verify after the server writes it.
-// serverPub is the pinned identity key.
+// FinishResume consumes the server flight (eph||sig) and verifies the
+// Ed25519 signature over transcript2. serverPub is the pinned identity key.
+// A valid server flight proves the server accepted — and thereby spent —
+// the ticket, so it leaves the client's pool here. The session itself is
+// not touched until Attach.
 func (cr *ClientResume) FinishResume(s *Session, serverPub ed25519.PublicKey, msg []byte, binding ChannelBinding) error {
 	if len(msg) != ServerFlightSize {
 		return ErrHandshake
@@ -358,7 +481,26 @@ func (cr *ClientResume) FinishResume(s *Session, serverPub ed25519.PublicKey, ms
 	if !ed25519.Verify(serverPub, sigInput, sig) {
 		return ErrSignature
 	}
-	return s.rekey(salt, tr)
+	s.spendTicket(cr.ticket)
+	cr.salt, cr.tr = salt, tr
+	return nil
+}
+
+// Attach completes the resumption: it re-keys the session and binds it to
+// rw, with peerCP the checkpoint from the server's trailer (ReadTrailer).
+// Re-keying and binding are one step, taken only if the session is still in
+// the transport generation this attempt was prepared for — of attempts racing
+// for one session, exactly one attaches.
+func (cr *ClientResume) Attach(s *Session, rw io.ReadWriteCloser, peerCP *ResumeCheckpoint) error {
+	if cr.salt == nil || cr.tr == nil {
+		return ErrHandshake // FinishResume did not verify a server flight
+	}
+	return s.resumeAttach(rw, peerCP, nil, func() error {
+		if cr.gen != 0 && s.attachGen != cr.gen {
+			return ErrMigrate
+		}
+		return s.rekeyLocked(cr.salt, cr.tr)
+	})
 }
 
 // ---------------------------------------------------------------------------
@@ -434,19 +576,32 @@ func (r *SessionRegistry) Adopt(s *Session, userID [16]byte) error {
 	if err != nil {
 		return err
 	}
+	s.migMu.Lock()
 	s.sessionID = sid
 	s.userID = userID
-	s.migratable = true
 	s.registry = r
 	if r.ttl > 0 {
 		s.migrateTTL = r.ttl
 	}
 	s.onCloseFns = append(s.onCloseFns, func() { r.remove(sid) })
+	s.migMu.Unlock()
+	s.migratable.Store(true)
 	r.mu.Lock()
 	r.sessions[sid] = &registeredSession{sess: s, userID: userID}
 	r.mu.Unlock()
 	// TICKET is a control record; queued safely post-Attach.
-	return s.sendTicket(t)
+	if err := s.sendTicket(t); err != nil {
+		return err
+	}
+	// A spare, so a client is never one lost record away from being unable
+	// to resume: a ticket is single-use, and the replacement issued after a
+	// resumption can itself die with the next transport. (A pre-2.2 client
+	// keeps only the latest ticket it was sent; the spare is harmless.)
+	t2, err := r.codec.Issue(tp)
+	if err != nil {
+		return err
+	}
+	return s.sendTicket(t2)
 }
 
 // remove unregisters a closed session.
@@ -456,11 +611,10 @@ func (r *SessionRegistry) remove(sid [8]byte) {
 	r.mu.Unlock()
 }
 
-// Refresh issues a fresh ticket on an already-registered session — the
-// resumption path re-arms the client for the next migration.
-func (r *SessionRegistry) Refresh(s *Session) error {
+// issueFor seals a fresh ticket for an already-registered session.
+func (r *SessionRegistry) issueFor(s *Session) ([]byte, error) {
 	if s.registry != r {
-		return ErrTicket
+		return nil, ErrTicket
 	}
 	tp := &TicketPlain{
 		SessionID: s.sessionID,
@@ -469,7 +623,14 @@ func (r *SessionRegistry) Refresh(s *Session) error {
 		Flags:     TicketFlagMigrate,
 	}
 	copy(tp.ResumeSecret[:], s.resumeSecret)
-	t, err := r.codec.Issue(tp)
+	return r.codec.Issue(tp)
+}
+
+// Refresh issues one more ticket on an already-registered session.
+// ResumeResult.Attach already replaces the ticket a resumption spent; callers
+// that attach through Finish + ResumeAttach use this to re-arm the client.
+func (r *SessionRegistry) Refresh(s *Session) error {
+	t, err := r.issueFor(s)
 	if err != nil {
 		return err
 	}
@@ -482,6 +643,15 @@ type ResumeResult struct {
 	ClientEph   []byte
 	Checkpoint  *ResumeCheckpoint
 	TicketPlain *TicketPlain
+
+	// epoch identifies this resumption among overlapping ones for the same
+	// session; only the latest accepted flight may attach.
+	epoch uint64
+	// resumeTr / resumeSalt are the re-key inputs derived by ServerResume.
+	resumeTr   []byte
+	resumeSalt []byte
+	// ticketSent: the replacement ticket already went out in the trailer.
+	ticketSent bool
 }
 
 // Accept validates a resumption flight: opens the ticket, checks expiry,
@@ -532,10 +702,18 @@ func (r *SessionRegistry) Accept(head []byte, rest io.Reader, binding ChannelBin
 	}
 	// Migration may be proactive: the old transport can linger server-side
 	// (client switched networks) — freeze the session ourselves so the
-	// re-attach replaces it. freeze() is idempotent.
-	if !s.Frozen() {
-		s.freeze()
+	// re-attach replaces it, and wait its record loops out. The caller reads
+	// the receive counter next (the checkpoint in the server flight tells the
+	// client where to replay from); a loop still running could move that
+	// counter after it was read, and the client would then replay a record
+	// this side had already consumed.
+	if err := s.quiesce(); err != nil {
+		return nil, err
 	}
+	s.migMu.Lock()
+	s.resumeEpoch++
+	epoch := s.resumeEpoch
+	s.migMu.Unlock()
 	// Client checkpoint trailer: lastRecv(8) || nStreams(2) || {id,flags}*.
 	cph := make([]byte, 10)
 	if _, err := io.ReadFull(rest, cph); err != nil {
@@ -553,7 +731,7 @@ func (r *SessionRegistry) Accept(head []byte, rest io.Reader, binding ChannelBin
 	if err != nil {
 		return nil, err
 	}
-	return &ResumeResult{Session: s, ClientEph: clientEph, Checkpoint: cp, TicketPlain: tp}, nil
+	return &ResumeResult{Session: s, ClientEph: clientEph, Checkpoint: cp, TicketPlain: tp, epoch: epoch}, nil
 }
 
 // ServerResume completes the server side: Start equivalent — returns the
@@ -579,153 +757,276 @@ func (res *ResumeResult) ServerResume(identity ed25519.PrivateKey, binding Chann
 	}
 	sig := ed25519.Sign(h.identity, sigInput)
 	flight := append(append([]byte{}, h.ephPub...), sig...)
-	res.Session.resumeTr = tr
-	res.Session.resumeSalt = h.salt
+	res.resumeTr = tr
+	res.resumeSalt = h.salt
 	return flight, h, nil
 }
 
-// finishResume re-keys the frozen session after the server flight is sent.
-func (res *ResumeResult) Finish() error {
-	return res.Session.rekey(res.Session.resumeSalt, res.Session.resumeTr)
+// current reports whether res is still the latest resumption accepted for
+// its session. A newer flight supersedes it: only one transport may attach.
+func (res *ResumeResult) current() bool {
+	s := res.Session
+	s.migMu.Lock()
+	defer s.migMu.Unlock()
+	return s.resumeEpoch == res.epoch
 }
 
-// ---------------------------------------------------------------------------
-// Migration (MIGRATE exchange + stream reconcile + replay)
-// ---------------------------------------------------------------------------
+// ServerCheckpoint is the checkpoint the server announces in its resumption
+// flight: its receive counter (where the client must replay from) and a
+// stream list.
+//
+// For a pre-2.2 client the list is the client's own, echoed back. Such a
+// client compares the two lists by set difference and resets every stream on
+// one side only — which kills streams whose OPEN or CLOSE was merely still in
+// flight when the transport died. An empty difference makes that step a
+// no-op; the exact replay then brings both tables into agreement.
+func (res *ResumeResult) ServerCheckpoint() *ResumeCheckpoint {
+	cp := res.Session.Checkpoint()
+	if res.Session.peerFeat.Load()&FeatReplay == 0 && res.Checkpoint != nil && !res.Checkpoint.wantsExt() {
+		cp.Streams = append([]ResumeStreamState(nil), res.Checkpoint.Streams...)
+	}
+	return cp
+}
+
+// ServerTrailer is what the server writes right behind its resumption
+// flight: cpLen(2,LE) || checkpoint, and for a client that announced it can
+// read one, extLen(2,LE) || extension — a TLV list (type(1) || len(2,LE) ||
+// value) currently holding the ticket that replaces the one just spent.
+func (res *ResumeResult) ServerTrailer() []byte {
+	cp := res.ServerCheckpoint().Encode()
+	out := binary.LittleEndian.AppendUint16(nil, uint16(len(cp)))
+	out = append(out, cp...)
+	if res.Checkpoint == nil || !res.Checkpoint.wantsExt() {
+		return out
+	}
+	var ext []byte
+	if r := res.Session.registry; r != nil {
+		if t, err := r.issueFor(res.Session); err == nil {
+			ext = append(ext, trailerExtTicket)
+			ext = binary.LittleEndian.AppendUint16(ext, uint16(len(t)))
+			ext = append(ext, t...)
+			res.ticketSent = true
+		}
+	}
+	out = binary.LittleEndian.AppendUint16(out, uint16(len(ext)))
+	return append(out, ext...)
+}
+
+// Attach re-keys the frozen session and binds it to rw. It refuses a
+// resumption that a newer flight for the same session has superseded; the
+// check and the re-key happen in one step with the binding.
+//
+// Unless ServerTrailer already delivered it, Attach also issues the ticket
+// that replaces the one this resumption spent and places it at the very head
+// of the replay: a transport that dies again a few kilobytes in must still
+// have handed the client the means to resume once more. (Queued behind the
+// replay, the ticket was lost with every short-lived transport, and two such
+// losses in a row ended the session.)
+func (res *ResumeResult) Attach(rw io.ReadWriteCloser) error {
+	if res.resumeTr == nil || res.resumeSalt == nil {
+		return ErrHandshake // ServerResume did not run
+	}
+	s := res.Session
+	var head []outRec
+	if r := s.registry; r != nil && !res.ticketSent {
+		if t, err := r.issueFor(s); err == nil {
+			head = append(head, outRec{t: MsgTicket, p: append(append([]byte{}, s.sessionID[:]...), t...)})
+		}
+	}
+	return s.resumeAttach(rw, res.Checkpoint, head, func() error {
+		if s.resumeEpoch != res.epoch {
+			return ErrMigrate
+		}
+		return s.rekeyLocked(res.resumeSalt, res.resumeTr)
+	})
+}
+
+// checkpointMaxStreams bounds the stream list of a checkpoint. A v2.1 peer
+// rejects a resumption flight listing more than 8192.
+const checkpointMaxStreams = 4096
 
 // Checkpoint snapshots the receive counter and live stream table for the
 // resumption flight / MIGRATE record. LastRecvSeq is the receiver's
 // next-expected sequence (== recvSeq) — the seq the peer's next record must
 // carry.
+//
+// The number is only meaningful for a resumption once the session is
+// quiesced; BeginResumeFlight and SessionRegistry.Accept see to that.
 func (s *Session) Checkpoint() *ResumeCheckpoint {
+	cp := &ResumeCheckpoint{LastRecvSeq: s.recvSeq.Load()}
 	s.smu.RLock()
-	cp := &ResumeCheckpoint{LastRecvSeq: s.recvSeq, Streams: make([]ResumeStreamState, 0, len(s.streams))}
+	live := make(map[uint32]struct{}, len(s.streams))
 	for id, st := range s.streams {
-		cp.Streams = append(cp.Streams, ResumeStreamState{ID: id, WriteEnd: st.closed})
+		if len(cp.Streams) >= checkpointMaxStreams {
+			break
+		}
+		live[id] = struct{}{}
+		cp.Streams = append(cp.Streams, ResumeStreamState{ID: id, WriteEnd: st.writable() != nil})
 	}
 	s.smu.RUnlock()
+	if s.peerFeat.Load()&FeatReplay != 0 {
+		return cp
+	}
+	// A pre-2.2 peer resets every stream it holds that this list lacks. A
+	// stream we closed is absent from our table — but if its CLOSE is still
+	// unacknowledged, the peer may not have seen it and is still owed the
+	// data queued ahead of it. List such streams as alive so the peer keeps
+	// them until the replayed CLOSE arrives.
+	s.migMu.Lock()
+	for _, r := range s.sent.recs {
+		if r.t != MsgClose || len(cp.Streams) >= checkpointMaxStreams {
+			continue
+		}
+		if _, ok := live[r.id]; ok {
+			continue
+		}
+		live[r.id] = struct{}{}
+		cp.Streams = append(cp.Streams, ResumeStreamState{ID: r.id, WriteEnd: true})
+	}
+	s.migMu.Unlock()
 	return cp
 }
 
-// ResumeAttach binds a frozen session to a fresh authenticated transport
+// resumeAttach binds a frozen session to a fresh authenticated transport
 // after a successful resumption handshake. peerCP is the checkpoint the
-// peer announced in its flight (client) or flight trailer (server). It
-// rewinds the send counter, queues our MIGRATE marker followed by the
-// retained unacked records, reconciles stream tables, and restarts the
-// record loops — stream writes held during the freeze flow after replays.
-func (s *Session) ResumeAttach(rw io.ReadWriteCloser, peerCP *ResumeCheckpoint) error {
+// peer announced in its flight (client) or flight trailer (server); head are
+// extra records to emit right behind the MIGRATE marker, ahead of the
+// replay; commit runs under migMu once the dead transport's loops are gone,
+// right before the session changes — it installs the new keys, and an error
+// from it aborts the attach with the session still frozen.
+//
+// It rewinds the send counter to the peer's checkpoint and queues — ahead of
+// everything else — our MIGRATE marker followed by exactly the records the
+// peer is missing. New records keep waiting in the lanes until that replay
+// has gone out.
+func (s *Session) resumeAttach(rw io.ReadWriteCloser, peerCP *ResumeCheckpoint, head []outRec, commit func() error) error {
+	if peerCP == nil {
+		return ErrHandshake
+	}
 	s.migMu.Lock()
-	if !s.frozen {
+	if !s.frozen || s.isDead() {
 		s.migMu.Unlock()
 		return ErrHandshake
 	}
+	old := s.loops
+	s.migMu.Unlock()
+	// The previous generation must be gone before the counters are touched:
+	// a writer still running could consume a sequence number or emit into
+	// the replay, a reader could advance the counter the peer was told.
+	if old != nil {
+		old.retire()
+		if !old.wait(quiesceTimeout) {
+			return ErrMigrate
+		}
+	}
+	ours := s.Checkpoint()
+
+	s.migMu.Lock()
+	if !s.frozen || s.isDead() || s.loops != old {
+		s.migMu.Unlock()
+		return ErrHandshake // lost a race with another attach, or closed
+	}
+	if commit != nil {
+		if err := commit(); err != nil {
+			s.migMu.Unlock()
+			return err
+		}
+	}
+	from := peerCP.LastRecvSeq
+	if from > s.sendSeq {
+		// The peer claims records that were never sent.
+		s.migMu.Unlock()
+		return ErrMigrate
+	}
+	gap := from < s.sent.lost
+
+	// The replay, in emission order: records emitted but unacknowledged,
+	// then what an earlier replay or a retiring writer never got to emit
+	// (control records in there are stale — re-announced or idempotent).
+	pending := make([]outRec, 0, len(s.sent.recs)+len(s.replayQ))
+	for _, r := range s.sent.recs {
+		if r.seq >= from {
+			pending = append(pending, outRec{t: r.t, id: r.id, p: r.p})
+		}
+	}
+	for _, r := range s.replayQ {
+		if retainedType(r.t) {
+			pending = append(pending, r)
+		}
+	}
+	replay := make([]outRec, 0, 1+len(head)+len(pending))
+	replay = append(replay, outRec{t: MsgMigrate, id: 0, p: ours.Encode()})
+	// Tickets lead: they are tiny, order-independent, and the one thing the
+	// peer must hold before this transport is allowed to die as well.
+	replay = append(replay, head...)
+	for _, r := range pending {
+		if r.t == MsgTicket {
+			replay = append(replay, r)
+		}
+	}
+	opens := map[uint32]struct{}{}
+	for _, r := range pending {
+		// After an unrecoverable gap every stream is reset below; replaying
+		// fragments of them would only feed the peer data it must discard.
+		if r.t == MsgTicket || gap {
+			continue
+		}
+		replay = append(replay, r)
+		if r.t == MsgOpen {
+			opens[r.id] = struct{}{}
+		}
+	}
+	s.sent.reset() // acknowledged records are done; the rest re-enter on emission
+	s.sendSeq = from
+	s.replayQ = replay
+	s.replayOpen = opens
 	s.frozen = false
 	s.rw = rw
-	s.ticket = nil // the consumed ticket is dead; the peer re-issues via TICKET
-	s.loopGen++    // retire the previous generation's record loops
-	prevStop, prevDone := s.loopStop, s.writeDone
-	s.loopStop = make(chan struct{})
-	s.writeDone = make(chan struct{})
 	if s.freezeT != nil {
 		s.freezeT.Stop()
 		s.freezeT = nil
 	}
-	s.migMu.Unlock()
-
-	// Retire the old writer before rewinding sendSeq: it must not consume
-	// sequence numbers or interleave frames into the replay lane. The wait
-	// is bounded — a stuck writer can only die at its next generation check.
-	if prevStop != nil {
-		close(prevStop)
-	}
-	if prevDone != nil {
-		select {
-		case <-prevDone:
-		case <-time.After(5 * time.Second):
-		}
-	}
-
-	s.migMu.Lock()
-	ours := s.Checkpoint()
-	s.sendSeq = peerCP.LastRecvSeq
-	oldest := s.sentWinOldest()
-	gap := len(s.sentWin) > 0 && peerCP.LastRecvSeq < oldest
-	replay := []outRec{{t: MsgMigrate, id: 0, p: ours.Encode()}}
-	for _, r := range s.sentWin {
-		if r.seq >= peerCP.LastRecvSeq {
-			replay = append(replay, outRec{t: r.t, id: r.id, p: r.p})
-		}
-	}
-	s.replayQ = replay
-	s.gapLost = gap
-	s.migMu.Unlock()
-
-	// Reconcile stream tables before loops restart so RSTs for dead streams
-	// land after their replays on the wire.
-	s.reconcile(peerCP)
-
-	s.migMu.Lock()
-	close(s.migGate)
+	ls := newLoopSet()
+	s.loops = ls
+	s.attachGen++
 	s.migrateCh = make(chan struct{}) // arm NeedsMigrate for the next loss
-	s.readDone = make(chan struct{})  // old readLoop closed the previous one
-	gen := s.loopGen
-	stop := s.loopStop
-	done := s.writeDone
 	s.migMu.Unlock()
-	go s.readLoop(gen)
-	go s.writeLoop(gen, stop, done)
+
+	if gap {
+		s.resetForGap(peerCP)
+	}
+	go s.readLoop(ls, rw)
+	go s.writeLoop(ls, rw)
+	s.announce()
 	return nil
 }
 
-// reconcile resets streams the peer no longer has and queues RSTs for
-// peer-unknown or gap-lost streams (into the replay tail, preserving order).
-func (s *Session) reconcile(peer *ResumeCheckpoint) {
-	peerIDs := make(map[uint32]bool, len(peer.Streams))
-	for _, st := range peer.Streams {
-		peerIDs[st.ID] = true
+// resetForGap handles a resumption whose replay window no longer holds what
+// the peer is missing: no stream can be trusted to be intact, so all of them
+// are aborted on both sides. Called before the new loops start, so the resets
+// leave right behind the MIGRATE marker.
+func (s *Session) resetForGap(peer *ResumeCheckpoint) {
+	ids := map[uint32]struct{}{}
+	s.smu.RLock()
+	sts := make([]*stream, 0, len(s.streams))
+	for id, st := range s.streams {
+		ids[id] = struct{}{}
+		sts = append(sts, st)
 	}
-	s.smu.Lock()
-	var oursGone []uint32
-	for id := range s.streams {
-		if !peerIDs[id] {
-			oursGone = append(oursGone, id)
-		}
-	}
-	for _, id := range oursGone {
-		st := s.streams[id]
-		delete(s.streams, id)
-		st.reset()
-	}
-	s.smu.Unlock()
-	for _, id := range oursGone {
-		s.migMu.Lock()
-		s.replayQ = append(s.replayQ, outRec{t: MsgRst, id: id, p: []byte("migrate")})
-		s.migMu.Unlock()
+	s.smu.RUnlock()
+	for _, st := range sts {
+		st.reset(abortf("records lost in migration"))
 	}
 	for _, st := range peer.Streams {
-		if _, ok := s.getStream(st.ID); !ok {
-			s.migMu.Lock()
-			s.replayQ = append(s.replayQ, outRec{t: MsgRst, id: st.ID, p: []byte("migrate")})
-			s.migMu.Unlock()
+		if st.ID != 0 { // id 0 is the extended-trailer marker, not a stream
+			ids[st.ID] = struct{}{}
 		}
 	}
-	if s.gapLost {
-		// Records vanished in the unrecoverable gap: any surviving stream may
-		// have lost data — abort them rather than corrupt state.
-		s.smu.Lock()
-		var ids []uint32
-		for id, st := range s.streams {
-			st.reset()
-			delete(s.streams, id)
-			ids = append(ids, id)
-		}
-		s.smu.Unlock()
-		s.migMu.Lock()
-		for _, id := range ids {
-			s.replayQ = append(s.replayQ, outRec{t: MsgRst, id: id, p: []byte("migrate-gap")})
-		}
-		s.migMu.Unlock()
+	s.migMu.Lock()
+	for id := range ids {
+		s.replayQ = append(s.replayQ, outRec{t: MsgRst, id: id, p: []byte("migrate-gap")})
 	}
+	s.migMu.Unlock()
 }
 
 // sendTicket queues a TICKET record with the sealed ticket.
@@ -734,22 +1035,64 @@ func (s *Session) sendTicket(ticket []byte) error {
 	return s.sendRecord(MsgTicket, 0, payload)
 }
 
+// ticketPoolMax bounds the unused tickets a client keeps.
+const ticketPoolMax = 4
+
+// storeTicket handles a TICKET record (payload = sessionID || ticket).
+func (s *Session) storeTicket(payload []byte) {
+	s.migMu.Lock()
+	copy(s.sessionID[:], payload[:8])
+	s.migMu.Unlock()
+	s.poolTicket(payload[8:])
+}
+
+// poolTicket adds a server-issued ticket to the client's pool.
+func (s *Session) poolTicket(ticket []byte) {
+	s.migMu.Lock()
+	s.tickets = append(s.tickets, append([]byte(nil), ticket...))
+	if n := len(s.tickets) - ticketPoolMax; n > 0 {
+		s.tickets = append(s.tickets[:0], s.tickets[n:]...)
+	}
+	s.migMu.Unlock()
+	s.migratable.Store(true)
+}
+
+// spendTicket removes a ticket the server has accepted.
+func (s *Session) spendTicket(ticket []byte) {
+	s.migMu.Lock()
+	defer s.migMu.Unlock()
+	for i, t := range s.tickets {
+		if bytes.Equal(t, ticket) {
+			s.tickets = append(s.tickets[:i], s.tickets[i+1:]...)
+			return
+		}
+	}
+}
+
 // ResumeState is the client-held resumption material for a frozen session.
 type ResumeState struct {
 	SessionID [8]byte
 	Ticket    []byte
 	Session   *Session
+	// gen is the transport generation the state was taken in (see
+	// ResumeState.BeginResumeFlight).
+	gen uint64
 }
 
-// TicketState returns the resumption material for this session, if a
-// TICKET has been received.
+// TicketState returns resumption material for this session, if an unused
+// ticket is held. Each call hands out the oldest ticket and moves it to the
+// back of the pool: an attempt that never reached the server leaves its
+// ticket valid for a later try, while one that did reach it has spent the
+// ticket — the next attempt must not present the same one first.
 func (s *Session) TicketState() (*ResumeState, bool) {
 	s.migMu.Lock()
 	defer s.migMu.Unlock()
-	if len(s.ticket) == 0 {
+	if len(s.tickets) == 0 {
 		return nil, false
 	}
-	return &ResumeState{SessionID: s.sessionID, Ticket: append([]byte(nil), s.ticket...), Session: s}, true
+	t := s.tickets[0]
+	s.tickets = append(s.tickets[1:], t)
+	return &ResumeState{SessionID: s.sessionID, Ticket: append([]byte(nil), t...), Session: s, gen: s.attachGen}, true
 }
 
 var _ = fmt.Sprintf // silence unused in some build configs

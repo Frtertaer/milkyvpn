@@ -6,7 +6,6 @@ import (
 	"crypto/sha256"
 	"crypto/subtle"
 	"crypto/tls"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"io"
@@ -193,20 +192,13 @@ func (v *VeilListener) acceptResumeDrift(bc BoundConn, magic []byte, w http.Resp
 		bc.(*driftServerConn).started = true
 		bc.(*driftServerConn).startPump()
 	}
-	cp := res.Session.Checkpoint().Encode()
-	out := append(flight, byte(len(cp)), byte(len(cp)>>8))
-	out = append(out, cp...)
-	if _, err := bc.Write(out); err != nil {
+	if _, err := bc.Write(append(flight, res.ServerTrailer()...)); err != nil {
 		return
 	}
-	if err := res.Finish(); err != nil {
+	// Attach re-keys, binds the transport and issues the replacement ticket.
+	if err := res.Attach(bc); err != nil {
+		v.cfg.logf("drift: resume attach: %v", err)
 		return
-	}
-	if err := res.Session.ResumeAttach(bc, res.Checkpoint); err != nil {
-		return
-	}
-	if err := v.cfg.Resumer.Refresh(res.Session); err != nil {
-		v.cfg.logf("veil: refresh ticket: %v", err)
 	}
 	v.holdDrift(bc, r, isWS)
 }
@@ -500,27 +492,14 @@ func driftResumeConn(cr *kal2.ClientResume, conn BoundConn, cfg ClientConfig) (*
 	if err := cr.FinishResume(s, cfg.ServerPub, head, nil); err != nil {
 		return nil, err
 	}
-	var clb [2]byte
-	if _, err := io.ReadFull(conn, clb[:]); err != nil {
-		return nil, fmt.Errorf("resume checkpoint: %w", err)
-	}
-	cpb := make([]byte, binary.LittleEndian.Uint16(clb[:]))
-	if _, err := io.ReadFull(conn, cpb); err != nil {
-		return nil, fmt.Errorf("resume checkpoint: %w", err)
-	}
-	cp, err := decodeResumeCheckpoint(cpb)
+	cp, err := cr.ReadTrailer(s, conn)
 	if err != nil {
 		return nil, err
 	}
-	if err := s.ResumeAttach(conn, cp); err != nil {
+	if err := cr.Attach(s, conn, cp); err != nil {
 		return nil, err
 	}
 	return s, nil
-}
-
-// decodeResumeCheckpoint parses the server-flight checkpoint trailer.
-func decodeResumeCheckpoint(b []byte) (*kal2.ResumeCheckpoint, error) {
-	return kal2.DecodeCheckpoint(b)
 }
 
 // DialDriftWS is drift over a WebSocket: identical kal2 stream inside binary

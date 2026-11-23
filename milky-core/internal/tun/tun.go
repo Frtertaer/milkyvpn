@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"io"
 	"net"
-	"sync"
 )
 
 // DefaultAddr is the IPv4 address assigned to the TUN interface.
@@ -87,25 +86,6 @@ func Run(ctx context.Context, cfg *Config) error {
 	logf("tun: adapter %s up at %s", name, cfg.Addr)
 	return runStack(ctx, dev, cfg)
 }
-
-// splice moves bytes both ways until either side ends; returns bytes a←b and b←a.
-func splice(a, b io.ReadWriteCloser) (ab, ba int64) {
-	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		ab, _ = io.Copy(a, b)
-		closeRW(a)
-		closeRW(b)
-	}()
-	ba, _ = io.Copy(b, a)
-	closeRW(b)
-	closeRW(a)
-	wg.Wait()
-	return ab, ba
-}
-
-func closeRW(c io.ReadWriteCloser) { _ = c.Close() }
 
 // hostPort formats a netstack flow id target.
 func hostPort(ip fmt.Stringer, port uint16) string {

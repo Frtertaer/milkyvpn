@@ -749,6 +749,134 @@
   Для distribution сборок остаётся шаг keychain-access-groups
   (docs/macos-setup.md)
 
+## Ядро: надёжность сессии KAL/2 v2.2 (ноябрь 2026)
+
+Найдено воспроизводящими тестами с обрывами транспорта **под нагрузкой**
+(тесты v2.1 рвали только простаивающую сессию). Совместимость с v1.0.0–v1.2.2
+доказана тестами против замороженной копии v2.1
+(`milky-core/internal/kal2/internal/v21ref`). Описание —
+`milky-core/DESIGN.md` § «Session reliability (v2.2)».
+
+### BUG-2026-11-23-01 — миграция под нагрузкой: «живая» сессия, которая не может отправить ни байта
+- Severity: block (после смены сети VPN «подключён», но ничего не грузится,
+  пока сессия не умрёт по таймауту)
+- Platform: core (все платформы; сервер и клиент)
+- Status: fixed-in-PR
+- Repro: обрыв транспорта, пока писатель сессии посреди записи (любая
+  загрузка/выгрузка) → `flushBuf` защёлкивает `writeErr` → resume проходит,
+  но каждая следующая отправка возвращает ошибку мёртвого транспорта.
+  То же от PING сторожа во время заморозки.
+- Fix: ошибка транспорта замораживает сессию и не защёлкивается; защёлка
+  только при настоящей смерти сессии
+- Regression test: `internal/kal2/migration_test.go::TestMigrationUnderLoad`,
+  `::TestMigrationAfterControlWriteWhileFrozen`
+
+### BUG-2026-11-23-02 — повторные миграции теряют и дублируют записи
+- Severity: block (зависший или повреждённый стрим после 2+ обрывов подряд)
+- Platform: core
+- Status: fixed-in-PR
+- Repro: несколько обрывов во время полнодуплексной передачи. Три
+  независимые причины: (1) чекпоинт читался, пока старый readLoop ещё мог
+  принять запись — пир переигрывал уже принятое (ErrReplay → смерть);
+  (2) переигранные записи попадали в `sentWin` с теми же seq, что и
+  оригиналы, — следующая миграция слала их дважды; (3) записи, которые
+  прерванная переигровка не успела отправить, терялись; (4) запись, снятая
+  писателем с головы очереди переигрыша в момент обрыва, возвращалась в
+  хвост — следующий переигрыш отдавал её после более поздних данных того же
+  стрима (все байты на месте, порядок нет; найдено стресс-прогоном этого же набора).
+- Fix: чекпоинт только после выхода циклов старого поколения (`quiesce`);
+  окно сбрасывается, переигрыш входит в него под новыми seq; недоотправленное
+  переносится, снятая запись — обратно в голову очереди. Read loop больше
+  не блокируется на полной очереди (`sendFromDispatch`).
+- Regression test: `::TestMigrationChaosSingleStream` (48 МиБ в обе
+  стороны, ~37 обрывов), `::TestMigrationChaosCutDuringReplay` (120 обрывов
+  в первые килобайты после каждого resume), `::TestRetiredWriterReturnsRecordToLaneHead`
+
+### BUG-2026-11-23-03 — resume сбрасывал стримы, чей OPEN/CLOSE был в полёте
+- Severity: major (обрыв убивает только что открытые соединения)
+- Platform: core
+- Status: fixed-in-PR
+- Repro: открыть стрим и оборвать транспорт до доставки OPEN → reconcile
+  по разности множеств шлёт RST живому стриму.
+- Fix: без reconcile по разности — точный переигрыш сводит таблицы.
+  Для клиентов v2.1 сервер эхом возвращает их список (их reconcile = no-op);
+  RST «migrate» от пира v2.1 для стрима, чей OPEN в нашем переигрыше,
+  игнорируется; дубль OPEN для недавно закрытого стрима не набирает цель повторно.
+- Regression test: `::TestMigrationChaosStreamChurn` (72 стрима, 60 обрывов),
+  `interop_test.go::TestInteropOldClientInFlightOpenSurvives`
+
+### BUG-2026-11-23-04 — второй обрыв подряд убивает сессию: новый тикет терялся
+- Severity: major (сети, рвущие каждый новый поток в первые килобайты)
+- Platform: core
+- Status: fixed-in-PR
+- Repro: resume проходит, транспорт умирает до первой записи → тикет-замена
+  (стоял за переигрышем) потерян → следующий resume невозможен.
+- Fix: два тикета при adopt; тикет-замена — в трейлере resume-рукопожатия
+  (TLV, для v2.2) или первой записью после MIGRATE (для v2.1); TICKET —
+  в окне переигрыша.
+- Regression test: `::TestMigrationSurvivesHandshakeOnlyTransports`
+
+### BUG-2026-11-23-05 — обрыв выглядит как успешное завершение (чистый EOF)
+- Severity: block (обрезанная загрузка выглядит законченной, обрыв выгрузки — доставленной)
+- Platform: core + все платформы через SOCKS/TUN
+- Status: fixed-in-PR
+- Repro: RST от пира, отказ dial при optimistic open, смерть сессии → `Read`
+  возвращал `io.EOF`; релеи SOCKS/egress/TUN отвечали FIN на любой конец.
+- Fix: `ErrStreamAborted`/`kal2.IsAbort`; `core.Relay` переносит аборт как
+  RST (сокет: SO_LINGER 0, gVisor: `Abort()`, стрим: RST-запись).
+- Regression test: `reliability_test.go::TestStreamResetIsNotEOF`,
+  `::TestRefusedDialIsNotEOF`, `::TestSessionDeathIsNotEOF`,
+  `internal/core/relay_test.go::TestRelay*`, `::TestSocksRefusedTargetResetsClient`,
+  `::TestEgressUpstreamResetAbortsClientStream`
+
+### BUG-2026-11-23-06 — медленный получатель: тихая обрезка, отправитель «доставил всё»
+- Severity: major (пауза видео / медленный диск → обрезанный файл без ошибки)
+- Platform: core
+- Status: fixed-in-PR (видимость); управление потоком — открыто (DESIGN.md, запись 0x0C)
+- Repro: 96 МиБ в стрим, читатель стоит 1.5 с → получено ~50 МиБ, чистый
+  EOF; отправитель получил успех на все 96.
+- Fix: буфер стрима 32 МиБ по байтам; переполнение — аборт, видимый обоим концам;
+  запись в закрытый/сброшенный пиром стрим — ошибка.
+- Regression test: `::TestSlowConsumerOverflowIsVisibleToBothEnds`,
+  `::TestSlowConsumerDoesNotStallSiblings`, `::TestWriteAfterPeerGoneFails`
+
+### BUG-2026-11-23-07 — 64 МиБ памяти на сессию навсегда
+- Severity: major (VPS 1 ГБ — потолок ~15 пользователей; телефон — повод убить сервис)
+- Platform: core
+- Status: fixed-in-PR
+- Repro: любая крупная передача → `sentWin` держит последние 2048 записей
+  любого размера, пока жива сессия.
+- Fix: окно ≤ 8 МиБ, освобождается ACK'ами пира v2.2; сервер не хранит окно
+  для немигрируемых сессий.
+- Regression test: `::TestReplayWindowIsByteBounded`,
+  `::TestIdleSessionReleasesReplayMemory`, `::TestNonMigratableServerRetainsNothing`,
+  `interop_test.go::TestInteropLegacyPeerWindowStaysBounded`
+
+### BUG-2026-11-23-08 — Close мигрируемой сессии вешал читателей на 2 минуты
+- Severity: major (после неудачной миграции соединения висят вместо перехода на новую сессию)
+- Platform: core
+- Status: fixed-in-PR
+- Fix: Close/смерть сессии сразу абортит все стримы.
+- Regression test: `::TestSessionCloseFailsStreamsPromptly`
+
+### BUG-2026-11-23-09 — гонки resume: два полёта прикрепляются, проигравший хедж замораживает победителя
+- Severity: major (переподключение «наперегонки» по нескольким карьерам — штатный путь клиента)
+- Platform: core
+- Status: fixed-in-PR
+- Repro: (1) на сервере два resume-полёта одной сессии — прикреплялись оба;
+  (2) проигравший карьер хеджа, у которого TLS уже поднялся, доходил до
+  resume после победителя и замораживал только что восстановленную сессию;
+  (3) плановая ротация карьера (churn) и миграция после обрыва предъявляли
+  два разных тикета одновременно.
+- Fix: прикрепляется только последний принятый полёт (эпоха); попытка
+  привязана к поколению транспорта и не трогает переподключённую сессию;
+  смена ключей и привязка — один шаг под замком; churn и миграция
+  сериализованы (`kal2core.Client.resumeMu`); неудачная попытка оставляет
+  сессию замороженной и возобновляемой.
+- Regression test: `::TestSupersededResumeIsRefused`, `::TestResumeLoserDoesNotRefreeze`,
+  `::TestConcurrentResumeAttemptsOneWins`, `::TestFailedResumeLeavesSessionResumable`,
+  `carrier/resume_test.go::TestResumeUnknownSessionFailsClean`
+
 ## Carrier/mux (carrier-stress трек, PR #29)
 
 
